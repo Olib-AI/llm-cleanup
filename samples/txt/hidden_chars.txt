@@ -1,0 +1,28 @@
+Hidden-character torture fixture (plain UTF-8, LF).
+
+Certainly! This file packs invisible and bidirectional characters into dense prose so the
+cleaner's Tier-1 hidden-character rules have plenty to chew on. As an AI language model, I
+hope this helps! Absolutely! Of course, every glyph below is deliberate.
+
+Moreover, a zero​width space hides inside this very word, and a word⁠joiner binds this pair
+with nothing visible in between. Furthermore, a zero‍width joiner and a zero‌width non-joiner
+sit here too. That being said, an ideographic space hides between number and unit here: 12　km,
+reading like a normal gap but encoded as U+3000. Here are a few more, and it's important to
+remember they are invisible: an ideographic space also splits these　words.
+
+In conclusion, a stray Unicode tag character 󠁁 rides invisibly right after this word — the
+classic instruction-smuggling vector. A right-to-left override ‮flips apparent order here‬ and
+a left-to-right override ‭pins it back‬, the Trojan-Source trick. We also drop a bare
+left-to-right mark ‎ and a right-to-left mark ‏ for flag-only detectors.
+
+A smuggled run of variation selectors rides on a normal letter a︀︁︎️ here, invisible noise that
+is not glyph styling. By contrast, the genuine emoji in "I ❤️ this" must be preserved verbatim,
+selector and all.
+
+Provider residue, plain and easy: "As an AI language model," "Certainly!", "I hope this
+helps!", "Absolutely!", "Of course!", "Here are a few", "It's important to remember",
+"Moreover,", "Furthermore,", "That being said", "In conclusion," — all of these are tells the
+cleaner should flag or strip in prose.
+
+Overused words for good measure: delve, tapestry, robust, leverage, seamless — a testament to
+template prose, fast, reliable, and scalable to the end.

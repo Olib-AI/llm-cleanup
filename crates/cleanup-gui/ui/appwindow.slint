@@ -1,0 +1,276 @@
+import { ScrollView, ComboBox } from "std-widgets.slint";
+
+// Light, modern theme. Palette: white surfaces, slate text, indigo (#4F46E5) accent.
+
+component LevelTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 34px;
+    border-radius: 8px;
+    background: active ? #ffffff : (touch.has-hover ? #e9edf3 : transparent);
+    drop-shadow-blur: active ? 7px : 0px;
+    drop-shadow-color: #0f172a26;
+    drop-shadow-offset-y: active ? 1px : 0px;
+    animate background { duration: 120ms; }
+    Text {
+        text: root.label;
+        color: active ? #4f46e5 : #64748b;
+        font-weight: active ? 700 : 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component StatChip inherits Rectangle {
+    in property <string> text;
+    in property <brush> bg;
+    in property <brush> fg;
+    height: 26px;
+    border-radius: 13px;
+    background: root.bg;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-weight: 700;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component AccentButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 42px;
+    min-width: 150px;
+    border-radius: 11px;
+    background: !root.enabled ? #c7d2fe : (touch.has-hover ? #4338ca : #4f46e5);
+    drop-shadow-blur: root.enabled ? 8px : 0px;
+    drop-shadow-color: #4f46e540;
+    drop-shadow-offset-y: 2px;
+    animate background { duration: 100ms; }
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        Text {
+            text: root.text;
+            color: #ffffff;
+            font-weight: 700;
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "llm-cleanup";
+    default-font-family: "Inter";
+    default-font-size: 14px;
+    preferred-width: 580px;
+    preferred-height: 640px;
+    min-width: 470px;
+    min-height: 560px;
+    background: #ffffff;
+
+    in property <string> file-name;
+    in property <bool> has-file;
+    in property <int> level: 1;
+    in-out property <int> target;
+    in property <bool> did-run;
+    in property <int> cleaned-count;
+    in property <int> flagged-count;
+    in property <string> preview-text;
+    in property <string> status;
+    in property <bool> can-save;
+
+    callback browse();
+    callback set-level(int);
+    callback set-target(int);
+    callback clean-and-save();
+
+    VerticalLayout {
+        padding: 26px;
+        spacing: 16px;
+
+        // Header
+        HorizontalLayout {
+            spacing: 12px;
+            Image {
+                source: @image-url("icons/logo-mark.svg");
+                width: 34px;
+                height: 34px;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                spacing: 2px;
+                alignment: center;
+                Text { text: "llm-cleanup"; font-size: 24px; font-weight: 800; color: #0f172a; }
+                Text { text: "Remove AI fingerprints. Your formatting stays intact."; font-size: 13px; color: #64748b; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Choose-file card
+        Rectangle {
+            height: 116px;
+            border-radius: 16px;
+            background: card-touch.has-hover ? #f5f3ff : #f8fafc;
+            border-width: 1.5px;
+            border-color: card-touch.has-hover ? #6366f1 : #e2e8f0;
+            animate background { duration: 140ms; }
+            animate border-color { duration: 140ms; }
+            VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 46px;
+                        height: 46px;
+                        border-radius: 13px;
+                        background: #eef2ff;
+                        Image {
+                            source: @image-url("icons/upload.svg");
+                            width: 25px;
+                            height: 25px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+                Text {
+                    text: root.has-file ? root.file-name : "Choose a document";
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: #0f172a;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.has-file ? "click to pick a different file" : "Markdown, text, or Word  ·  click to browse";
+                    font-size: 11px;
+                    color: #94a3b8;
+                    horizontal-alignment: center;
+                }
+            }
+            card-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.browse(); }
+            }
+        }
+
+        // Cleanup level + Convert-to, side by side
+        HorizontalLayout {
+            spacing: 14px;
+            VerticalLayout {
+                spacing: 7px;
+                horizontal-stretch: 1;
+                Text { text: "Cleanup level"; font-size: 12px; font-weight: 600; color: #64748b; }
+                Rectangle {
+                    height: 42px;
+                    border-radius: 12px;
+                    background: #f1f5f9;
+                    HorizontalLayout {
+                        padding: 5px;
+                        spacing: 5px;
+                        LevelTab { label: "Light"; active: root.level == 0; clicked => { root.set-level(0); } }
+                        LevelTab { label: "Standard"; active: root.level == 1; clicked => { root.set-level(1); } }
+                        LevelTab { label: "Aggressive"; active: root.level == 2; clicked => { root.set-level(2); } }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 7px;
+                Text { text: "Convert to"; font-size: 12px; font-weight: 600; color: #64748b; }
+                ComboBox {
+                    width: 170px;
+                    model: ["Same as input", "Markdown (.md)", "Text (.txt)", "Word (.docx)", "PDF (.pdf)"];
+                    current-index <=> root.target;
+                    selected(value) => { root.set-target(self.current-index); }
+                }
+            }
+        }
+
+        // Results header with prominent counts
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Results"; font-size: 12px; font-weight: 600; color: #64748b; vertical-alignment: center; }
+            Rectangle { width: 4px; }
+            StatChip {
+                visible: root.did-run;
+                text: root.cleaned-count > 0 ? "✓ \{root.cleaned-count} cleaned" : "✓ already clean";
+                bg: root.cleaned-count > 0 ? #dcfce7 : #eef2f6;
+                fg: root.cleaned-count > 0 ? #15803d : #64748b;
+            }
+            StatChip {
+                visible: root.did-run && root.flagged-count > 0;
+                text: "⚑ \{root.flagged-count} flagged";
+                bg: #fef3c7;
+                fg: #b45309;
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Breakdown panel (scrollable so long results never push the button off-screen)
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 12px;
+            background: #f8fafc;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            clip: true;
+            results-scroll := ScrollView {
+                VerticalLayout {
+                    width: results-scroll.visible-width;
+                    padding: 16px;
+                    alignment: start;
+                    Text {
+                        text: root.preview-text == "" ? "Choose a file to see exactly what gets cleaned." : root.preview-text;
+                        color: root.preview-text == "" ? #94a3b8 : #334155;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // Action row
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: root.status;
+                color: #64748b;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            AccentButton {
+                text: "Save result";
+                enabled: root.can-save;
+                clicked => { root.clean-and-save(); }
+            }
+        }
+
+        // Footer
+        Text {
+            text: "llm-cleanup by Olib AI  ·  olib.ai";
+            font-size: 10px;
+            color: #94a3b8;
+            horizontal-alignment: center;
+        }
+    }
+}

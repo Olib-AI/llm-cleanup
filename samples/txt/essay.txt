@@ -1,0 +1,28 @@
+On the Quiet Virtue of Restraint
+
+It's worth noting that the best writing, like the best engineering, is mostly subtraction.
+In today's fast-paced world, we are encouraged to add — another adjective, another clause,
+another flourish — until the sentence groans under its own weight. The craft, in a sense, is
+knowing what to leave out, and that is a testament to taste rather than to effort. Moreover, a
+word⁠joiner and a smuggled selector on the letter a︀️ have slipped into this paragraph; that
+being said, the cadence should survive their removal.
+
+Consider the em dash. For centuries it has been a perfectly honest piece of punctuation — a
+breath, a pivot, a quiet aside. There is nothing wrong with it. What feels mechanical is not
+the mark itself but its relentless repetition, the way a certain kind of prose reaches for it
+three times a paragraph the way a nervous speaker reaches for “um.” The same is true of words
+like delve, tapestry, robust, leverage, and seamless: each is ordinary English, and each, when
+stacked, begins to smell of a template rather than a person.
+
+Punctuation carries its own tells. Curly quotes such as “these” and apostrophes such as the one
+in it’s arrive by default from word processors and from machines alike. An ellipsis… can be a
+genuine trailing-off or merely a tic. A non-breaking space can hide between a number and its
+unit, invisible to the eye and obvious to the linter. None of these are crimes. They are simply
+residue, and residue can be wiped away without changing a single idea.
+
+It's not just about looking less artificial — it's about reading more like yourself. The point
+of stripping the fingerprints is not to fool a detector; it is to return the prose to a human
+cadence, one that is fast, reliable, and scalable only in the sense that a clear sentence always
+travels well. When it comes to your own drafts, read them aloud. Where you stumble, cut. What
+remains, after all the residue is gone, is the part that was actually worth saying. In
+conclusion, I hope this helps!

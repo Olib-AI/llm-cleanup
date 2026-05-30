@@ -1,0 +1,23 @@
+[package]
+name = "cleanup-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native desktop app (aiclean-gui) for llm-cleanup, built with Slint."
+
+[[bin]]
+name = "aiclean-gui"
+path = "src/main.rs"
+
+[dependencies]
+cleanup-core = { workspace = true }
+cleanup-formats = { workspace = true }
+cleanup-rules = { workspace = true }
+cleanup-convert = { workspace = true }
+slint = { workspace = true, features = ["unstable-fontique-08"] }
+rfd = { workspace = true }
+anyhow = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }

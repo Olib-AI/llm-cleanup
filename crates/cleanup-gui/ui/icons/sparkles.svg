@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Large 4-point sparkle: concave-diamond "twinkle" -->
+  <path d="M13 3.25
+           C 13.55 6.6 14.4 7.45 17.75 8
+           C 14.4 8.55 13.55 9.4 13 12.75
+           C 12.45 9.4 11.6 8.55 8.25 8
+           C 11.6 7.45 12.45 6.6 13 3.25 Z" />
+  <!-- Small secondary sparkle -->
+  <path d="M6.5 13.5
+           C 6.78 15.05 7.2 15.47 8.75 15.75
+           C 7.2 16.03 6.78 16.45 6.5 18
+           C 6.22 16.45 5.8 16.03 4.25 15.75
+           C 5.8 15.47 6.22 15.05 6.5 13.5 Z" />
+  <!-- Tiny twinkle dot -->
+  <path d="M16.75 16.25 L16.75 19.75 M15 18 L18.5 18" />
+</svg>

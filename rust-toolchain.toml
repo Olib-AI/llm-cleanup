@@ -1,0 +1,4 @@
+[toolchain]
+# Pin the whole repo to Rust 1.95 (resolved via rustup). `cargo` in this directory
+# will automatically use this toolchain. Run `rustup toolchain install 1.95.0` if missing.
+channel = "1.95.0"

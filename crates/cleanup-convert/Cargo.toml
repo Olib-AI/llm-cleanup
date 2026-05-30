@@ -1,0 +1,14 @@
+[package]
+name = "cleanup-convert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust cross-format conversion (md / txt / docx / pdf) for llm-cleanup. Lossy by design; separate from the lossless clean path."
+
+[dependencies]
+cleanup-core = { workspace = true }
+cleanup-formats = { workspace = true }
+pulldown-cmark = { workspace = true }
+thiserror = { workspace = true }
+docx-rs = "0.4"

@@ -1,0 +1,26 @@
+# Build artifacts
+/target
+/dist
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+*.rs.bk
+
+# Environment
+.env
+.env.local
+
+# Local planning / design docs (kept out of the public repo)
+DESIGN.md
+
+# Backups / scratch
+*.bak
+Cargo.lock.bak

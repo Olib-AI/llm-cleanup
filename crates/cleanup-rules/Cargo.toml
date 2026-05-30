@@ -1,0 +1,14 @@
+[package]
+name = "cleanup-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Detection rules and template loading for llm-cleanup."
+
+[dependencies]
+cleanup-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_norway = { workspace = true }
+aho-corasick = "1"

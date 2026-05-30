@@ -1,0 +1,219 @@
+# =============================================================================
+# llm-cleanup — Release
+# =============================================================================
+# On a version tag (e.g. `git tag v0.1.0 && git push --tags`), build the CLI for
+# all platforms and the desktop app for macOS / Windows / Linux, sign + notarize
+# the macOS artifacts, and publish a GitHub Release with SHA-256 checksums.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CLI (`aiclean`) for every platform
+  # ---------------------------------------------------------------------------
+  cli:
+    name: CLI ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, artifact: aiclean-linux-amd64, cross: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest, artifact: aiclean-linux-arm64, cross: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, artifact: aiclean-darwin-amd64, cross: false }
+          - { target: aarch64-apple-darwin, os: macos-latest, artifact: aiclean-darwin-arm64, cross: false }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, artifact: aiclean-windows-amd64.exe, cross: false }
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --locked -p cleanup-cli --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --locked -p cleanup-cli --target ${{ matrix.target }}
+
+      - name: Sign & notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_B64: ${{ secrets.APPLE_CERTIFICATE_B64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE_B64" ]; then echo "No signing secrets; skipping."; exit 0; fi
+          echo "$APPLE_CERTIFICATE_B64" | base64 --decode > /tmp/cert.p12
+          KCHAIN="/tmp/build.keychain-db"; KPASS="$(openssl rand -hex 16)"
+          security create-keychain -p "$KPASS" "$KCHAIN"
+          security set-keychain-settings -lut 21600 "$KCHAIN"
+          security unlock-keychain -p "$KPASS" "$KCHAIN"
+          security import /tmp/cert.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KPASS" "$KCHAIN"
+          security list-keychains -d user -s "$KCHAIN" login.keychain-db
+          IDENTITY=$(security find-identity -v -p codesigning "$KCHAIN" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          BIN="target/${{ matrix.target }}/release/aiclean"
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" "$BIN"
+          ditto -c -k "$BIN" /tmp/aiclean-notarize.zip
+          xcrun notarytool submit /tmp/aiclean-notarize.zip --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+          security delete-keychain "$KCHAIN"; rm -f /tmp/cert.p12 /tmp/aiclean-notarize.zip
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          src="target/${{ matrix.target }}/release/aiclean"
+          [[ "${{ matrix.artifact }}" == *.exe ]] && src="${src}.exe"
+          cp "$src" "${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # ---------------------------------------------------------------------------
+  # Desktop app (`aiclean-gui`)
+  # ---------------------------------------------------------------------------
+  gui:
+    name: App ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, artifact: llm-cleanup-macos }
+          - { os: windows-latest, artifact: aiclean-gui-windows-amd64 }
+          - { os: ubuntu-latest, artifact: aiclean-gui-linux-amd64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libfontconfig1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build GUI
+        run: cargo build --release --locked -p cleanup-gui
+
+      - name: Package (macOS .app, signed + notarized)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_B64: ${{ secrets.APPLE_CERTIFICATE_B64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP="dist/llm-cleanup.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/release/aiclean-gui "$APP/Contents/MacOS/aiclean-gui"
+          cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          cp packaging/Info.plist "$APP/Contents/Info.plist"
+          if [ -n "$APPLE_CERTIFICATE_B64" ]; then
+            echo "$APPLE_CERTIFICATE_B64" | base64 --decode > /tmp/cert.p12
+            KCHAIN="/tmp/build.keychain-db"; KPASS="$(openssl rand -hex 16)"
+            security create-keychain -p "$KPASS" "$KCHAIN"
+            security set-keychain-settings -lut 21600 "$KCHAIN"
+            security unlock-keychain -p "$KPASS" "$KCHAIN"
+            security import /tmp/cert.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KCHAIN"
+            security set-key-partition-list -S apple-tool:,apple: -k "$KPASS" "$KCHAIN"
+            security list-keychains -d user -s "$KCHAIN" login.keychain-db
+            IDENTITY=$(security find-identity -v -p codesigning "$KCHAIN" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+            codesign --deep --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+            ditto -c -k --keepParent "$APP" /tmp/app-notarize.zip
+            xcrun notarytool submit /tmp/app-notarize.zip --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait || true
+            xcrun stapler staple "$APP" || true
+            security delete-keychain "$KCHAIN"; rm -f /tmp/cert.p12 /tmp/app-notarize.zip
+          fi
+          ditto -c -k --keepParent "$APP" "${{ matrix.artifact }}.zip"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p stage
+          cp target/release/aiclean-gui.exe stage/
+          cp README.md LICENSE stage/
+          7z a "${{ matrix.artifact }}.zip" ./stage/*
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p stage
+          cp target/release/aiclean-gui stage/
+          cp README.md LICENSE stage/
+          tar -czf "${{ matrix.artifact }}.tar.gz" -C stage .
+
+      - name: Upload artifact (zip)
+        if: runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact (tar)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Publish the GitHub Release
+  # ---------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: [cli, gui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cleanup-core",
+    "crates/cleanup-formats",
+    "crates/cleanup-rules",
+    "crates/cleanup-convert",
+    "crates/cleanup-cli",
+    "crates/cleanup-gui",
+    "crates/cleanup-model",
+    "crates/cleanup-testkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/Olib-AI/llm-cleanup"
+homepage = "https://www.olib.ai"
+authors = ["Olib AI <dev@olib.ai>"]
+
+[workspace.dependencies]
+# Internal crates
+cleanup-core = { path = "crates/cleanup-core" }
+cleanup-formats = { path = "crates/cleanup-formats" }
+cleanup-rules = { path = "crates/cleanup-rules" }
+cleanup-convert = { path = "crates/cleanup-convert" }
+# External (pinned to live registry versions as of 2026-05-30)
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_norway = "0.9.42"        # maintained serde_yaml fork (serde_yaml & serde_yml are deprecated)
+thiserror = "2.0.18"
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
+similar = "3.1.1"
+unicode-segmentation = "1.13.2"
+slint = "1.16.1"
+slint-build = "1.16.1"
+rfd = "0.17.2"
+
+[profile.release]
+lto = "thin"
+strip = true

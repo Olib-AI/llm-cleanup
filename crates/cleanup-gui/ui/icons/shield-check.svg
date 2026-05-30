@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Shield: crest from top, tapering to a point at the bottom -->
+  <path d="M12 2.75
+           L19 5.25
+           V11
+           C 19 15.75 16 18.9 12 21.25
+           C 8 18.9 5 15.75 5 11
+           V5.25 Z" />
+  <!-- Check mark -->
+  <path d="M8.75 11.75 L11 14 L15.25 9.5" />
+</svg>

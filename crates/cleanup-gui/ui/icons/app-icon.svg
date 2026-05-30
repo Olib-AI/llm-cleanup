@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="appIconBg" x1="160" y1="96" x2="864" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366F1" />
+      <stop offset="1" stop-color="#4F46E5" />
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="180" ry="180" fill="url(#appIconBg)" />
+
+  <!-- White mark: document + sparkle. Stroke style matches the line-icon set. -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Document body with folded top-right corner -->
+    <path d="M560 250 H300 A52 52 0 0 0 248 302 V722 A52 52 0 0 0 300 774 H600 A52 52 0 0 0 652 722 V342 Z" />
+    <!-- Corner fold -->
+    <path d="M560 250 V342 H652" />
+    <!-- Text lines (document content kept intact) -->
+    <path d="M330 444 H470" />
+    <path d="M330 524 H570" />
+    <path d="M330 604 H510" />
+  </g>
+
+  <!-- Signature sparkle (solid white) -->
+  <path d="M662 350
+           C 686 470 712 496 832 520
+           C 712 544 686 570 662 690
+           C 638 570 612 544 492 520
+           C 612 496 638 470 662 350 Z"
+        fill="#FFFFFF" />
+  <!-- Small twinkle -->
+  <path d="M790 268
+           C 798 308 808 318 848 326
+           C 808 334 798 344 790 384
+           C 782 344 772 334 732 326
+           C 772 318 782 308 790 268 Z"
+        fill="#FFFFFF" />
+</svg>

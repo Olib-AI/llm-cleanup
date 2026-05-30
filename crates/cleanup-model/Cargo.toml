@@ -1,0 +1,16 @@
+[package]
+name = "cleanup-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Optional, feature-gated statistical/ML detection for llm-cleanup (post-v1)."
+
+[features]
+default = []
+# When this graduates from the roadmap it pulls in `tract` (pure-Rust ONNX) for a
+# report-only AI-likelihood score. Kept dependency-free by default so the base binary
+# stays small and static. See DESIGN.md §10-C / §11.
+ml = []
+
+[dependencies]

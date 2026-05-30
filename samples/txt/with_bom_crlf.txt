@@ -1,0 +1,11 @@
+﻿Encoding Test File (UTF-8 BOM)
+This file begins with a UTF-8 byte-order mark (bytes EF BB BF). See samples/README.md: the
+CRLF half of this fixture could not be materialized in the generation environment (the editor
+normalized line endings to LF and no byte-level tool was available), so endings here are LF.
+It's worth noting that the cleaner must preserve the BOM exactly and re-emit it verbatim.
+In today's fast-paced world, a robust tool re-emits the BOM verbatim — never silently transcoding.
+Curly quotes “like these” and an apostrophe in it’s, plus an ellipsis…, should normalize at standard level.
+The em dash here — used as a connector — stays a glyph unless aggressive opt-in is enabled.
+A non-breaking space hides here: [ ] and a zero-width space hides here: [​].
+Overused words present: delve, tapestry, leverage, seamless, a testament to good defaults.
+Fast, reliable, and scalable — the rule of three closes the file.

@@ -1,0 +1,89 @@
+# llm-cleanup — built-in default rule pack.
+#
+# Typographic normalization (em dash, curly quotes, ellipsis, invisible characters) is
+# implemented as built-in CODE rules (see crates/cleanup-rules/src/typographic.rs) because it
+# must be deterministic and Unicode-exact. The lexical/phrasal entries below are DATA-DRIVEN:
+# the engine constructs flag-only rules from these term lists at load time. This file is the
+# template you (or a user) extend — the future engine will drive replace/transform rules from
+# YAML too. See DESIGN.md §7.
+
+schema_version: 1
+pack:
+  id: builtin.core
+  version: 0.1.0
+  title: Core AI-fingerprint rules
+  license: MIT
+
+rules:
+  - id: lexical.overused-verbs
+    description: AI-favored verbs — flagged for review (never auto-replaced)
+    category: lexical
+    level: standard
+    action: flag
+    severity: medium
+    terms: [delve, leverage, utilize, harness, streamline, underscore, foster,
+            facilitate, spearhead, elevate, unlock, unleash, embody, supercharge]
+
+  - id: lexical.overused-nouns
+    description: AI-favored nouns and metaphors — flagged for review
+    category: lexical
+    level: standard
+    action: flag
+    severity: medium
+    terms: [tapestry, testament, landscape, realm, synergy, paradigm, ecosystem,
+            cornerstone, beacon, bedrock, nexus, interplay, plethora, myriad]
+
+  - id: lexical.inflated-adjectives
+    description: Promotional / inflated adjectives — flagged for review
+    category: lexical
+    level: aggressive
+    action: flag
+    severity: low
+    terms: [robust, seamless, comprehensive, meticulous, pivotal, crucial, vital,
+            transformative, innovative, multifaceted, holistic, nuanced, intricate,
+            unparalleled, cutting-edge, game-changing, state-of-the-art]
+
+  - id: phrasal.throat-clearing
+    description: Filler frames AI uses to open sentences (auto-removal is a future repair-aware rule)
+    category: phrasal
+    level: standard
+    action: flag
+    severity: high
+    terms: ["it's worth noting", "it is important to note", "it should be noted",
+            "in today's fast-paced world", "when it comes to", "a testament to",
+            "navigating the complexities of", "dive into", "embark on a journey"]
+
+  - id: phrasal.machine-residue
+    description: Chat/model leakage that should never appear in finished prose
+    category: phrasal
+    level: light
+    action: flag
+    severity: high
+    terms: ["as an ai", "as a large language model", "i hope this helps",
+            "certainly!", "great question"]
+
+  # --- Provider-leaning phrase tells (researched 2026-05; flag-only, attribution is approximate) ---
+  - id: phrasal.chatgpt-residue
+    description: Assistant/chat residue common in ChatGPT/GPT outputs — should never appear in finished prose
+    category: phrasal
+    level: light
+    action: flag
+    terms: ["as an ai,", "as an ai language model", "i'm sorry, but i can",
+            "i cannot fulfill", "sure! here", "sure, here's", "let me know if you",
+            "is there anything else", "i hope this helps!"]
+
+  - id: phrasal.gemini-affirmations
+    description: Opening affirmations common in Gemini/assistant outputs
+    category: phrasal
+    level: standard
+    action: flag
+    terms: ["absolutely!", "of course!", "i'd be happy to", "here are a few",
+            "in essence,", "it's important to remember", "it's worth mentioning"]
+
+  - id: stylistic.signpost-transitions
+    description: Over-signposting transitions common across LLMs (notably ChatGPT and Gemini)
+    category: stylistic
+    level: aggressive
+    action: flag
+    terms: ["moreover,", "furthermore,", "that being said", "without further ado",
+            "buckle up", "in conclusion,", "in summary,", "to sum up"]
