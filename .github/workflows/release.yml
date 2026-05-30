@@ -167,6 +167,14 @@ jobs:
           mkdir -p stage
           cp target/release/aiclean-gui.exe stage/
           cp README.md LICENSE stage/
+          # Bundle the Visual C++ runtime app-local so the GUI launches on a clean Windows
+          # without the "VCRUNTIME140.dll is missing" redistributable prompt.
+          REDIST=$(ls -d "/c/Program Files/Microsoft Visual Studio/2022/"*/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT 2>/dev/null | tail -1 || true)
+          if [ -n "$REDIST" ]; then cp "$REDIST"/*.dll stage/ 2>/dev/null || true; fi
+          for d in vcruntime140 vcruntime140_1 msvcp140; do
+            [ -f "stage/$d.dll" ] || cp "/c/Windows/System32/$d.dll" stage/ 2>/dev/null || true
+          done
+          echo "Bundled runtime DLLs:"; ls -1 stage/*.dll 2>/dev/null || echo "  WARNING: none found"
           7z a "${{ matrix.artifact }}.zip" ./stage/*
 
       - name: Package (Linux)
