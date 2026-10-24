@@ -9,7 +9,8 @@ component LevelOption inherits Rectangle {
     in property <bool> selected;
     callback clicked;
 
-    height: max(68px, content.preferred-height + 24px);
+    // `content` already carries the 12px padding, so size the card to its full height.
+    height: max(68px, content.preferred-height);
     border-radius: 10px;
     border-width: 1px;
     border-color: selected ? #91aa9b : (touch.has-hover ? #bdc9c0 : #dde2db);
@@ -17,43 +18,62 @@ component LevelOption inherits Rectangle {
     animate background { duration: 120ms; }
     animate border-color { duration: 120ms; }
 
-    Rectangle {
-        x: 14px;
-        y: 17px;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        border-width: 1.5px;
-        border-color: selected ? #265c4a : #aab2ab;
-        background: #ffffff;
-        Rectangle {
-            x: 4px;
-            y: 4px;
-            width: 8px;
-            height: 8px;
-            border-radius: 4px;
-            background: #265c4a;
-            visible: selected;
-        }
-    }
-
+    // One padded column. The radio lives in the title row so the ring is always
+    // centered on the title's line box, and the description indents beneath it.
     content := VerticalLayout {
-        x: 44px;
-        y: 12px;
-        width: parent.width - 58px;
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 12px;
+        padding-bottom: 12px;
         spacing: 4px;
-        Text {
-            text: root.title;
-            color: #202722;
-            font-size: 13px;
-            font-weight: 600;
-            overflow: elide;
+
+        HorizontalLayout {
+            spacing: 12px;
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                // Fixed-size children are top-aligned inside a layout, so center the
+                // ring explicitly on this row (the same idiom Slint's CheckBox uses).
+                y: (parent.height - self.height) / 2;
+                border-radius: 9px;
+                border-width: 1.5px;
+                border-color: root.selected ? #265c4a : #aab2ab;
+                background: #ffffff;
+                Rectangle {
+                    x: 5px;
+                    y: 5px;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #265c4a;
+                    visible: root.selected;
+                }
+            }
+            Text {
+                text: root.title;
+                color: #202722;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
         }
-        Text {
-            text: root.description;
-            color: #717a73;
-            font-size: 11px;
-            wrap: word-wrap;
+
+        HorizontalLayout {
+            spacing: 12px;
+            // Spacer matching the radio column keeps the description under the title.
+            Rectangle {
+                width: 18px;
+                height: 1px;
+            }
+            Text {
+                text: root.description;
+                color: #717a73;
+                font-size: 11px;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
         }
     }
 
@@ -161,7 +181,8 @@ export component AppWindow inherits Window {
                 source: @image-url("icons/logo-mark.svg");
                 width: 40px;
                 height: 40px;
-                vertical-alignment: center;
+                // A layout top-aligns fixed-size elements; center explicitly on the row.
+                y: (parent.height - self.height) / 2;
             }
             VerticalLayout {
                 spacing: 2px;
@@ -185,7 +206,8 @@ export component AppWindow inherits Window {
                 source: @image-url("icons/shield-check.svg");
                 width: 18px;
                 height: 18px;
-                vertical-alignment: center;
+                // A layout top-aligns fixed-size elements; center explicitly on the row.
+                y: (parent.height - self.height) / 2;
             }
             Text {
                 text: "Offline by design";
@@ -460,7 +482,8 @@ export component AppWindow inherits Window {
                 source: @image-url("icons/shield-check.svg");
                 width: 16px;
                 height: 16px;
-                vertical-alignment: center;
+                // A layout top-aligns fixed-size elements; center explicitly on the row.
+                y: (parent.height - self.height) / 2;
             }
             Text {
                 text: root.status;
