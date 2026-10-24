@@ -1207,6 +1207,109 @@ impl Rule for LegacyCitationStripRule {
 }
 
 // ---------------------------------------------------------------------------
+// Claude Code prompt steganography
+// ---------------------------------------------------------------------------
+
+/// Normalize the hidden fingerprint embedded by Claude Code 2.1.91–2.1.196 in its
+/// `Today's date is YYYY-MM-DD.` system-prompt line. Those releases replaced the ASCII
+/// apostrophe with U+2019, U+02BC or U+02B9 to encode proxy classifications, and used
+/// `YYYY/MM/DD` to encode a timezone classification. The mechanism was rolled back in
+/// 2.1.197, but captured prompts and agent transcripts still carry it.
+///
+/// This is deliberately an exact, line-anchored grammar rather than a global quote/date
+/// rewrite. A clean ASCII line produces no finding; a marked line is restored to its
+/// canonical ASCII form at every level, including Light. This is separate from the
+/// statistical SynthID-Text watermark used by newer Claude models: that watermark adds
+/// no characters and cannot be removed by this or any other Unicode cleanup rule.
+pub struct ClaudePromptFingerprintRule;
+
+impl Rule for ClaudePromptFingerprintRule {
+    fn id(&self) -> &str {
+        "markers.claude-prompt-fingerprint"
+    }
+
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Light
+    }
+
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+
+        for (start, _) in text.match_indices("Today") {
+            // The fingerprint is a standalone system-prompt line. Requiring a line boundary
+            // avoids reclassifying an ordinary sentence that merely contains the same words.
+            if start > 0 && !matches!(bytes[start - 1], b'\n' | b'\r') {
+                continue;
+            }
+
+            let apostrophe_at = start + "Today".len();
+            let Some(apostrophe) = text[apostrophe_at..].chars().next() else {
+                continue;
+            };
+            if !matches!(apostrophe, '\'' | '\u{2019}' | '\u{02BC}' | '\u{02B9}') {
+                continue;
+            }
+
+            let suffix_at = apostrophe_at + apostrophe.len_utf8();
+            const SUFFIX: &str = "s date is ";
+            if !text[suffix_at..].starts_with(SUFFIX) {
+                continue;
+            }
+            let date_at = suffix_at + SUFFIX.len();
+            if bytes.len() < date_at + 11 {
+                continue;
+            }
+
+            let date = &bytes[date_at..date_at + 10];
+            let separator = date[4];
+            if !matches!(separator, b'-' | b'/') || date[7] != separator {
+                continue;
+            }
+            let digits_are_ascii = date
+                .iter()
+                .enumerate()
+                .all(|(offset, byte)| matches!(offset, 4 | 7) || byte.is_ascii_digit());
+            if !digits_are_ascii || bytes[date_at + 10] != b'.' {
+                continue;
+            }
+
+            let end = date_at + 11;
+            if end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r') {
+                continue;
+            }
+            if apostrophe == '\'' && separator == b'-' {
+                continue; // Canonical line: no hidden signal to remove.
+            }
+
+            let mut replacement = String::with_capacity(end - start);
+            replacement.push_str("Today's date is ");
+            for (offset, byte) in date.iter().enumerate() {
+                replacement.push(if matches!(offset, 4 | 7) {
+                    '-'
+                } else {
+                    char::from(*byte)
+                });
+            }
+            replacement.push('.');
+
+            out.push(Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                range: start..end,
+                message: format!(
+                    "normalized Claude Code hidden prompt fingerprint (apostrophe U+{:04X})",
+                    apostrophe as u32
+                ),
+                replacement: Some(replacement),
+            });
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Agentic coding trailers
 // ---------------------------------------------------------------------------
 
@@ -1938,6 +2041,47 @@ mod tests {
             &"Claim【4:0†source】."[hits[0].range.clone()],
             "【4:0†source】"
         );
+    }
+
+    #[test]
+    fn claude_prompt_fingerprint_normalizes_every_encoded_variant() {
+        for apostrophe in ['\u{2019}', '\u{02BC}', '\u{02B9}'] {
+            for separator in ['-', '/'] {
+                let line = format!("Today{apostrophe}s date is 2026{separator}06{separator}30.");
+                let text = format!("context before\n{line}\ncontext after");
+                let found = detect(&ClaudePromptFingerprintRule, &text);
+                assert_eq!(found.len(), 1, "text {text:?}: {found:?}");
+                assert_eq!(
+                    found[0].replacement.as_deref(),
+                    Some("Today's date is 2026-06-30.")
+                );
+                assert_eq!(&text[found[0].range.clone()], line);
+            }
+        }
+
+        // The timezone bit can be present even when the apostrophe is canonical.
+        let found = detect(&ClaudePromptFingerprintRule, "Today's date is 2026/06/30.");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].replacement.as_deref(),
+            Some("Today's date is 2026-06-30.")
+        );
+    }
+
+    #[test]
+    fn claude_prompt_fingerprint_ignores_clean_lines_and_ordinary_prose() {
+        for text in [
+            "Today's date is 2026-06-30.",
+            "Today’s date is June 30, 2026.",
+            "See Today’s date is 2026/06/30. for the original prompt.",
+            "Today’s date is 2026/06/30. trailing prose",
+            "Today’s date is not really a date.",
+        ] {
+            assert!(
+                detect(&ClaudePromptFingerprintRule, text).is_empty(),
+                "unexpected fingerprint in {text:?}"
+            );
+        }
     }
 
     #[test]

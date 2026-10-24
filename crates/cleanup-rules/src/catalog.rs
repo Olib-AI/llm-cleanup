@@ -98,11 +98,14 @@ const CATALOG: &[SignatureFamily] = &[
                      measured at 100x+ human rate; extended-thinking markup and leaked \
                      tool-use scaffolding (<invoke>, <function_calls>); Claude Code commit \
                      and PR trailers, incl. versioned Co-Authored-By lines for unreleased \
-                     model names (matched by pattern); a statistical watermark on models \
-                     released on/after 2026-08-02 (out of scope)",
+                     model names (matched by pattern); Claude Code 2.1.91–2.1.196's hidden \
+                     prompt-date fingerprint (U+2019/U+02BC/U+02B9 apostrophes and slash-separated \
+                     dates), restored to canonical ASCII at light; a statistical watermark on \
+                     models released on/after 2026-08-02 (out of scope)",
         rules: "typo.em-dash.to-comma, typo.en-dash.to-hyphen, markers.reasoning-block, \
                 markers.reasoning-trace, markers.agent-trailers, markers.agent-trailer-lines, \
-                markers.tool-calls, markers.model-identifiers, phrasal.claude-residue, \
+                markers.claude-prompt-fingerprint, markers.tool-calls, \
+                markers.model-identifiers, phrasal.claude-residue, \
                 phrasal.superlative-framing",
     },
     SignatureFamily {
@@ -225,10 +228,11 @@ const CATALOG: &[SignatureFamily] = &[
                      (Co-Authored-By: Claude, 🤖 Generated with [Claude Code], \
                      Claude-Session:) — the literal ones and the same patterns naming \
                      models released after this catalogue was written; leaked tool-call \
-                     scaffolding; ANSI terminal escapes copied from agent output; decorative \
-                     emoji and raw Markdown in generated docs",
+                     scaffolding; Claude Code 2.1.91–2.1.196 prompt-date steganography, \
+                     normalized by exact line grammar; ANSI terminal escapes copied from agent \
+                     output; decorative emoji and raw Markdown in generated docs",
         rules: "markers.agent-trailers, markers.agent-trailer-lines, markers.tool-calls, \
-                unicode.ansi.strip, \
+                markers.claude-prompt-fingerprint, unicode.ansi.strip, \
                 style.emoji.opener, style.emoji.density, style.markdown.residue, \
                 structural.markdown-tells",
     },

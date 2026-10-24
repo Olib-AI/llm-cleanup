@@ -1,74 +1,114 @@
 import { ScrollView, ComboBox } from "std-widgets.slint";
 
-// Light, modern theme. Palette: white surfaces, slate text, indigo (#4F46E5) accent.
+// A quiet, document-first interface: warm neutrals, crisp borders and one restrained
+// forest-green accent. No gradients, glow effects or decorative dashboard chrome.
 
-component LevelTab inherits Rectangle {
-    in property <string> label;
-    in property <bool> active;
+component LevelOption inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> selected;
     callback clicked;
-    height: 34px;
-    border-radius: 8px;
-    background: active ? #ffffff : (touch.has-hover ? #e9edf3 : transparent);
-    drop-shadow-blur: active ? 7px : 0px;
-    drop-shadow-color: #0f172a26;
-    drop-shadow-offset-y: active ? 1px : 0px;
+
+    height: 64px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: selected ? #9eb3a7 : (touch.has-hover ? #d2d9d2 : transparent);
+    background: selected ? #eaf0eb : (touch.has-hover ? #f7f8f4 : transparent);
     animate background { duration: 120ms; }
-    Text {
-        text: root.label;
-        color: active ? #4f46e5 : #64748b;
-        font-weight: active ? 700 : 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    animate border-color { duration: 120ms; }
+
+    Rectangle {
+        x: 14px;
+        y: 15px;
+        width: 17px;
+        height: 17px;
+        border-radius: 9px;
+        border-width: 1.5px;
+        border-color: selected ? #265c4a : #aab2ab;
+        background: #ffffff;
+        Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 9px;
+            height: 9px;
+            border-radius: 5px;
+            background: #265c4a;
+            visible: selected;
+        }
     }
+
+    VerticalLayout {
+        x: 43px;
+        y: 11px;
+        width: parent.width - 56px;
+        spacing: 3px;
+        Text {
+            text: root.title;
+            color: #202722;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.description;
+            color: #717a73;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 }
 
-component StatChip inherits Rectangle {
-    in property <string> text;
-    in property <brush> bg;
-    in property <brush> fg;
-    height: 26px;
-    border-radius: 13px;
-    background: root.bg;
+component Metric inherits Rectangle {
+    in property <string> value;
+    in property <string> label;
+    in property <brush> value-color;
+
+    height: 64px;
+    border-radius: 10px;
+    background: #f6f7f3;
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
+        padding-left: 15px;
+        padding-right: 15px;
+        spacing: 12px;
         Text {
-            text: root.text;
-            color: root.fg;
+            text: root.value;
+            color: root.value-color;
+            font-size: 25px;
             font-weight: 700;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.label;
+            color: #68716b;
             font-size: 12px;
             vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
         }
     }
 }
 
-component AccentButton inherits Rectangle {
-    in property <string> text;
+component PrimaryButton inherits Rectangle {
+    in property <string> label;
     in property <bool> enabled: true;
     callback clicked;
-    height: 42px;
-    min-width: 150px;
-    border-radius: 11px;
-    background: !root.enabled ? #c7d2fe : (touch.has-hover ? #4338ca : #4f46e5);
-    drop-shadow-blur: root.enabled ? 8px : 0px;
-    drop-shadow-color: #4f46e540;
-    drop-shadow-offset-y: 2px;
+
+    width: 176px;
+    height: 44px;
+    border-radius: 9px;
+    background: !enabled ? #cbd2cc : (touch.has-hover ? #1d493b : #265c4a);
     animate background { duration: 100ms; }
-    HorizontalLayout {
-        padding-left: 18px;
-        padding-right: 18px;
-        Text {
-            text: root.text;
-            color: #ffffff;
-            font-weight: 700;
-            font-size: 14px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
     touch := TouchArea {
         enabled: root.enabled;
@@ -81,21 +121,22 @@ export component AppWindow inherits Window {
     title: "llm-cleanup";
     default-font-family: "Inter";
     default-font-size: 14px;
-    preferred-width: 580px;
-    preferred-height: 640px;
-    min-width: 470px;
-    min-height: 560px;
-    background: #ffffff;
+    preferred-width: 920px;
+    preferred-height: 720px;
+    min-width: 820px;
+    min-height: 680px;
+    background: #f3f4ef;
 
     in property <string> file-name;
     in property <bool> has-file;
     in property <int> level: 1;
     in-out property <int> target;
     in property <bool> did-run;
+    in property <bool> has-error;
     in property <int> cleaned-count;
     in property <int> flagged-count;
     in property <string> preview-text;
-    in property <string> status;
+    in property <string> status: "Your original file stays untouched.";
     in property <bool> can-save;
 
     callback browse();
@@ -104,173 +145,314 @@ export component AppWindow inherits Window {
     callback clean-and-save();
 
     VerticalLayout {
-        padding: 26px;
-        spacing: 16px;
+        padding: 28px;
+        spacing: 22px;
 
-        // Header
+        // Product header: identity on the left, one meaningful trust cue on the right.
         HorizontalLayout {
+            height: 42px;
             spacing: 12px;
             Image {
                 source: @image-url("icons/logo-mark.svg");
-                width: 34px;
-                height: 34px;
+                width: 38px;
+                height: 38px;
                 vertical-alignment: center;
             }
             VerticalLayout {
-                spacing: 2px;
+                spacing: 1px;
                 alignment: center;
-                Text { text: "llm-cleanup"; font-size: 24px; font-weight: 800; color: #0f172a; }
-                Text { text: "Remove AI fingerprints. Your formatting stays intact."; font-size: 13px; color: #64748b; }
+                Text {
+                    text: "llm-cleanup";
+                    color: #1e2521;
+                    font-size: 20px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: "Document hygiene, without the guesswork";
+                    color: #788079;
+                    font-size: 11px;
+                }
             }
             Rectangle { horizontal-stretch: 1; }
+            Image {
+                source: @image-url("icons/shield-check.svg");
+                width: 18px;
+                height: 18px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "Offline by design";
+                color: #566159;
+                font-size: 12px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
         }
 
-        // Choose-file card
-        Rectangle {
-            height: 116px;
-            border-radius: 16px;
-            background: card-touch.has-hover ? #f5f3ff : #f8fafc;
-            border-width: 1.5px;
-            border-color: card-touch.has-hover ? #6366f1 : #e2e8f0;
-            animate background { duration: 140ms; }
-            animate border-color { duration: 140ms; }
+        Rectangle { height: 1px; background: #dde1da; }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 26px;
+
+            // Configuration column. Section labels and explanatory copy make the three
+            // cleanup modes understandable without opening the documentation.
             VerticalLayout {
-                alignment: center;
-                spacing: 8px;
-                HorizontalLayout {
-                    alignment: center;
+                width: 294px;
+                spacing: 20px;
+                alignment: start;
+
+                VerticalLayout {
+                    spacing: 9px;
+                    Text {
+                        text: "Document";
+                        color: #3d4740;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
                     Rectangle {
-                        width: 46px;
-                        height: 46px;
-                        border-radius: 13px;
-                        background: #eef2ff;
-                        Image {
-                            source: @image-url("icons/upload.svg");
-                            width: 25px;
-                            height: 25px;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
+                        height: 88px;
+                        border-radius: 11px;
+                        border-width: 1px;
+                        border-color: file-touch.has-hover ? #91a89a : #d9dfd8;
+                        background: file-touch.has-hover ? #fbfcfa : #ffffff;
+                        animate border-color { duration: 120ms; }
+                        animate background { duration: 120ms; }
+                        HorizontalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+                            VerticalLayout {
+                                width: 40px;
+                                alignment: center;
+                                Rectangle {
+                                    width: 40px;
+                                    height: 40px;
+                                    border-radius: 9px;
+                                    background: #eaf0eb;
+                                    Image {
+                                        source: @image-url("icons/upload.svg");
+                                        width: 21px;
+                                        height: 21px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 5px;
+                                Text {
+                                    text: root.has-file ? root.file-name : "Choose a document";
+                                    color: #252c27;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: root.has-file ? "Click to choose another file" : "Markdown, text, or Word";
+                                    color: #858d86;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+                            Text {
+                                text: "Browse";
+                                color: #265c4a;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                        file-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.browse(); }
                         }
                     }
                 }
-                Text {
-                    text: root.has-file ? root.file-name : "Choose a document";
-                    font-size: 15px;
-                    font-weight: 600;
-                    color: #0f172a;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: root.has-file ? "click to pick a different file" : "Markdown, text, or Word  ·  click to browse";
-                    font-size: 11px;
-                    color: #94a3b8;
-                    horizontal-alignment: center;
-                }
-            }
-            card-touch := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.browse(); }
-            }
-        }
 
-        // Cleanup level + Convert-to, side by side
-        HorizontalLayout {
-            spacing: 14px;
-            VerticalLayout {
-                spacing: 7px;
-                horizontal-stretch: 1;
-                Text { text: "Cleanup level"; font-size: 12px; font-weight: 600; color: #64748b; }
-                Rectangle {
-                    height: 42px;
-                    border-radius: 12px;
-                    background: #f1f5f9;
-                    HorizontalLayout {
-                        padding: 5px;
-                        spacing: 5px;
-                        LevelTab { label: "Light"; active: root.level == 0; clicked => { root.set-level(0); } }
-                        LevelTab { label: "Standard"; active: root.level == 1; clicked => { root.set-level(1); } }
-                        LevelTab { label: "Aggressive"; active: root.level == 2; clicked => { root.set-level(2); } }
-                    }
-                }
-            }
-            VerticalLayout {
-                spacing: 7px;
-                Text { text: "Convert to"; font-size: 12px; font-weight: 600; color: #64748b; }
-                ComboBox {
-                    width: 170px;
-                    model: ["Same as input", "Markdown (.md)", "Text (.txt)", "Word (.docx)", "PDF (.pdf)"];
-                    current-index <=> root.target;
-                    selected(value) => { root.set-target(self.current-index); }
-                }
-            }
-        }
-
-        // Results header with prominent counts
-        HorizontalLayout {
-            spacing: 8px;
-            Text { text: "Results"; font-size: 12px; font-weight: 600; color: #64748b; vertical-alignment: center; }
-            Rectangle { width: 4px; }
-            StatChip {
-                visible: root.did-run;
-                text: root.cleaned-count > 0 ? "✓ \{root.cleaned-count} cleaned" : "✓ already clean";
-                bg: root.cleaned-count > 0 ? #dcfce7 : #eef2f6;
-                fg: root.cleaned-count > 0 ? #15803d : #64748b;
-            }
-            StatChip {
-                visible: root.did-run && root.flagged-count > 0;
-                text: "⚑ \{root.flagged-count} flagged";
-                bg: #fef3c7;
-                fg: #b45309;
-            }
-            Rectangle { horizontal-stretch: 1; }
-        }
-
-        // Breakdown panel (scrollable so long results never push the button off-screen)
-        Rectangle {
-            vertical-stretch: 1;
-            border-radius: 12px;
-            background: #f8fafc;
-            border-width: 1px;
-            border-color: #e2e8f0;
-            clip: true;
-            results-scroll := ScrollView {
                 VerticalLayout {
-                    width: results-scroll.visible-width;
-                    padding: 16px;
-                    alignment: start;
+                    spacing: 9px;
                     Text {
-                        text: root.preview-text == "" ? "Choose a file to see exactly what gets cleaned." : root.preview-text;
-                        color: root.preview-text == "" ? #94a3b8 : #334155;
-                        font-size: 13px;
-                        wrap: word-wrap;
+                        text: "Cleanup strength";
+                        color: #3d4740;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+                    LevelOption {
+                        title: "Light";
+                        description: "Invisible characters and hidden residue";
+                        selected: root.level == 0;
+                        clicked => { root.set-level(0); }
+                    }
+                    LevelOption {
+                        title: "Standard";
+                        description: "Light cleanup, plus safe typography";
+                        selected: root.level == 1;
+                        clicked => { root.set-level(1); }
+                    }
+                    LevelOption {
+                        title: "Aggressive";
+                        description: "Full cleanup and document metadata scrub";
+                        selected: root.level == 2;
+                        clicked => { root.set-level(2); }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 9px;
+                    Text {
+                        text: "Output format";
+                        color: #3d4740;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+                    ComboBox {
+                        width: 100%;
+                        height: 40px;
+                        model: ["Same as input", "Markdown (.md)", "Text (.txt)", "Word (.docx)", "PDF (.pdf)"];
+                        current-index <=> root.target;
+                        selected(value) => { root.set-target(self.current-index); }
+                    }
+                }
+            }
+
+            // Report surface. Metrics stay stable between states; only their values change.
+            Rectangle {
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                border-radius: 13px;
+                border-width: 1px;
+                border-color: #dde1da;
+                background: #ffffff;
+                clip: true;
+
+                VerticalLayout {
+                    padding: 23px;
+                    spacing: 17px;
+
+                    VerticalLayout {
+                        spacing: 5px;
+                        Text {
+                            text: root.has-error ? "Unable to process document" : (root.did-run ? "Cleanup report" : "Ready when you are");
+                            color: #202722;
+                            font-size: 19px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: root.has-error ? "The original file has not been changed." : (root.did-run ? "Review the changes before saving your copy." : "Choose a file to see a precise, itemized report.");
+                            color: #788079;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 11px;
+                        Metric {
+                            horizontal-stretch: 1;
+                            value: root.did-run && !root.has-error ? "\{root.cleaned-count}" : "—";
+                            label: "changes made";
+                            value-color: #2f6b50;
+                        }
+                        Metric {
+                            horizontal-stretch: 1;
+                            value: root.did-run && !root.has-error ? "\{root.flagged-count}" : "—";
+                            label: "left for review";
+                            value-color: #94652a;
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #e7eae4; }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+
+                        VerticalLayout {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            visible: root.preview-text == "";
+                            alignment: center;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 48px;
+                                    height: 48px;
+                                    border-radius: 12px;
+                                    background: #f0f3ed;
+                                    Image {
+                                        source: @image-url("icons/upload.svg");
+                                        width: 23px;
+                                        height: 23px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "Nothing to review yet";
+                                color: #39423b;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Your document is analyzed locally. Formatting and structure stay intact.";
+                                color: #8a918b;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        results-scroll := ScrollView {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            visible: root.preview-text != "";
+                            VerticalLayout {
+                                width: results-scroll.visible-width;
+                                padding-right: 5px;
+                                alignment: start;
+                                Text {
+                                    text: root.preview-text;
+                                    color: root.has-error ? #9b493f : #465049;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Action row
         HorizontalLayout {
-            spacing: 12px;
+            height: 44px;
+            spacing: 14px;
+            Image {
+                source: @image-url("icons/shield-check.svg");
+                width: 16px;
+                height: 16px;
+                vertical-alignment: center;
+            }
             Text {
                 text: root.status;
-                color: #64748b;
-                font-size: 12px;
+                color: root.has-error ? #9b493f : #717a73;
+                font-size: 11px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                overflow: elide;
             }
-            AccentButton {
-                text: "Save result";
+            PrimaryButton {
+                label: "Save cleaned file";
                 enabled: root.can-save;
                 clicked => { root.clean-and-save(); }
             }
-        }
-
-        // Footer
-        Text {
-            text: "llm-cleanup by Olib AI  ·  olib.ai";
-            font-size: 10px;
-            color: #94a3b8;
-            horizontal-alignment: center;
         }
     }
 }
