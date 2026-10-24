@@ -539,4 +539,46 @@ mod tests {
         assert!(!again.changed, "{again:?}");
         assert!(again.container.iter().all(|c| !c.scrubbable));
     }
+
+    #[test]
+    fn repairs_mojibake_and_html_entities_end_to_end() {
+        // "it’s fine — really" after a Windows-1252 mis-decode, plus a copy-as-source entity.
+        let input = "it\u{E2}\u{20AC}\u{2122}s fine &mdash; really";
+        let (out, _) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, "it's fine, really");
+        assert_idempotent(&PlainText, input, CleanupLevel::Aggressive);
+    }
+
+    #[test]
+    fn strips_chat_ui_disclaimer_only_at_aggressive() {
+        let input = "The answer.\n\nChatGPT can make mistakes. Check important info.\n";
+        let (standard, report) = analyze(&PlainText, input, CleanupLevel::Standard);
+        assert!(standard.contains("ChatGPT can make mistakes"));
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.chat-ui-disclaimer"),
+            "{:?}",
+            report.flags
+        );
+        let (aggressive, _) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert!(!aggressive.contains("ChatGPT can make mistakes"));
+        assert!(aggressive.starts_with("The answer."));
+    }
+
+    #[test]
+    fn markdown_inline_header_lists_are_reported_but_never_edited() {
+        let input = "- **Speed:** faster\n- **Cost:** lower\n- **Risk:** managed\n";
+        let (out, report) = analyze(&Markdown, input, CleanupLevel::Standard);
+        assert_eq!(out, input, "structural findings are flag-only");
+        assert!(
+            report
+                .container
+                .iter()
+                .any(|c| c.rule_id == "style.list.inline-headers"),
+            "{:?}",
+            report.container
+        );
+    }
 }
