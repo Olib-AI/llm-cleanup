@@ -228,10 +228,9 @@ fn decode_xml_text(raw: &str, source: Range<usize>) -> (String, DecodedSegment) 
                     body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
                 {
                     (hex, 16)
-                } else if let Some(decimal) = body.strip_prefix('#') {
-                    (decimal, 10)
                 } else {
-                    return None;
+                    let decimal = body.strip_prefix('#')?;
+                    (decimal, 10)
                 };
                 if digits.is_empty() {
                     return None;
