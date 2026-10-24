@@ -16,7 +16,7 @@
 //! Catalogue and provenance: see `catalog.rs`, `README.md` § "What it cleans", and
 //! `docs/FINGERPRINTS.md`.
 
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, MatchKind};
 use cleanup_core::ir::ProseSpan;
 use cleanup_core::{CleanupLevel, Ctx, Finding, Rule};
 

@@ -1,17 +1,23 @@
 use crate::lexicon::LexiconFlagRule;
 use crate::markers::{
-    CitationBracketRule, ReasoningBlockRule, ReasoningTraceRule, agent_trailers, chat_tokens,
-    chat_tokens_strip, citation_artifacts, model_identifiers,
+    AgentTrailerLineRule, CitationBracketRule, ReasoningBlockRule, ReasoningTraceRule,
+    SpecialTokenPatternRule, agent_trailers, chat_tokens, chat_tokens_strip, citation_artifacts,
+    model_identifiers, private_use_citations, private_use_citations_strip, tool_calls,
+    turn_citations, turn_citations_strip,
 };
 use crate::schema::{Action, Pack};
-use crate::style::{DecorativeEmojiOpener, EmojiDensity, MarkdownResidue, RepeatedPunctuation};
+use crate::style::{
+    DecorativeEmojiOpener, DetokenizedSpacing, EmojiDensity, MarkdownResidue, PlaceholderResidue,
+    RepeatedPunctuation,
+};
 use crate::typographic::{
-    NormalizeEllipsis, NormalizeEmDash, NormalizeEnDash, NormalizeFullwidthForms, NormalizeHyphens,
-    NormalizeQuotes, StripInvisibles,
+    NormalizeCjkPunctuation, NormalizeDetokenizer, NormalizeEllipsis, NormalizeEmDash,
+    NormalizeEnDash, NormalizeFullwidthForms, NormalizeHyphens, NormalizeQuotes, StripInvisibles,
 };
 use crate::unicode_hidden::{
-    FlagBidiControls, FlagConfusables, NormalizeExoticSpaces, StripBidiOverrides, StripFillers,
-    StripSmuggledChars,
+    FlagBidiControls, FlagCombiningRuns, FlagConfusables, FlagPrivateUse, FlagZeroWidthJoiners,
+    NormalizeExoticSpaces, StripBidiOverrides, StripControlChars, StripFillers,
+    StripPrivateUseMarkers, StripSmuggledChars,
 };
 use cleanup_core::Rule;
 
@@ -41,11 +47,16 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
         // Invisible-character hygiene + typographic normalization (built-in code rules).
         Box::new(StripInvisibles),
+        Box::new(StripControlChars),
         Box::new(StripSmuggledChars),
         Box::new(StripFillers),
         Box::new(NormalizeExoticSpaces),
         Box::new(StripBidiOverrides),
         Box::new(FlagBidiControls),
+        Box::new(FlagPrivateUse),
+        Box::new(StripPrivateUseMarkers),
+        Box::new(FlagCombiningRuns),
+        Box::new(FlagZeroWidthJoiners),
         Box::new(FlagConfusables),
         Box::new(NormalizeQuotes),
         Box::new(NormalizeEllipsis),
@@ -53,6 +64,8 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(NormalizeEnDash),
         Box::new(NormalizeEmDash),
         Box::new(NormalizeFullwidthForms),
+        Box::new(NormalizeCjkPunctuation),
+        Box::new(NormalizeDetokenizer),
         // Machine signatures (exact strings, no word-boundary heuristics).
         Box::new(chat_tokens()),
         Box::new(SpecialTokenPatternRule),
@@ -74,6 +87,8 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(EmojiDensity),
         Box::new(MarkdownResidue),
         Box::new(RepeatedPunctuation),
+        Box::new(DetokenizedSpacing),
+        Box::new(PlaceholderResidue),
     ];
 
     if let Ok(pack) = load_builtin_pack() {
