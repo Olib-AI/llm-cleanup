@@ -61,7 +61,7 @@ The authoritative machine-readable version of this table is
 | Curly quotes & guillemets | `U+2018`–`U+201F`, `U+00AB`, `U+00BB`, `U+2039`, `U+203A`, `U+02BC` | standard | → ASCII |
 | Ellipsis | `U+2026`, `U+22EF` | standard | → `...` |
 | En dash | `U+2013` | standard | → `, ` / `-` |
-| Hyphen family | `U+2010`, `U+2011`, `U+2012`, `U+2212` | standard | → `-` |
+| Hyphen family | `U+2010`, `U+2011`, `U+2012`; minus sign `U+2212` only when digit-adjacent | standard | → `-` |
 | Em dash family | `U+2014`, `U+2015`, `U+2E3A`, `U+2E3B`, `U+FE58` | aggressive | → `, ` / `--` |
 | Fullwidth ASCII | `U+FF01`–`U+FF5E` | aggressive | → ASCII |
 
