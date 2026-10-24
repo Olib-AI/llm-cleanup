@@ -15,21 +15,55 @@ pub struct UrlReplacement {
     pub replacement: String,
 }
 
+/// Provider names and hostnames as they appear in `utm_*`/`referrer` values, refreshed for
+/// the 2026 model crop. Values are compared exactly (ASCII-case-insensitively): a generic
+/// `utm_source=newsletter` is analytics, while `utm_source=deepseek.com` is attribution.
+const AI_PROVIDERS: &[&str] = &[
+    // OpenAI
+    "chatgpt.com",
+    "chatgpt",
+    "openai",
+    // Microsoft
+    "copilot.com",
+    "copilot",
+    // Perplexity
+    "perplexity",
+    "perplexity.ai",
+    // Anthropic
+    "claude",
+    "claude.ai",
+    "anthropic",
+    // Google
+    "gemini",
+    "gemini.google.com",
+    // xAI
+    "grok",
+    "grok.com",
+    "x.ai",
+    // 2026 additions: the rest of the current landscape.
+    "deepseek",
+    "deepseek.com",
+    "kimi.com",
+    "moonshot.ai",
+    "meta.ai",
+    "mistral.ai",
+    "chat.mistral.ai",
+    "lechat",
+    "chat.qwen.ai",
+    "qwen.ai",
+    "qwen",
+    "chatglm",
+    "z.ai",
+    // Aggregators and answer engines that carry their own attribution.
+    "poe.com",
+    "you.com",
+    "phind.com",
+];
+
 fn is_ai_provider(value: &str) -> bool {
-    value.eq_ignore_ascii_case("chatgpt.com")
-        || value.eq_ignore_ascii_case("chatgpt")
-        || value.eq_ignore_ascii_case("openai")
-        || value.eq_ignore_ascii_case("copilot.com")
-        || value.eq_ignore_ascii_case("copilot")
-        || value.eq_ignore_ascii_case("perplexity")
-        || value.eq_ignore_ascii_case("perplexity.ai")
-        || value.eq_ignore_ascii_case("claude")
-        || value.eq_ignore_ascii_case("claude.ai")
-        || value.eq_ignore_ascii_case("gemini")
-        || value.eq_ignore_ascii_case("gemini.google.com")
-        || value.eq_ignore_ascii_case("grok")
-        || value.eq_ignore_ascii_case("grok.com")
-        || value.eq_ignore_ascii_case("x.ai")
+    AI_PROVIDERS
+        .iter()
+        .any(|provider| value.eq_ignore_ascii_case(provider))
 }
 
 fn is_ai_tracking_param(param: &str) -> bool {
@@ -37,7 +71,7 @@ fn is_ai_tracking_param(param: &str) -> bool {
         return false;
     };
     if name.eq_ignore_ascii_case("referrer") || name.eq_ignore_ascii_case("referer") {
-        return value.eq_ignore_ascii_case("grok.com");
+        return is_ai_provider(value);
     }
     (name.eq_ignore_ascii_case("utm_source")
         || name.eq_ignore_ascii_case("utm_medium")
@@ -229,6 +263,40 @@ mod tests {
             "https://example.test/page?next=utm_source%3Dchatgpt.com",
             "https://example.test/page?not_utm_source=chatgpt.com",
             "https://example.test/page?x=1&y=2",
+        ] {
+            assert_eq!(clean_ai_tracking_url(input), None, "changed {input}");
+        }
+    }
+
+    #[test]
+    fn covers_the_2026_provider_set() {
+        for value in [
+            "deepseek.com",
+            "kimi.com",
+            "meta.ai",
+            "mistral.ai",
+            "qwen",
+            "z.ai",
+            "poe.com",
+            "chatglm",
+        ] {
+            let input = format!("https://e.test/?utm_source={value}&x=1");
+            assert_eq!(
+                clean_ai_tracking_url(&input).as_deref(),
+                Some("https://e.test/?x=1"),
+                "did not clean {value}"
+            );
+        }
+        // A provider referrer is the same kind of attribution as a provider utm_source.
+        assert_eq!(
+            clean_ai_tracking_url("https://e.test/?referrer=claude.ai").as_deref(),
+            Some("https://e.test/")
+        );
+        // Bare vendor words are not enough: keep ordinary analytics.
+        for input in [
+            "https://e.test/?utm_source=meta",
+            "https://e.test/?referrer=newsletter",
+            "https://e.test/?utm_source=moonshot",
         ] {
             assert_eq!(clean_ai_tracking_url(input), None, "changed {input}");
         }

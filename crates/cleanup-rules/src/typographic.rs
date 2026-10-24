@@ -64,7 +64,10 @@ impl Rule for StripInvisibles {
             // (and occasionally hallucinated by models reproducing encoded text).
             | '\u{180B}'..='\u{180D}'
             | '\u{180F}'
-            | '\u{1D173}'..='\u{1D182}' => Some((
+            | '\u{1D173}'..='\u{1D182}'
+            // Egyptian hieroglyph format controls (Unicode 12): invisible quadrat layout
+            // instructions. Default_Ignorable, and never typed by a human.
+            | '\u{13430}'..='\u{1343F}' => Some((
                 String::new(),
                 format!("removed invisible character U+{:04X}", ch as u32),
             )),
@@ -97,11 +100,42 @@ impl Rule for NormalizeQuotes {
                 Some(("\"".to_string(), "straightened double quote".to_string()))
             }
             '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2039}' | '\u{203A}'
-            | '\u{02BC}' | '\u{2032}' | '\u{2035}' | '\u{02B9}' => Some((
+            | '\u{02BC}' | '\u{2032}' | '\u{2035}' | '\u{02B9}' | '\u{00B4}' => Some((
                 "'".to_string(),
                 "straightened single quote / apostrophe".to_string(),
             )),
             _ => None,
+        })
+    }
+}
+
+/// Latin ligature glyphs. They reach generated documents through PDF- and LaTeX-derived
+/// training data (ﬁle, ﬂow) and through copy-paste out of typeset PDFs; they break search,
+/// spell-check and every downstream diff. Expansion is exact — each ligature is defined as
+/// the letter sequence it replaces — so this is a standard-level normalization.
+pub struct ExpandLigatures;
+impl Rule for ExpandLigatures {
+    fn id(&self) -> &str {
+        "typo.ligatures.expand"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Standard
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        scan_chars(self.id(), idx, span, |ch| {
+            let expanded = match ch {
+                '\u{FB00}' => "ff",
+                '\u{FB01}' => "fi",
+                '\u{FB02}' => "fl",
+                '\u{FB03}' => "ffi",
+                '\u{FB04}' => "ffl",
+                '\u{FB05}' | '\u{FB06}' => "st",
+                _ => return None,
+            };
+            Some((
+                expanded.to_string(),
+                format!("expanded ligature U+{:04X}", ch as u32),
+            ))
         })
     }
 }
@@ -410,6 +444,27 @@ mod tests {
         let text = "\u{201E}hallo\u{201C} \u{00AB}oui\u{00BB}";
         let got = run(&NormalizeQuotes, text, CleanupLevel::Standard);
         assert_eq!(apply(text, &got), "\"hallo\" \"oui\"");
+    }
+
+    #[test]
+    fn strips_egyptian_format_controls() {
+        let text = "nsw\u{13430}tw\u{1343F} end";
+        let found = run(&StripInvisibles, text, CleanupLevel::Light);
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn expands_ligatures() {
+        let text = "the \u{FB01}le and \u{FB02}ow \u{FB03}cient";
+        let got = run(&ExpandLigatures, text, CleanupLevel::Standard);
+        assert_eq!(apply(text, &got), "the file and flow fficient");
+    }
+
+    #[test]
+    fn straightens_acute_accent_used_as_apostrophe() {
+        let text = "it\u{00B4}s done";
+        let got = run(&NormalizeQuotes, text, CleanupLevel::Standard);
+        assert_eq!(apply(text, &got), "it's done");
     }
 
     #[test]

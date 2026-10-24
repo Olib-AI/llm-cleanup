@@ -440,9 +440,9 @@ fn metadata_hits(part: &str, xml: &[u8]) -> Vec<MetaHit> {
     let fields: &[&str] = if part == CORE_PART {
         &["creator", "lastModifiedBy", "description", "created"]
     } else {
-        &["Application"]
+        &["Application", "AppVersion"]
     };
-    let mut hits = Vec::new();
+    let mut found: Vec<(String, String, Range<usize>)> = Vec::new();
     for (field, range) in element_text_ranges(xml, fields) {
         let Ok(raw) = std::str::from_utf8(&xml[range.clone()]) else {
             continue;
@@ -451,16 +451,41 @@ fn metadata_hits(part: &str, xml: &[u8]) -> Vec<MetaHit> {
         if value.is_empty() {
             continue;
         }
+        found.push((field, value.to_string(), range));
+    }
+    // Generator libraries copy the Office version of the reference document they ship with
+    // instead of the version of Word actually in use. The *pair* is the fingerprint, and it
+    // is only reportable: a genuine Word for Mac 2011 file carries the same Application, so
+    // neither value alone — nor the pair — justifies rewriting a field we cannot attribute.
+    let field_value = |name: &str| {
+        found
+            .iter()
+            .find(|(field, _, _)| field == name)
+            .map(|(_, value, _)| value.as_str())
+    };
+    let library_template = matches!(
+        (field_value("Application"), field_value("AppVersion")),
+        (Some("Microsoft Macintosh Word"), Some("14.0000"))
+            | (Some("Microsoft Word 12.0.0"), Some("12.0000"))
+    );
+    let mut hits = Vec::new();
+    for (field, value, range) in found {
         let lower = value.to_lowercase();
         if field == "created" {
             // Template-date fingerprint: report-only (we never invent a date).
             if value == PYTHON_DOCX_TEMPLATE_DATE {
-                hits.push((field, value.to_string(), range, false));
+                hits.push((field, value, range, false));
             }
+        } else if field == "Application" && library_template {
+            hits.push((field, value, range, false));
+        } else if field == "AppVersion" {
+            // Only the Application/AppVersion pair is meaningful; a version string on its
+            // own is the user's Word build.
+            continue;
         } else if GENERATOR_SIGNS.iter().any(|s| lower.contains(s))
             || (field == "creator" && lower == "un-named")
         {
-            hits.push((field, value.to_string(), range, true));
+            hits.push((field, value, range, true));
         }
     }
     hits
@@ -739,6 +764,12 @@ impl Format for Docx {
                          template stamp — the file was almost certainly generated \
                          programmatically (report-only; dates are never rewritten)"
                     )
+                } else if field == "Application" && !scrubbable {
+                    format!(
+                        "{part} <Application> = {value:?} paired with the reference \
+                         template's AppVersion is a generator-library default \
+                         (python-docx / pandoc), not the user's Word build (report-only)"
+                    )
                 } else {
                     format!(
                         "{part} <{field}> = {value:?} matches a known AI/programmatic \
@@ -958,6 +989,39 @@ mod tests {
         assert!(app_out.contains("<Application></Application>"), "{app_out}");
         // Body prose untouched by a metadata scrub.
         assert_eq!(read_part(&scrubbed, DOC_PART).unwrap(), doc.as_bytes());
+    }
+
+    /// A generator library copies its reference template's Office version into app.xml.
+    /// The pair is reported (so the user knows the file was produced by a library) but is
+    /// never scrubbed: a genuine Word for Mac 2011 file carries the same strings.
+    #[test]
+    fn library_reference_template_pair_is_reported_but_not_scrubbed() {
+        let doc = part_xml("w:document", &["Some body."]);
+        let app = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Microsoft Macintosh Word</Application><AppVersion>14.0000</AppVersion></Properties>"#;
+        let bytes = make_docx(&[(DOC_PART, &doc), (APP_PART, app)]);
+        let parsed = Docx.parse(&bytes).unwrap();
+        let findings = Docx.container_findings(&parsed);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(!findings[0].scrubbable);
+        assert!(findings[0].message.contains("generator-library default"));
+        assert!(Docx.scrub_container(&parsed, &bytes).is_none());
+
+        // The real Word pair (a version the user's Word actually reported) stays silent.
+        let real = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Microsoft Office Word</Application><AppVersion>16.0000</AppVersion></Properties>"#;
+        let bytes = make_docx(&[(DOC_PART, &doc), (APP_PART, real)]);
+        let parsed = Docx.parse(&bytes).unwrap();
+        assert!(Docx.container_findings(&parsed).is_empty());
+    }
+
+    #[test]
+    fn application_alone_is_not_a_library_default() {
+        // Pandoc's Application string without the matching AppVersion is ambiguous (Word
+        // 2007 wrote a similar value), so it must not be reported as a library default.
+        let doc = part_xml("w:document", &["Some body."]);
+        let app = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Microsoft Word 12.0.0</Application><AppVersion>16.0000</AppVersion></Properties>"#;
+        let bytes = make_docx(&[(DOC_PART, &doc), (APP_PART, app)]);
+        let parsed = Docx.parse(&bytes).unwrap();
+        assert!(Docx.container_findings(&parsed).is_empty());
     }
 
     #[test]

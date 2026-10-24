@@ -2,18 +2,21 @@ use crate::lexicon::LexiconFlagRule;
 use crate::markers::{
     AgentTrailerLineRule, AiTrackingUrlFlagRule, AiTrackingUrlStripRule, CitationBracketRule,
     CitationBracketStripRule, LegacyCitationStripRule, ReasoningBlockRule, ReasoningTraceRule,
-    SpecialTokenPatternRule, agent_trailers, chat_tokens, chat_tokens_strip, citation_artifacts,
-    model_identifiers, private_use_citations, private_use_citations_strip, tool_calls,
-    turn_citations, turn_citations_strip,
+    SpecialTokenPatternRule, agent_trailers, chat_tokens, chat_tokens_strip, chat_ui_disclaimers,
+    chat_ui_disclaimers_strip, chat_ui_residue, citation_artifacts, model_identifiers,
+    private_use_citations, private_use_citations_strip, tool_calls, turn_citations,
+    turn_citations_strip,
 };
+use crate::repair::{DecodeHtmlEntities, FlagHtmlTags, RepairMojibake};
 use crate::schema::{Action, Pack};
 use crate::style::{
-    DecorativeEmojiOpener, DetokenizedSpacing, EmojiDensity, MarkdownResidue, PlaceholderResidue,
-    RepeatedPunctuation,
+    DecorativeEmojiOpener, DetokenizedSpacing, EmojiDensity, InlineHeaderList, MarkdownResidue,
+    PlaceholderResidue, RepeatedPunctuation, TitleCaseHeading,
 };
 use crate::typographic::{
-    NormalizeCjkPunctuation, NormalizeDetokenizer, NormalizeEllipsis, NormalizeEmDash,
-    NormalizeEnDash, NormalizeFullwidthForms, NormalizeHyphens, NormalizeQuotes, StripInvisibles,
+    ExpandLigatures, NormalizeCjkPunctuation, NormalizeDetokenizer, NormalizeEllipsis,
+    NormalizeEmDash, NormalizeEnDash, NormalizeFullwidthForms, NormalizeHyphens, NormalizeQuotes,
+    StripInvisibles,
 };
 use crate::unicode_hidden::{
     FlagBidiControls, FlagCombiningRuns, FlagConfusables, FlagPrivateUse, FlagZeroWidthJoiners,
@@ -46,6 +49,11 @@ pub fn load_builtin_pack() -> Result<Pack, String> {
 /// so that deleting an invisible character never blocks a punctuation normalization.
 pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
+        // Encoding repairs run first: mojibake and HTML entities hide the real characters,
+        // and repairing them before normalizing means the repaired character goes through
+        // the same level-aware mapping as text that arrived intact.
+        Box::new(RepairMojibake),
+        Box::new(DecodeHtmlEntities),
         // Invisible-character hygiene + typographic normalization (built-in code rules).
         Box::new(StripInvisibles),
         Box::new(StripAnsiEscapes),
@@ -62,6 +70,7 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(StripZeroWidthJoiners),
         Box::new(FlagConfusables),
         Box::new(NormalizeQuotes),
+        Box::new(ExpandLigatures),
         Box::new(NormalizeEllipsis),
         Box::new(NormalizeHyphens),
         Box::new(NormalizeEnDash),
@@ -89,6 +98,10 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(ReasoningTraceRule),
         Box::new(chat_tokens_strip()),
         Box::new(model_identifiers()),
+        Box::new(chat_ui_disclaimers()),
+        Box::new(chat_ui_residue()),
+        Box::new(chat_ui_disclaimers_strip()),
+        Box::new(FlagHtmlTags),
         // Formatting / layout tells.
         Box::new(DecorativeEmojiOpener),
         Box::new(EmojiDensity),
@@ -96,6 +109,8 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(RepeatedPunctuation),
         Box::new(DetokenizedSpacing),
         Box::new(PlaceholderResidue),
+        Box::new(TitleCaseHeading),
+        Box::new(InlineHeaderList),
     ];
 
     if let Ok(pack) = load_builtin_pack() {

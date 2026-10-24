@@ -356,3 +356,71 @@ rules:
     action: flag
     severity: low
     terms: [causal, causally, correlate, correlates, empirically]
+
+  # --- October 2026 refresh: the tells measured on this year's models ---------
+  # The 2024 "AI word" lists are ageing out (Kobak et al. measured `delve`, `intricate`,
+  # `showcasing` and `commendable` declining through 2025), while the 2026 corpora surface
+  # *framing* habits instead: claims of notability, hedges about what the assistant could
+  # reach, optimistic closings, and the cadence of a social post. Pangram's 2026 signal
+  # study and the sloptells corpus supply the phrase-level evidence; WikiProject AI
+  # Cleanup supplies the Wikipedia-side list. Everything here stays flag-only.
+  - id: phrasal.notability-boilerplate
+    description: Canned notability and media-coverage claims ("has garnered attention", "a household name") — the most common residue in 2026 AI-written encyclopedic prose
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["has been featured in", "has garnered attention", "garnered widespread",
+            "received widespread acclaim", "has been widely covered",
+            "attracted significant attention", "has become a household name",
+            "is widely regarded as", "has established itself as",
+            "continues to be a leading", "is known for its",
+            "has received numerous awards", "drew widespread praise"]
+
+  - id: phrasal.source-hedging
+    description: Disclaimers about what the assistant could reach — source-availability hedges left in the text
+    category: phrasal
+    level: standard
+    action: flag
+    severity: high
+    terms: ["based on the information available", "based on available information",
+            "as of my last knowledge", "i don't have access to", "i do not have access to",
+            "i couldn't find", "i could not find", "i wasn't able to find",
+            "i was unable to find", "i don't have the latest",
+            "please verify this information", "for the most up-to-date",
+            "i recommend checking", "this information may be outdated",
+            "you may want to verify", "i don't have real-time"]
+
+  - id: phrasal.optimistic-endings
+    description: Formulaic "despite the challenges" closings — the concluding cadence of generated copy
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["despite these challenges", "despite the challenges",
+            "despite these obstacles", "the future looks bright",
+            "the future is bright", "only time will tell",
+            "remains to be seen", "one thing is clear", "one thing is certain"]
+
+  - id: phrasal.social-post-register
+    description: Engagement-bait social-post framing measured in 2026 AI text (sloptells corpus) — hooks and confessionals that read like a post, not a document
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["here's what actually happened", "here's the thing about",
+            "the privilege of", "if you're like me", "we've all been there",
+            "let me explain why", "the best part?", "no one talks about",
+            "nobody talks about", "and that's okay"]
+
+  - id: phrasal.letter-formulas
+    description: Letter and email formulas that survive when the assistant composes correspondence
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["i hope this email finds you well", "i hope this message finds you well",
+            "i hope this finds you well", "i wanted to reach out",
+            "i am reaching out", "i'm reaching out", "i trust this email",
+            "thank you for your time and consideration",
+            "at your earliest convenience"]
