@@ -88,18 +88,14 @@ fn friendly_rule_name(rule_id: &str) -> String {
             "Private-use citation markers"
         }
         "markers.turn-citations" | "markers.turn-citations.strip" => "Citation identifiers",
-        "markers.ai-tracking-urls" | "markers.ai-tracking-urls.strip" => {
-            "AI tracking parameters"
-        }
+        "markers.ai-tracking-urls" | "markers.ai-tracking-urls.strip" => "AI tracking parameters",
         "markers.legacy-citations.strip" => "Legacy citation markers",
         "markers.claude-prompt-fingerprint" => "Claude Code prompt fingerprints",
         "markers.agent-trailers" | "markers.agent-trailer-lines" => "AI attribution trailers",
         "markers.tool-calls" => "Tool-call scaffolding",
         "markers.reasoning-block" | "markers.reasoning-trace" => "Reasoning traces",
         "markers.model-identifiers" => "Model identifiers",
-        "markers.chat-ui-disclaimer" | "markers.chat-ui-disclaimer.strip" => {
-            "Chat UI disclaimers"
-        }
+        "markers.chat-ui-disclaimer" | "markers.chat-ui-disclaimer.strip" => "Chat UI disclaimers",
         "markers.chat-ui-residue" => "Chat interface residue",
         "markers.html-tags" => "Raw HTML tags",
         _ => {

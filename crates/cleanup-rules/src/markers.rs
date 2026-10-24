@@ -2047,9 +2047,7 @@ mod tests {
     fn claude_prompt_fingerprint_normalizes_every_encoded_variant() {
         for apostrophe in ['\u{2019}', '\u{02BC}', '\u{02B9}'] {
             for separator in ['-', '/'] {
-                let line = format!(
-                    "Today{apostrophe}s date is 2026{separator}06{separator}30."
-                );
+                let line = format!("Today{apostrophe}s date is 2026{separator}06{separator}30.");
                 let text = format!("context before\n{line}\ncontext after");
                 let found = detect(&ClaudePromptFingerprintRule, &text);
                 assert_eq!(found.len(), 1, "text {text:?}: {found:?}");
@@ -2062,10 +2060,7 @@ mod tests {
         }
 
         // The timezone bit can be present even when the apostrophe is canonical.
-        let found = detect(
-            &ClaudePromptFingerprintRule,
-            "Today's date is 2026/06/30.",
-        );
+        let found = detect(&ClaudePromptFingerprintRule, "Today's date is 2026/06/30.");
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0].replacement.as_deref(),
