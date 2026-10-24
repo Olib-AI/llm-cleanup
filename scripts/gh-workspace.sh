@@ -129,10 +129,11 @@ cmd_wait() {
   local elapsed=0
   local seen_any=0
   while (( elapsed < timeout_secs )); do
-    local state
-    state="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" | python3 -c '
-import json, sys
-runs = json.load(sys.stdin).get("check_runs", [])
+    local raw_checks state
+    raw_checks="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100")"
+    state="$(CHECKS_JSON="$raw_checks" python3 - <<'PY'
+import json, os
+runs = json.loads(os.environ["CHECKS_JSON"]).get("check_runs", [])
 total = len(runs)
 active = [r["name"] for r in runs if r.get("status") != "completed"]
 failed = [
@@ -140,7 +141,8 @@ failed = [
     if r.get("status") == "completed" and r.get("conclusion") not in ("success", "skipped", "neutral")
 ]
 print(json.dumps({"total": total, "active": active, "failed": failed}))
-')"
+PY
+)"
     local total active_count failed_count
     total="$(echo "$state" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')"
     active_count="$(echo "$state" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["active"]))')"
@@ -231,12 +233,12 @@ cmd_extract_patch() {
   tmp_patch="$(mktemp)"
   trap 'rm -f "$tmp_patch"' RETURN
 
-  printf '%s' "$json_payload" | python3 - "$tmp_patch" <<'PY'
-import base64, gzip, json, re, sys
+  CHECKS_JSON="$json_payload" python3 - "$tmp_patch" <<'PY'
+import base64, gzip, json, os, re, sys
 from pathlib import Path
 
 out_path = Path(sys.argv[1])
-data = json.load(sys.stdin)
+data = json.loads(os.environ["CHECKS_JSON"])
 runs = data["check_runs"] if "check_runs" in data else [data]
 
 for r in runs:
