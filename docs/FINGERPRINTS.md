@@ -71,9 +71,12 @@ cleaned without reserializing the run. Signatures placed in a header or footnote
 the same as body text.
 
 External hyperlink relationships in `.rels` are inspected separately. At `aggressive`, exact
-AI-provider `utm_source`/`utm_medium`/`utm_campaign` and Grok `referrer`/`referer` values are
+AI-provider `utm_source`/`utm_medium`/`utm_campaign` and `referrer`/`referer` values are
 removed while other query parameters, fragments, internal relationships, and non-hyperlink
-targets remain unchanged. Markdown inline-link destinations and autolinks get the same
+targets remain unchanged. The provider list covers ChatGPT/OpenAI, Copilot, Perplexity,
+Claude/Anthropic, Gemini, Grok/xAI, DeepSeek, Kimi/Moonshot, Meta AI, Mistral/Le Chat, Qwen,
+GLM/z.ai, and the Poe/You.com/Phind answer engines; a generic `utm_source=newsletter` is
+ordinary analytics and is left alone. Markdown inline-link destinations and autolinks get the same
 structural treatment; code, raw HTML, and image ranges are excluded.
 
 Package metadata is reported separately as a *container finding*: python-docx / JS-`docx` /
