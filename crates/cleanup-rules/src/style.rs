@@ -11,31 +11,8 @@ use cleanup_core::{CleanupLevel, Ctx, Finding, Rule};
 /// bullet lists. Deliberately a curated list, not "all emoji": a rocket in a launch post is
 /// ordinary writing, but a rocket *opening every bullet* is a model habit.
 const DECORATION_EMOJI: &[char] = &[
-    '✨',
-    '🚀',
-    '💡',
-    '🔥',
-    '✅',
-    '🎯',
-    '📌',
-    '📝',
-    '🔑',
-    '⚡',
-    '🌟',
-    '💪',
-    '🙌',
-    '👉',
-    '📊',
-    '🧠',
-    '🛠',
-    '🎉',
-    '🤖',
-    '⏰',
-    '📈',
-    '🧵',
-    '❗',
-    '❓',
-    '⚠',
+    '✨', '🚀', '💡', '🔥', '✅', '🎯', '📌', '📝', '🔑', '⚡', '🌟', '💪', '🙌', '👉', '📊', '🧠',
+    '🛠', '🎉', '🤖', '⏰', '📈', '🧵', '❗', '❓', '⚠',
 ];
 
 fn is_emoji(c: char) -> bool {
@@ -211,23 +188,35 @@ mod tests {
 
     #[test]
     fn flags_decorative_emoji_opener() {
-        assert_eq!(detect(&DecorativeEmojiOpener, "✨ Why this matters").len(), 1);
+        assert_eq!(
+            detect(&DecorativeEmojiOpener, "✨ Why this matters").len(),
+            1
+        );
         // A sentence that happens to start with an emoji used as a noun is not decoration.
         assert!(detect(&DecorativeEmojiOpener, "✅because the build was green").is_empty());
     }
 
     #[test]
     fn flags_emoji_density_per_sentence() {
-        assert_eq!(detect(&EmojiDensity, "Ship it 🚀🔥🎉 today. One 😀 only.").len(), 1);
+        assert_eq!(
+            detect(&EmojiDensity, "Ship it 🚀🔥🎉 today. One 😀 only.").len(),
+            1
+        );
     }
 
     #[test]
     fn flags_markdown_residue() {
-        assert_eq!(detect(&MarkdownResidue, "This is **very** important.").len(), 2);
+        assert_eq!(
+            detect(&MarkdownResidue, "This is **very** important.").len(),
+            2
+        );
     }
 
     #[test]
     fn flags_repeated_bang_not_ellipsis() {
-        assert_eq!(detect(&RepeatedPunctuation, "Really?! Yes!! Done...").len(), 2);
+        assert_eq!(
+            detect(&RepeatedPunctuation, "Really?! Yes!! Done...").len(),
+            2
+        );
     }
 }

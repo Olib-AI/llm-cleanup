@@ -171,7 +171,10 @@ mod tests {
     fn fullwidth_forms_normalize_at_aggressive_only() {
         let input = "Note\u{FF08}one\u{FF09}\u{FF0C}done.\n";
         let (standard_out, _) = clean_str(&PlainText, input, CleanupLevel::Standard);
-        assert_eq!(standard_out, input, "CJK text may legitimately use fullwidth forms");
+        assert_eq!(
+            standard_out, input,
+            "CJK text may legitimately use fullwidth forms"
+        );
 
         let (out, _) = clean_str(&PlainText, input, CleanupLevel::Aggressive);
         assert_eq!(out, "Note(one),done.\n");

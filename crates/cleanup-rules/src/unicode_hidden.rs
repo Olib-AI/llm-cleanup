@@ -319,7 +319,11 @@ mod tests {
         // U+2062 INVISIBLE TIMES, U+2060 WORD JOINER, U+200B ZWSP, U+034F CGJ.
         let text = "2\u{2062}x\u{2060}y\u{200B}z\u{034F}w";
         let found = detect(&crate::typographic::StripInvisibles, text);
-        assert_eq!(found.len(), 4, "expected every invisible removed: {found:?}");
+        assert_eq!(
+            found.len(),
+            4,
+            "expected every invisible removed: {found:?}"
+        );
     }
 
     #[test]

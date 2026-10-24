@@ -490,12 +490,7 @@ impl Rule for ReasoningTraceRule {
 pub struct ReasoningBlockRule;
 
 impl ReasoningBlockRule {
-    const OPENERS: &[&str] = &[
-        "<think",
-        "<thinking>",
-        "```thinking",
-        "```think",
-    ];
+    const OPENERS: &[&str] = &["<think", "<thinking>", "```thinking", "```think"];
     const CLOSERS: &[&str] = &["</think", "</thinking>", "```"];
 }
 
@@ -544,8 +539,8 @@ impl Rule for ReasoningBlockRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cleanup_core::ir::SpanAnchor;
     use cleanup_core::Ctx;
+    use cleanup_core::ir::SpanAnchor;
 
     fn detect(rule: &dyn Rule, text: &str) -> Vec<Finding> {
         let span = ProseSpan::new(SpanAnchor::Bytes(0..text.len()), text);
@@ -578,7 +573,10 @@ mod tests {
         assert!(detect(&rule, "A【note】inside prose.").is_empty());
         let hits = detect(&rule, "Claim【4:0†source】.");
         assert_eq!(hits.len(), 1);
-        assert_eq!(&"Claim【4:0†source】."[hits[0].range.clone()], "【4:0†source】");
+        assert_eq!(
+            &"Claim【4:0†source】."[hits[0].range.clone()],
+            "【4:0†source】"
+        );
     }
 
     #[test]

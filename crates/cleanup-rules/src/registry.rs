@@ -6,8 +6,8 @@ use crate::markers::{
 use crate::schema::{Action, Pack};
 use crate::style::{DecorativeEmojiOpener, EmojiDensity, MarkdownResidue, RepeatedPunctuation};
 use crate::typographic::{
-    NormalizeEllipsis, NormalizeEmDash, NormalizeEnDash, NormalizeFullwidthForms,
-    NormalizeHyphens, NormalizeQuotes, StripInvisibles,
+    NormalizeEllipsis, NormalizeEmDash, NormalizeEnDash, NormalizeFullwidthForms, NormalizeHyphens,
+    NormalizeQuotes, StripInvisibles,
 };
 use crate::unicode_hidden::{
     FlagBidiControls, FlagConfusables, NormalizeExoticSpaces, StripBidiOverrides, StripFillers,
@@ -113,7 +113,11 @@ mod tests {
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
-        assert_eq!(before, ids.len(), "duplicate rule id in the built-in registry");
+        assert_eq!(
+            before,
+            ids.len(),
+            "duplicate rule id in the built-in registry"
+        );
     }
 
     #[test]
