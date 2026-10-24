@@ -258,7 +258,7 @@ impl Rule for FlagConfusables {
         let mut has_latin = false;
         let mut has_homoglyph = false;
 
-        let mut flush = |s: usize, e: usize, latin: bool, homo: bool, out: &mut Vec<Finding>| {
+        let flush = |s: usize, e: usize, latin: bool, homo: bool, out: &mut Vec<Finding>| {
             if latin && homo {
                 out.push(Finding {
                     rule_id: "unicode.confusables.flag".to_string(),

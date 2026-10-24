@@ -241,9 +241,8 @@ impl Rule for NormalizeHyphens {
                 '\u{2212}' => {
                     let prev = text[..i].chars().next_back();
                     let next = text[i + ch.len_utf8()..].chars().next();
-                    let numeric = prev.is_some_and(|c| c.is_ascii_digit())
-                        || next.is_some_and(|c| c.is_ascii_digit());
-                    numeric
+                    prev.is_some_and(|c| c.is_ascii_digit())
+                        || next.is_some_and(|c| c.is_ascii_digit())
                 }
                 _ => false,
             };
