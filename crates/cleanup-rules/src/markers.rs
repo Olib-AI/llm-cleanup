@@ -490,8 +490,11 @@ impl Rule for ReasoningTraceRule {
 pub struct ReasoningBlockRule;
 
 impl ReasoningBlockRule {
-    const OPENERS: &[&str] = &["<think", "<thinking>", "```thinking", "```think"];
-    const CLOSERS: &[&str] = &["</think", "</thinking>", "```"];
+    const OPENERS: &[&str] = &["<think", "<think>", "<thinking>", "```thinking", "```think"];
+    // Both the bare and the angle-bracket-terminated spelling are listed: the tie-break in
+    // `earliest` prefers the longest match, so the `>` is included in the reported range, and
+    // a truncated closer (stream cut off mid-tag) still terminates the block.
+    const CLOSERS: &[&str] = &["</think", "</think>", "</thinking", "</thinking>", "```"];
 
     /// The earliest needle at or after `from`, preferring the *longest* needle when two match
     /// at the same offset. Without the length tie-break `</think` would win over `</thinking>`
