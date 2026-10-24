@@ -75,3 +75,40 @@ impl Rule for LexiconFlagRule {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cleanup_core::ir::SpanAnchor;
+
+    fn detect(rule: &LexiconFlagRule, text: &str) -> Vec<Finding> {
+        let span = ProseSpan::new(SpanAnchor::Bytes(0..text.len()), text);
+        rule.detect(0, &span, &Ctx::new(CleanupLevel::Aggressive))
+    }
+
+    #[test]
+    fn longest_term_wins_so_inflections_match() {
+        // With the default match kind, "delve" would match inside "delves", fail the
+        // word-boundary check, and the inflected form would never be reported.
+        let rule = LexiconFlagRule::new(
+            "test.inflections".to_string(),
+            CleanupLevel::Standard,
+            vec!["delve".to_string(), "delves".to_string()],
+            "test".to_string(),
+        );
+        let found = detect(&rule, "It delves, then we delve.");
+        assert_eq!(found.len(), 2, "got {found:?}");
+        assert_eq!(found[0].range, 3..9);
+    }
+
+    #[test]
+    fn substrings_of_longer_words_do_not_match() {
+        let rule = LexiconFlagRule::new(
+            "test.boundaries".to_string(),
+            CleanupLevel::Standard,
+            vec!["delve".to_string()],
+            "test".to_string(),
+        );
+        assert!(detect(&rule, "The delver indelves.").is_empty());
+    }
+}
