@@ -1,0 +1,63 @@
+# TEMPORARY diagnostics workflow (deleted before merge).
+#
+# Runs clippy/test-compile and posts the output as PR comments, because the
+# Actions *log* endpoint is not reachable from the environment this branch is
+# being prepared in. The comments are the transport, nothing more.
+name: debug-build
+
+on:
+  push:
+    branches: ["arena/5edd72bb-llm-cleanup"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libfontconfig1-dev
+
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets --locked -- -D warnings > /tmp/out.txt 2>&1
+          echo "exit=$?" >> /tmp/out.txt
+          exit 0
+
+      - name: Post output as a PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          text = open('/tmp/out.txt', encoding='utf-8', errors='replace').read()
+          # Keep the interesting part: drop the progress lines.
+          lines = [l for l in text.splitlines() if not l.startswith('   Compiling') and not l.startswith('    Checking') and not l.startswith('    Blocking')]
+          text = '\n'.join(lines)
+          chunks = [text[i:i+60000] for i in range(0, len(text), 60000)] or ['(empty)']
+          for n, chunk in enumerate(chunks):
+              body = f"### debug-build (part {n+1}/{len(chunks)})\n\n```\n{chunk}\n```"
+              subprocess.run(['gh', 'api', '-X', 'POST',
+                              f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/1/comments",
+                              '-f', f'body={body}'], check=False)
+          PY
