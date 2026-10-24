@@ -2,6 +2,8 @@
 # llm-cleanup — Continuous Integration
 # =============================================================================
 # Format, lint, test, and build the CLI + GUI on Linux, macOS, and Windows.
+# The toolchain pin (Rust 1.99.1) lives in rust-toolchain.toml; CI reads it from
+# there so a local build and a CI build are the same compiler.
 
 name: CI
 
@@ -33,21 +35,32 @@ jobs:
             libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
             libfontconfig1-dev
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: "1.99.1"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Verify toolchain pin matches rust-toolchain.toml
+        run: |
+          pinned="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          actual="$(rustc --version | cut -d' ' -f2)"
+          echo "pinned=$pinned actual=$actual"
+          [ "$pinned" = "$actual" ]
 
       - name: Check formatting
         run: cargo fmt --all --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+
+      - name: Check the workspace builds without default features
+        run: cargo check --workspace --locked --no-default-features
 
   build:
     name: Build (${{ matrix.os }})
@@ -69,10 +82,61 @@ jobs:
             libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
             libfontconfig1-dev
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build workspace (CLI + GUI)
         run: cargo build --workspace --release --locked
+
+  # ---------------------------------------------------------------------------
+  # Windows runtime check: build the GUI, stage it exactly the way the release
+  # workflow does (scripts/package-windows.ps1), and prove the Visual C++
+  # runtime DLLs land next to the executable. This catches a rename or removal
+  # of the redistributable layout in a Visual Studio runner image before a
+  # release is cut, which is how "VCRUNTIME140.dll was not found" reaches users.
+  # ---------------------------------------------------------------------------
+  windows-runtime:
+    name: Windows runtime packaging
+    needs: lint-and-test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build GUI (release)
+        run: cargo build --release --locked -p cleanup-gui
+
+      - name: Stage app + Visual C++ runtime
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -StageDir stage -Verify
+
+      - name: Assert the Visual C++ runtime sits next to the executable
+        shell: pwsh
+        run: |
+          $required = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+          foreach ($dll in $required) {
+            $p = Join-Path 'stage' $dll
+            if (-not (Test-Path $p)) { throw "missing $dll — a clean Windows install would fail to launch the app" }
+          }
+          Get-ChildItem stage\*.dll | Select-Object Name, Length | Format-Table
+
+          # Informational: does the binary import the dynamic CRT at all? If a future
+          # build switches to crt-static this stops matching and we can drop the bundle.
+          $importsCrt = Select-String -Path stage\aiclean-gui.exe -Pattern 'VCRUNTIME140.dll','MSVCP140.dll' -SimpleMatch -Quiet
+          Write-Host "binary imports the dynamic CRT: $importsCrt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aiclean-gui-windows-amd64-ci
+          path: stage/
+          retention-days: 7

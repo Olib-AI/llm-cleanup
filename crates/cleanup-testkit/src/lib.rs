@@ -1,19 +1,23 @@
 //! Helpers to run the full pipeline over in-memory documents and assert the invariants
 //! that make the tool trustworthy: structure preservation, no-op byte-identity, idempotency.
 
-use cleanup_core::{CleanupLevel, Ctx, Format, clean};
+use cleanup_core::{CleanReport, CleanupLevel, Ctx, Format, clean};
 use cleanup_rules::builtin_rules;
 
-/// Clean an in-memory document and return `(output_string, edits_applied)`.
-pub fn clean_str(fmt: &dyn Format, input: &str, level: CleanupLevel) -> (String, usize) {
+/// Clean an in-memory document and return the output plus the full pipeline report, so tests
+/// can assert on *flags* (what was reported) and not only on edits.
+pub fn analyze(fmt: &dyn Format, input: &str, level: CleanupLevel) -> (String, CleanReport) {
     let doc = fmt.parse(input.as_bytes()).expect("parse");
     let rules = builtin_rules();
     let cx = Ctx::new(level);
     let (out, report) = clean(fmt, &doc, &rules, &cx).expect("clean");
-    (
-        String::from_utf8(out).expect("utf-8 output"),
-        report.edits_applied,
-    )
+    (String::from_utf8(out).expect("utf-8 output"), report)
+}
+
+/// Clean an in-memory document and return `(output_string, edits_applied)`.
+pub fn clean_str(fmt: &dyn Format, input: &str, level: CleanupLevel) -> (String, usize) {
+    let (out, report) = analyze(fmt, input, level);
+    (out, report.edits_applied)
 }
 
 /// Assert that cleaning is idempotent: `clean(clean(x)) == clean(x)`.
@@ -109,5 +113,131 @@ mod tests {
             out.contains("thin space"),
             "exotic space becomes a regular space"
         );
+    }
+    // -----------------------------------------------------------------------
+    // October 2026 fingerprint coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn chat_template_tokens_are_flagged_then_removed() {
+        let input = "Answer<|im_end|> done.\n";
+
+        // Flagged, never silently deleted, at the light and standard levels.
+        let (light_out, light_report) = analyze(&PlainText, input, CleanupLevel::Light);
+        assert_eq!(light_out, input, "flags never edit the text");
+        assert!(
+            light_report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.chat-tokens"),
+            "chat-template token should be reported"
+        );
+
+        // Removed at aggressive: it is a serialization artifact, never author text.
+        let (out, edits) = clean_str(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, "Answer done.\n");
+        assert!(edits >= 1);
+    }
+
+    #[test]
+    fn chatgpt_citation_artifacts_are_reported_not_removed() {
+        let input = "Revenue grew\u{3010}12\u{2020}L20-L24\u{3011} in Q3.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, input, "citation markers are reported for review only");
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.citation-brackets"),
+            "expected a citation-bracket flag, got {:?}",
+            report.flagged_by_rule
+        );
+    }
+
+    #[test]
+    fn agent_attribution_trailers_are_reported() {
+        let input = "Fix the parser.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Standard);
+        assert_eq!(out, input);
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.agent-trailers")
+        );
+    }
+
+    #[test]
+    fn fullwidth_forms_normalize_at_aggressive_only() {
+        let input = "Note\u{FF08}one\u{FF09}\u{FF0C}done.\n";
+        let (standard_out, _) = clean_str(&PlainText, input, CleanupLevel::Standard);
+        assert_eq!(
+            standard_out, input,
+            "CJK text may legitimately use fullwidth forms"
+        );
+
+        let (out, _) = clean_str(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, "Note(one),done.\n");
+    }
+
+    #[test]
+    fn mixed_script_homoglyphs_are_flagged() {
+        let input = "Pay at p\u{0430}ypal today.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, input, "mixed-script words are reported, not rewritten");
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "unicode.confusables.flag")
+        );
+    }
+
+    #[test]
+    fn reasoning_blocks_are_flagged_and_stay_untouched() {
+        let input = "Answer. <think>let me reconsider</think>Done.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Standard);
+        assert_eq!(out, input);
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.reasoning-block")
+        );
+    }
+
+    #[test]
+    fn new_invisible_classes_are_stripped_at_light() {
+        // Math-mode invisibles, a shorthand format control and a filler glyph.
+        let input = "a\u{2062}b\u{034F}c\u{3164}d\n";
+        let (out, _) = clean_str(&PlainText, input, CleanupLevel::Light);
+        assert!(out.contains("ab"), "U+2062 removed: {out:?}");
+        assert!(out.contains("bc"), "U+034F removed: {out:?}");
+        // The filler is only stripped at standard (it can be legitimate in braille/CJK text).
+        assert!(out.contains('\u{3164}'));
+        let (standard_out, _) = clean_str(&PlainText, input, CleanupLevel::Standard);
+        assert!(!standard_out.contains('\u{3164}'));
+    }
+
+    #[test]
+    fn aggressive_cleaning_is_idempotent_on_a_mixed_fingerprint_document() {
+        let input = "It's worth noting\u{202F}that\u{200B} we \u{201C}delve\u{201D} into\
+                     \u{2014}revenue\u{2026} and 2019\u{2013}2024 too.\n";
+        assert_idempotent(&PlainText, input, CleanupLevel::Aggressive);
+    }
+
+    #[test]
+    fn clean_text_stays_byte_identical() {
+        // A document with no fingerprints at all must come back untouched at every level.
+        let input = "The parser reads a file and writes a file. Nothing else.\n";
+        for level in [
+            CleanupLevel::Light,
+            CleanupLevel::Standard,
+            CleanupLevel::Aggressive,
+        ] {
+            let (out, edits) = clean_str(&PlainText, input, level);
+            assert_eq!(out, input, "level {level} changed clean text");
+            assert_eq!(edits, 0, "level {level} applied edits to clean text");
+        }
     }
 }

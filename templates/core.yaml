@@ -6,15 +6,22 @@
 # the engine constructs flag-only rules from these term lists at load time. This file is the
 # template you (or a user) extend — the future engine will drive replace/transform rules from
 # YAML too. See DESIGN.md §7.
+#
+# Everything in this pack is FLAG-ONLY: it points at wording, it never rewrites it. Term
+# lists were refreshed against the Graphite "AI Tells" studies (Sept/Oct 2026, 90k
+# generations across nine model families), provider documentation, and observed UI residue.
+# Model-version-specific terms are grouped by family so they can be retired when a model
+# stops using them. Coverage table: docs/FINGERPRINTS.md.
 
 schema_version: 1
 pack:
   id: builtin.core
-  version: 0.1.0
-  title: Core AI-fingerprint rules
+  version: 0.2.0
+  title: Core AI-fingerprint rules (October 2026)
   license: MIT
 
 rules:
+  # --- Vocabulary -----------------------------------------------------------
   - id: lexical.overused-verbs
     description: AI-favored verbs — flagged for review (never auto-replaced)
     category: lexical
@@ -22,7 +29,10 @@ rules:
     action: flag
     severity: medium
     terms: [delve, leverage, utilize, harness, streamline, underscore, foster,
-            facilitate, spearhead, elevate, unlock, unleash, embody, supercharge]
+            facilitate, spearhead, elevate, unlock, unleash, embody, supercharge,
+            navigate, reimagine, redefine, reshape, galvanize, orchestrate,
+            operationalize, catalyze, amplify, illuminate, demystify, unpack,
+            champion, empower]
 
   - id: lexical.overused-nouns
     description: AI-favored nouns and metaphors — flagged for review
@@ -31,7 +41,9 @@ rules:
     action: flag
     severity: medium
     terms: [tapestry, testament, landscape, realm, synergy, paradigm, ecosystem,
-            cornerstone, beacon, bedrock, nexus, interplay, plethora, myriad]
+            cornerstone, beacon, bedrock, nexus, interplay, plethora, myriad,
+            journey, quest, canvas, mosaic, symphony, fabric, scaffold, flywheel,
+            "north star", value proposition, "deep dive", "double down"]
 
   - id: lexical.inflated-adjectives
     description: Promotional / inflated adjectives — flagged for review
@@ -41,17 +53,45 @@ rules:
     severity: low
     terms: [robust, seamless, comprehensive, meticulous, pivotal, crucial, vital,
             transformative, innovative, multifaceted, holistic, nuanced, intricate,
-            unparalleled, cutting-edge, game-changing, state-of-the-art]
+            unparalleled, cutting-edge, game-changing, state-of-the-art, impactful,
+            actionable, world-class, best-in-class, future-proof, next-generation,
+            bespoke, curated, thought-provoking, dependable, indispensable,
+            mission-critical]
 
+  - id: lexical.llm-tics
+    description: Single words that the 2026 models over-use relative to human writers
+    category: lexical
+    level: aggressive
+    action: flag
+    severity: low
+    terms: [notably, arguably, ultimately, fundamentally, inherently, invariably,
+            ostensibly, decidedly, remarkably, tellingly, crucially, importantly,
+            holistic, robustly, simply]
+
+  - id: lexical.hedges
+    description: Hedge stacking — assistant register rather than a point of view
+    category: lexical
+    level: aggressive
+    action: flag
+    severity: low
+    terms: [perhaps, potentially, arguably, conceivably, presumably, generally,
+            typically, usually, often, sometimes, relatively, fairly, somewhat,
+            "it depends", "that said", "in some cases", "to some extent"]
+
+  # --- Phrasing -------------------------------------------------------------
   - id: phrasal.throat-clearing
     description: Filler frames AI uses to open sentences (auto-removal is a future repair-aware rule)
     category: phrasal
     level: standard
     action: flag
     severity: high
-    terms: ["it's worth noting", "it is important to note", "it should be noted",
-            "in today's fast-paced world", "when it comes to", "a testament to",
-            "navigating the complexities of", "dive into", "embark on a journey"]
+    terms: ["it's worth noting", "it is worth noting", "it is important to note",
+            "it should be noted", "in today's fast-paced world", "when it comes to",
+            "a testament to", "navigating the complexities of", "dive into",
+            "embark on a journey", "at the end of the day", "needless to say",
+            "with that in mind", "here's the thing", "the bottom line is",
+            "in the ever-evolving landscape", "in the realm of", "at its core",
+            "the real question is", "in a nutshell", "spoiler alert"]
 
   - id: phrasal.machine-residue
     description: Chat/model leakage that should never appear in finished prose
@@ -59,31 +99,154 @@ rules:
     level: light
     action: flag
     severity: high
-    terms: ["as an ai", "as a large language model", "i hope this helps",
-            "certainly!", "great question"]
+    terms: ["as an ai", "as a large language model", "as an ai language model",
+            "as an ai assistant", "i hope this helps", "certainly!", "great question",
+            "i cannot fulfill", "i'm unable to", "i can't help with that",
+            "i don't have personal opinions", "my knowledge cutoff",
+            "my training data", "as of my last update",
+            "i cannot browse", "i can't browse the internet",
+            "i don't have access to real-time"]
 
-  # --- Provider-leaning phrase tells (researched 2026-05; flag-only, attribution is approximate) ---
   - id: phrasal.chatgpt-residue
-    description: Assistant/chat residue common in ChatGPT/GPT outputs — should never appear in finished prose
+    description: Assistant/chat residue common in ChatGPT/GPT-5.x/GPT-6 outputs — should never appear in finished prose
     category: phrasal
     level: light
     action: flag
+    severity: high
     terms: ["as an ai,", "as an ai language model", "i'm sorry, but i can",
             "i cannot fulfill", "sure! here", "sure, here's", "let me know if you",
-            "is there anything else", "i hope this helps!"]
+            "is there anything else", "i hope this helps!",
+            "here's a breakdown", "let's break this down", "here's how",
+            "would you like me to", "do you want me to", "shall i continue",
+            "here's the updated", "let me know if you'd like"]
+
+  - id: phrasal.claude-residue
+    description: Phrasing and register that Anthropic's Claude models favour (Opus 5.x, Sonnet 5, Fable/Mythos 5.1)
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["i'd be happy to", "happy to help", "you're absolutely right",
+            "that's a great question", "i appreciate you", "let me be direct",
+            "to be clear", "the honest answer", "the single most",
+            "single most important", "what matters here", "why it matters",
+            "this matters because", "and that matters because",
+            "less like a", "more like a", "not simply",
+            "here's what i'd recommend", "here's my take"]
 
   - id: phrasal.gemini-affirmations
-    description: Opening affirmations common in Gemini/assistant outputs
+    description: Opening affirmations and formal transitions common in Gemini 3.x / AI Overviews output
     category: phrasal
     level: standard
     action: flag
+    severity: medium
     terms: ["absolutely!", "of course!", "i'd be happy to", "here are a few",
-            "in essence,", "it's important to remember", "it's worth mentioning"]
+            "in essence,", "it's important to remember", "it's worth mentioning",
+            "furthermore,", "moreover,", "additionally,", "consequently,",
+            "in addition,", "as such,", "therefore,", "thus,"]
 
-  - id: stylistic.signpost-transitions
+  - id: phrasal.negative-parallelism
+    description: Negative parallelism (not just X but Y; less like X, more like Y) — the dominant 2026 framing tell
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: high
+    terms: ["not just", "not only", "more than just", "isn't just", "is not just",
+            "not merely", "not simply", "less like", "not because", "but rather",
+            "rather than", "instead of merely", "it's not about", "it isn't about"]
+
+  - id: phrasal.superlative-framing
+    description: Superlative framing ("the single most", "one of the most important") — measured at 100x+ human rate for Claude Opus 5
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["one of the most", "the single most", "the most important thing",
+            "arguably the", "the defining", "the definitive", "unquestionably",
+            "without a doubt", "beyond question"]
+
+  - id: phrasal.sycophancy
+    description: Flattery and offer-to-continue closers — assistant register, not editorial voice
+    category: phrasal
+    level: standard
+    action: flag
+    severity: high
+    terms: ["great question", "excellent question", "fantastic question",
+            "you're absolutely right", "that's a fantastic", "happy to help",
+            "let me know if", "feel free to", "would you like me to",
+            "is there anything else", "just let me know", "i'm here to help",
+            "hope this helps", "don't hesitate to"]
+
+  - id: phrasal.formal-transitions
     description: Over-signposting transitions common across LLMs (notably ChatGPT and Gemini)
     category: stylistic
     level: aggressive
     action: flag
+    severity: low
     terms: ["moreover,", "furthermore,", "that being said", "without further ado",
-            "buckle up", "in conclusion,", "in summary,", "to sum up"]
+            "buckle up", "in conclusion,", "in summary,", "to sum up",
+            "all in all", "all things considered", "on the whole",
+            "it goes without saying", "last but not least"]
+
+  - id: phrasal.invitation-openers
+    description: Invitations to keep reading — a structural habit of assistant prose
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["let's dive in", "let's dive into", "let's explore", "let's break it down",
+            "let's take a look", "let's unpack", "let's get into", "imagine this",
+            "picture this", "consider this", "think of it as", "here's the deal"]
+
+  - id: phrasal.fake-authority
+    description: Unattributed appeals to evidence — a precision tell of generated copy
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["studies show", "research shows", "studies have shown", "experts agree",
+            "experts say", "scientists agree", "it's widely known",
+            "it is widely believed", "many people believe", "industry experts",
+            "best practices suggest", "data suggests", "evidence suggests"]
+
+  - id: phrasal.ai-disclaimer
+    description: Provenance disclaimers and disclosures added to (or left in) documents
+    category: phrasal
+    level: light
+    action: flag
+    severity: high
+    terms: ["this document was generated", "this article was generated",
+            "generated with the assistance of ai", "written by ai",
+            "created using ai", "co-authored with ai", "ai-assisted",
+            "ai-generated", "generated by an ai", "produced with ai",
+            "this content was created using", "ai writing assistant"]
+
+  - id: phrasal.model-self-reference
+    description: The assistant narrating itself inside the document
+    category: phrasal
+    level: standard
+    action: flag
+    severity: high
+    terms: ["as an ai language model, i", "i'm an ai assistant",
+            "i am an ai assistant", "i'm just a language model",
+            "i don't have feelings", "i don't have experiences",
+            "i cannot feel", "i can't feel", "i don't have a body",
+            "my knowledge cutoff", "my training data"]
+
+  # --- Structure and formatting --------------------------------------------
+  - id: structural.markdown-tells
+    description: Markdown emitted into a non-Markdown container (plain text, DOCX) — raw model output pasted verbatim
+    category: structural
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["## ", "### ", "- [ ]", "- [x]", "1. **", "> **"]
+
+  - id: structural.heading-emoji
+    description: Decorative heading emoji ("✨ Why it matters") — a formatting habit, not a word choice
+    category: structural
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["why it matters", "what this means for you", "the bottom line",
+            "key takeaways", "what's next", "how it works", "the takeaway"]

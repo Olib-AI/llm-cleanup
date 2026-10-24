@@ -21,3 +21,6 @@ anyhow = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
+
+[lints]
+workspace = true

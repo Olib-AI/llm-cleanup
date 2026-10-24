@@ -1,0 +1,104 @@
+# =============================================================================
+# llm-cleanup — Dependency & supply-chain security
+# =============================================================================
+# Runs `cargo audit` against the live RustSec advisory database:
+#   * on every pull request and push that touches dependencies,
+#   * on a daily schedule (a new advisory must fail the build even when nothing
+#     changed in this repository),
+#   * on demand.
+#
+# The ignore list lives in `.cargo/audit.toml` and is reviewed each release
+# (see SECURITY.md). New vulnerabilities are never ignored silently.
+
+name: Security audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/Cargo.toml"
+      - ".cargo/audit.toml"
+      - ".github/workflows/security.yml"
+      - "rust-toolchain.toml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/Cargo.toml"
+      - ".cargo/audit.toml"
+      - ".github/workflows/security.yml"
+      - "rust-toolchain.toml"
+  schedule:
+    # Daily at 06:17 UTC so a freshly published advisory is caught within a day.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # cargo-audit: the authoritative check. Fails on vulnerabilities and on
+  # unsound (informational) advisories; unmaintained crates are reported.
+  # ---------------------------------------------------------------------------
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+
+      # Prebuilt binary, pinned to the action's tested version; no compile time.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: cargo audit (policy from .cargo/audit.toml)
+        run: cargo audit --deny unsound
+
+      - name: Assert the toolchain pin is what we audited against
+        run: |
+          pinned="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          actual="$(rustc --version | cut -d' ' -f2)"
+          echo "pinned=$pinned actual=$actual"
+          [ "$pinned" = "$actual" ] || { echo "::error::rust-toolchain.toml ($pinned) != CI toolchain ($actual)"; exit 1; }
+
+      - name: Machine-readable report (uploaded on every run)
+        if: always()
+        run: cargo audit --json > cargo-audit.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cargo-audit-report
+          path: cargo-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # rustsec/audit-check annotates the pull request with the affected dependency
+  # path, so a reviewer sees which feature pulled an advisory in.
+  # ---------------------------------------------------------------------------
+  audit-check:
+    name: RustSec audit-check (PR annotations)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Keep parity with .cargo/audit.toml.
+          ignore: RUSTSEC-2026-0367,RUSTSEC-2026-0368,RUSTSEC-2026-0369,RUSTSEC-2026-0194,RUSTSEC-2026-0195

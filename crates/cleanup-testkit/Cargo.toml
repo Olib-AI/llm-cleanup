@@ -10,3 +10,6 @@ description = "Shared test helpers and pipeline invariants for llm-cleanup."
 cleanup-core = { workspace = true }
 cleanup-formats = { workspace = true }
 cleanup-rules = { workspace = true }
+
+[lints]
+workspace = true

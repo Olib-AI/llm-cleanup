@@ -11,4 +11,7 @@ cleanup-core = { workspace = true }
 cleanup-formats = { workspace = true }
 pulldown-cmark = { workspace = true }
 thiserror = { workspace = true }
-docx-rs = "0.4"
+docx-rs = { workspace = true }
+
+[lints]
+workspace = true
