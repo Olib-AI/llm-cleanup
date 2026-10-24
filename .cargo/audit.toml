@@ -27,12 +27,6 @@ ignore = [
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
 
-    # --- webbrowser: argument injection on Unix -------------------------------
-    # `webbrowser::open*` is pulled in by the Slint winit backend and is never
-    # called by this workspace (no links are opened from the app).
-    # Owner: upstream i-slint-backend-winit. Revisit when Slint bumps webbrowser.
-    "RUSTSEC-2026-0257",
-
     # --- quick-xml: quadratic attribute parsing / namespace flooding ----------
     # Our own direct dependency is fixed (quick-xml 0.41.0, see Cargo.toml).
     # Two older copies remain in the graph and both are outside the code path that

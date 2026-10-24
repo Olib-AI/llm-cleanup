@@ -51,14 +51,14 @@ Fixed in this release:
 | RUSTSEC-2026-0190 | `anyhow` (direct) | Unsoundness in `Error::downcast_mut()` — **upgraded 1.0.102 → 1.0.104** and the requirement in `Cargo.toml` now states the patched minimum. |
 | RUSTSEC-2026-0221 | `event-listener` | `!Send` tags can cross thread boundaries — **upgraded 5.4.1 → 5.4.2**. |
 | RUSTSEC-2026-0186 | `memmap2` | Unchecked pointer offset in `advise_range`/`flush_range` — **upgraded 0.9.10 → 0.9.12**. |
+| RUSTSEC-2026-0257 | `webbrowser` | Unix `BROWSER` argument injection in `webbrowser::open*` — **upgraded 1.2.1 → 1.2.5**. Slint's winit backend is the only user; the workspace never opens a URL itself. |
 | yanked | `clipboard-win` | The lock pinned a yanked 5.4.1; **moved to 5.4.3**. |
 
 Reviewed and accepted (not reachable):
 
 | Advisory | Crate | Why it is not reachable | Revisit |
 | -------- | ----- | ----------------------- | ------- |
-| RUSTSEC-2026-0367 / -0368 / -0369 | `zip` 2.4.2, 0.6.6 | All three are `extract()`-only (SUID/SGID preservation, symlink target escapes). We never extract archives to disk: entries are read into memory and written back with `raw_copy_file`. | When `zip` 9.x is adopted |
-| RUSTSEC-2026-0257 | `webbrowser` 1.2.1 | Argument injection in `webbrowser::open*`; pulled in by the Slint winit backend, never called by this workspace. | When Slint bumps it |
+| RUSTSEC-2026-0367 / -0368 / -0369 | `zip` 2.4.2, 0.6.6 | All three are `extract()`-only (SUID/SGID preservation, symlink target escapes). We never extract archives to disk: entries are read into memory and written back with `raw_copy_file`. | Blocked on `zip` 9: it changes `ZipFile::name()` to return a `Result<PathBuf>` and adds `typed-path`, so the DOCX adapter needs a real migration, not a version bump (tracked for 0.3). |
 | RUSTSEC-2026-0194 / -0195 | `quick-xml` 0.36.2, 0.39.4 | Older copies used by docx-rs (export/write path) and wayland-scanner/zbus_xml (Linux integration, trusted input). Our reader is on 0.41.0. | When docx-rs ≥ 0.4.21 lands |
 
 Informational advisories (unmaintained/unsound transitive crates) are printed by
