@@ -33,6 +33,7 @@ jobs:
           cargo update -p event-listener --precise 5.4.2 || true
           cargo update -p memmap2 --precise 0.9.12 || true
           cargo update -p clipboard-win --precise 5.4.3 || true
+          cargo update -p webbrowser --precise 1.2.5 || true
 
       - name: Format
         run: cargo fmt --all
@@ -46,5 +47,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "style: cargo fmt (Rust 1.99.1)"
+          git commit -m "chore: rustfmt + dependency bump (Rust 1.99.1)"
           git push origin "HEAD:${{ github.ref_name }}"
