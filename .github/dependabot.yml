@@ -16,12 +16,16 @@ updates:
       prefix: "deps"
     groups:
       # Parsers get their own PR: they are security-relevant and need review.
+      # Major updates open standalone PRs so breaking API migrations never block
+      # security or patch updates across the rest of the group.
       parsers:
         patterns: ["quick-xml", "zip", "pulldown-cmark", "serde*", "aho-corasick"]
+        update-types: ["minor", "patch"]
       # Everything else can land together once CI is green.
       rust-dependencies:
         patterns: ["*"]
         exclude-patterns: ["quick-xml", "zip", "pulldown-cmark", "serde*", "aho-corasick"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: "/"

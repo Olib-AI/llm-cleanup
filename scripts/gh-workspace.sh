@@ -66,10 +66,12 @@ cmd_status() {
   local sha
   sha="$(resolve_sha "$ref")"
   echo "== Check Runs for $ref ($sha) =="
-  gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" | python3 -c '
-import json, sys
+  local payload
+  payload="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100")"
+  CHECKS_JSON="$payload" python3 - <<'PY'
+import json, os, sys
 
-data = json.load(sys.stdin)
+data = json.loads(os.environ["CHECKS_JSON"])
 runs = data.get("check_runs", [])
 if not runs:
     print("  (no check runs found yet)")
@@ -80,7 +82,9 @@ for r in runs:
     concl = r.get("conclusion") or "-"
     out = r.get("output") or {}
     title = out.get("title") or ""
-    print(f"- [{status}/{concl}] {r[\"name\"]} (id={r[\"id\"]}) {title}")
+    name = r.get("name")
+    rid = r.get("id")
+    print(f"- [{status}/{concl}] {name} (id={rid}) {title}")
 
 print("")
 for r in runs:
@@ -88,8 +92,10 @@ for r in runs:
     summary = (out.get("summary") or "").strip()
     text = (out.get("text") or "").strip()
     if summary or text:
+        name = r.get("name")
+        rid = r.get("id")
         print("=" * 80)
-        print(f"REPORT: {r[\"name\"]} (id={r[\"id\"]}, conclusion={r.get(\"conclusion\")})")
+        print(f"REPORT: {name} (id={rid}, conclusion={r.get('conclusion')})")
         print("=" * 80)
         if summary:
             print(summary)
@@ -97,7 +103,7 @@ for r in runs:
         if text:
             print(text)
             print("")
-'
+PY
 }
 
 cmd_wait() {

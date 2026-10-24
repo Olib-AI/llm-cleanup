@@ -29,28 +29,29 @@ cleanup-formats = { path = "crates/cleanup-formats" }
 cleanup-rules = { path = "crates/cleanup-rules" }
 cleanup-convert = { path = "crates/cleanup-convert" }
 # External (pinned to live registry versions as of 2026-10-24; see SECURITY.md)
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 serde_norway = "0.9.42"        # maintained serde_yaml fork (serde_yaml & serde_yml are deprecated)
-thiserror = "2.0.18"
+thiserror = "2.0.21"
 # 1.0.103 fixes RUSTSEC-2026-0190 (unsound `Error::downcast_mut()`).
 anyhow = "1.0.104"
-clap = { version = "4.6.1", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 # Multi-keyword literal matcher (Aho-Corasick) for signature + lexicon rules.
-aho-corasick = "1.1.4"
-similar = "3.1.1"
-unicode-segmentation = "1.13.2"
+aho-corasick = "1.1.5"
+similar = "3.2.1"
+unicode-segmentation = "1.13.3"
 slint = "1.16.1"
 slint-build = "1.16.1"
 rfd = "0.17.2"
-# 0.41.0 is the first release patched for RUSTSEC-2026-0194 / RUSTSEC-2026-0195
-# (quadratic attribute parsing and unbounded namespace allocation on untrusted XML).
-quick-xml = "0.41.0"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-# DOCX export only. 0.4.20 is the newest release whose OOXML writer we have
-# validated; see SECURITY.md for the transitive-advisory triage on docx-rs.
-docx-rs = "0.4.20"
+# 0.41.0+ is patched for RUSTSEC-2026-0194 / RUSTSEC-2026-0195
+# (quadratic attribute parsing and unbounded namespace allocation on untrusted XML);
+# 0.42.0 adopts UTF-8 `&str` event types and tightens namespace binding caps.
+quick-xml = "0.42.0"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# DOCX export only. 0.4.22 drops the older quick-xml 0.36 and zip 0.6 transitive copies;
+# see SECURITY.md for the transitive-advisory triage on docx-rs.
+docx-rs = "0.4.22"
 
 [workspace.lints.rust]
 # The workspace is safe Rust by construction. `deny` (rather than `forbid`) keeps a macro
