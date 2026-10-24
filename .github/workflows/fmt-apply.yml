@@ -27,6 +27,13 @@ jobs:
           toolchain: "1.99.1"
           components: rustfmt
 
+      - name: Bump the crates flagged by cargo audit
+        run: |
+          cargo update -p anyhow --precise 1.0.104 || true
+          cargo update -p event-listener --precise 5.4.2 || true
+          cargo update -p memmap2 --precise 0.9.12 || true
+          cargo update -p clipboard-win --precise 5.4.3 || true
+
       - name: Format
         run: cargo fmt --all
 
