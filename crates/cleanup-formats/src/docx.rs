@@ -59,10 +59,13 @@ fn part_names(zip_bytes: &[u8]) -> Result<Vec<String>> {
         .map_err(|e| CoreError::Parse(format!("not a valid .docx (zip) file: {e}")))?;
     (0..archive.len())
         .map(|i| {
-            archive
+            let f = archive
                 .by_index_raw(i)
-                .map(|f| f.name().to_string())
-                .map_err(|e| CoreError::Parse(format!("zip read: {e}")))
+                .map_err(|e| CoreError::Parse(format!("zip read: {e}")))?;
+            let name = f
+                .name()
+                .map_err(|e| CoreError::Parse(format!("zip entry name: {e}")))?;
+            Ok(name.into_owned())
         })
         .collect()
 }
@@ -167,15 +170,15 @@ fn paragraph_wt_ranges(xml: &[u8]) -> Result<Vec<Vec<Range<usize>>>> {
         let pre = reader.buffer_position() as usize;
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"w:p" => current = Some(Vec::new()),
+                "w:p" => current = Some(Vec::new()),
                 // text content begins right after the `<w:t …>` start tag
-                b"w:t" => wt_start = Some(reader.buffer_position() as usize),
+                "w:t" => wt_start = Some(reader.buffer_position() as usize),
                 _ => {}
             },
             Ok(Event::Empty(e)) => {
                 // A tab/line-break/carriage-return separates runs visually; flush the runs
                 // accumulated so far as one span so a phrase never glues across the break.
-                if matches!(e.name().as_ref(), b"w:tab" | b"w:br" | b"w:cr")
+                if matches!(e.name().as_ref(), "w:tab" | "w:br" | "w:cr")
                     && let Some(segs) = current.as_mut()
                     && !segs.is_empty()
                 {
@@ -183,14 +186,14 @@ fn paragraph_wt_ranges(xml: &[u8]) -> Result<Vec<Vec<Range<usize>>>> {
                 }
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"w:t" => {
+                "w:t" => {
                     if let Some(s) = wt_start.take()
                         && pre > s
                     {
                         push_seg(&mut paragraphs, &mut current, s..pre);
                     }
                 }
-                b"w:p" => {
+                "w:p" => {
                     if let Some(segs) = current.take()
                         && !segs.is_empty()
                     {
@@ -320,12 +323,12 @@ fn rezip(original: &[u8], replacements: &[(String, Vec<u8>)]) -> Result<Vec<u8>>
 fn xml_skeleton(xml: &[u8]) -> Result<String> {
     fn write_open(out: &mut String, e: &quick_xml::events::BytesStart, self_closing: bool) {
         out.push('<');
-        out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+        out.push_str(e.name().as_ref());
         for a in e.attributes().flatten() {
             out.push(' ');
-            out.push_str(&String::from_utf8_lossy(a.key.as_ref()));
+            out.push_str(a.key.as_ref());
             out.push('=');
-            out.push_str(&String::from_utf8_lossy(&a.value));
+            out.push_str(&a.value);
         }
         out.push_str(if self_closing { "/>" } else { ">" });
     }
@@ -338,21 +341,21 @@ fn xml_skeleton(xml: &[u8]) -> Result<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 write_open(&mut out, &e, false);
-                if e.name().as_ref() == b"w:t" {
+                if e.name().as_ref() == "w:t" {
                     in_wt = true;
                 }
             }
             Ok(Event::Empty(e)) => write_open(&mut out, &e, true),
             Ok(Event::End(e)) => {
-                if e.name().as_ref() == b"w:t" {
+                if e.name().as_ref() == "w:t" {
                     in_wt = false;
                 }
                 out.push_str("</");
-                out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+                out.push_str(e.name().as_ref());
                 out.push('>');
             }
             Ok(Event::Text(t)) if !in_wt => {
-                out.push_str(&String::from_utf8_lossy(t.as_ref()));
+                out.push_str(t.as_ref());
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(CoreError::Parse(format!("malformed document.xml: {e}"))),
@@ -404,16 +407,14 @@ fn element_text_ranges(xml: &[u8], wanted: &[&str]) -> Vec<(String, Range<usize>
             Ok(Event::Start(e)) => {
                 let qname = e.name();
                 let local_name = qname.local_name();
-                let local: &[u8] = local_name.as_ref();
-                if let Ok(name) = std::str::from_utf8(local)
-                    && wanted.contains(&name)
-                {
+                let name: &str = local_name.as_ref();
+                if wanted.contains(&name) {
                     open = Some((name.to_string(), reader.buffer_position() as usize));
                 }
             }
             Ok(Event::End(e)) => {
                 if let Some((name, start)) = open.take() {
-                    if e.name().local_name().as_ref() == name.as_bytes() && pre >= start {
+                    if e.name().local_name().as_ref() == name.as_str() && pre >= start {
                         out.push((name, start..pre));
                     } else {
                         // Mismatched close (nested markup): keep waiting for ours.
@@ -551,7 +552,7 @@ fn relationship_url_hits(zip_bytes: &[u8]) -> Vec<RelationshipUrlHit> {
             let pre = reader.buffer_position() as usize;
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e))
-                    if e.name().local_name().as_ref() == b"Relationship" =>
+                    if e.name().local_name().as_ref() == "Relationship" =>
                 {
                     let end = reader.buffer_position() as usize;
                     if let Some((range, replacement)) = relationship_tag_hit(&xml, pre..end) {

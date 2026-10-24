@@ -18,24 +18,22 @@ ignore = [
     # --- zip: extraction-only advisories -------------------------------------
     # All three affect `ZipArchive::extract()` / `ZipStreamReader::extract()`:
     # SUID/SGID bit preservation and symlink-target escapes during *extraction*.
-    # llm-cleanup never extracts to the filesystem. We only read individual entries
-    # out of a package into memory (`by_name`) and copy them back with
-    # `raw_copy_file`, so no path is ever materialised from archive metadata.
-    # Still applicable to the 0.6.6 copy pulled in by docx-rs (write path only).
-    # Owner: upstream zip crate / docx-rs. Revisit when zip >= 9 is adopted.
+    # Our own direct dependency is upgraded to zip 9.1.0 (patched). One older
+    # transitive copy (zip 8.6.0 via docx-rs 0.4.22, write path only) remains in
+    # the lock file; llm-cleanup never extracts archives to the filesystem.
+    # Owner: upstream docx-rs. Revisit when docx-rs adopts zip >= 9.0.1.
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
 
     # --- quick-xml: quadratic attribute parsing / namespace flooding ----------
-    # Our own direct dependency is fixed (quick-xml 0.41.0, see Cargo.toml).
-    # Two older copies remain in the graph and both are outside the code path that
-    # parses user documents:
-    #   * 0.36.2 via docx-rs 0.4.20 — used only to *write* OOXML on export;
+    # Our own direct dependency is fixed (quick-xml 0.42.0, see Cargo.toml), and
+    # docx-rs 0.4.22 moved to quick-xml 0.41.0. One older transitive copy remains
+    # outside the code path that parses user documents:
     #   * 0.39.4 via wayland-scanner / zbus_xml — Linux desktop integration and
     #     build-time code generation, fed by trusted system files only.
-    # The .docx reader that does parse untrusted input is ours and runs on 0.41.0.
-    # Owner: upstream docx-rs / wayland-rs. Revisit when docx-rs >= 0.4.21 ships.
+    # The .docx reader that parses untrusted input is ours and runs on 0.42.0.
+    # Owner: upstream wayland-rs / zbus. Revisit when wayland-scanner / zbus_xml bump quick-xml >= 0.41.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 ]

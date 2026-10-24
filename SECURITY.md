@@ -45,8 +45,9 @@ Fixed in this release:
 
 | Advisory | Crate | Action |
 | -------- | ----- | ------ |
-| RUSTSEC-2026-0194 | `quick-xml` (direct) | Quadratic attribute-parsing DoS on untrusted XML — **upgraded 0.38.4 → 0.41.0**. This is the parser that reads `word/document.xml` from an untrusted `.docx`. |
-| RUSTSEC-2026-0195 | `quick-xml` (direct) | Unbounded namespace allocation — **upgraded 0.38.4 → 0.41.0**. |
+| RUSTSEC-2026-0194 | `quick-xml` (direct) | Quadratic attribute-parsing DoS on untrusted XML — **upgraded 0.38.4 → 0.42.0** (`docx-rs` 0.4.22 also moved off 0.36.2 → 0.41.0). This is the parser that reads `word/document.xml` from an untrusted `.docx`. |
+| RUSTSEC-2026-0195 | `quick-xml` (direct) | Unbounded namespace allocation — **upgraded 0.38.4 → 0.42.0**. |
+| RUSTSEC-2026-0367 / -0368 / -0369 | `zip` (direct) | Archive extraction advisories — **direct dependency migrated 2.4.2 → 9.1.0**. |
 | RUSTSEC-2026-0204 | `crossbeam-epoch` | Invalid pointer dereference in `fmt::Pointer` — **upgraded 0.9.18 → 0.9.21**. |
 | RUSTSEC-2026-0190 | `anyhow` (direct) | Unsoundness in `Error::downcast_mut()` — **upgraded 1.0.102 → 1.0.104** and the requirement in `Cargo.toml` now states the patched minimum. |
 | RUSTSEC-2026-0221 | `event-listener` | `!Send` tags can cross thread boundaries — **upgraded 5.4.1 → 5.4.2**. |
@@ -58,8 +59,8 @@ Reviewed and accepted (not reachable):
 
 | Advisory | Crate | Why it is not reachable | Revisit |
 | -------- | ----- | ----------------------- | ------- |
-| RUSTSEC-2026-0367 / -0368 / -0369 | `zip` 2.4.2, 0.6.6 | All three are `extract()`-only (SUID/SGID preservation, symlink target escapes). We never extract archives to disk: entries are read into memory and written back with `raw_copy_file`. | Blocked on `zip` 9: it changes `ZipFile::name()` to return a `Result<PathBuf>` and adds `typed-path`, so the DOCX adapter needs a real migration, not a version bump (tracked for 0.3). |
-| RUSTSEC-2026-0194 / -0195 | `quick-xml` 0.36.2, 0.39.4 | Older copies used by docx-rs (export/write path) and wayland-scanner/zbus_xml (Linux integration, trusted input). Our reader is on 0.41.0. | When docx-rs ≥ 0.4.21 lands |
+| RUSTSEC-2026-0367 / -0368 / -0369 | `zip` 8.6.0 | Transitive via `docx-rs` 0.4.22 (export/write path only); our direct `.docx` reader/writer is on `zip` 9.1.0, and we never call `extract()`. | When `docx-rs` adopts `zip` ≥ 9.0.1 |
+| RUSTSEC-2026-0194 / -0195 | `quick-xml` 0.39.4 | Transitive via `wayland-scanner`/`zbus_xml` (Linux desktop integration, trusted system input). Our `.docx` reader is on 0.42.0 and `docx-rs` 0.4.22 is on 0.41.0. | When `wayland-scanner` / `zbus_xml` bump `quick-xml` ≥ 0.41 |
 
 Informational advisories (unmaintained/unsound transitive crates) are printed by
 `cargo audit` but do not fail the build; they are tracked by Dependabot.

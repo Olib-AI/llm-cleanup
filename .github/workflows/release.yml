@@ -5,6 +5,9 @@
 # all platforms and the desktop app for macOS / Windows / Linux, sign + notarize
 # the macOS artifacts, and publish a GitHub Release with SHA-256 checksums.
 #
+# Also supports `workflow_dispatch` to dry-run cross-platform CLI + GUI release
+# builds without publishing a GitHub Release.
+#
 # Every job builds with the toolchain pinned in rust-toolchain.toml (Rust 1.99.1).
 
 name: Release
@@ -12,6 +15,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -207,11 +211,12 @@ jobs:
           path: ${{ matrix.artifact }}.tar.gz
 
   # ---------------------------------------------------------------------------
-  # Publish the GitHub Release
+  # Publish the GitHub Release (tags only; skipped on workflow_dispatch dry-runs)
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
     needs: [cli, gui]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
