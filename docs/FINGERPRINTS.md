@@ -143,17 +143,29 @@ Every repaired character goes through the same level-aware punctuation mapping a
 arrived intact, so the result is idempotent at each level: `â€”` becomes `—` at `standard`
 and `--` at `aggressive`.
 
+## C2PA provenance scrubbing & opt-in watermark disruption
+
+- **C2PA / Content Credentials & AI container metadata** are inspected via ISO/IEC 19566-5 JUMBF
+  UUID validation (`63327061-0011-0010-8000-00AA00389B71`) and lossless container splicing across
+  PNG (`caBX`, `iTXt`/`tEXt` XMP, SD/ComfyUI chunks), JPEG (single- and multi-segment `APP11`
+  `JP` XTBox and `APP1` XMP/Extended XMP before `SOS`), WebP (`C2PA` and `XMP ` RIFF chunks with
+  `RIFF` length and `VP8X` flag fixup), SVG (`<metadata>`), HTML (`<link rel="c2pa-manifest">`,
+  `<script type="application/c2pa">`, AI `<meta>` tags), Markdown front matter, DOCX
+  (`META-INF/*.c2pa`, `word/media/*`, `docProps/custom.xml`), C2PA 2.4 Structured Text banners,
+  and C2PA Unstructured Text (`U+FEFF` + `C2PATXT\0` variation-selector frames).
+- **Statistical token watermarks (`SynthID-Text`, `textGrain`)**: standard runs remain strictly
+  non-rewriting on prose words; passing `--dewatermark` enables `watermark.ngram-disrupt`, which
+  applies acyclic phrasal, discourse, and closed-class canonicalizations to shift token offsets
+  and invalidate overlapping 5-gram tournament windows while shielding quotes, URLs, numbers, and
+  identifiers.
+
 ## Out of scope, by design
 
-The Claude Code prompt-date character fingerprint above is **not** Anthropic's newer Claude text
-watermark. Anthropic states that the latter adds no hidden characters: it is a statistical pattern
-in word choice, so deleting Unicode cannot remove it.
-
-| Technique | Owner | Why it cannot be removed here |
-| --------- | ----- | ----------------------------- |
-| SynthID-Text | Google Gemini; basis of Anthropic's 2026 watermark | Statistical: lives in token choice, no characters to strip |
-| textGrain | OpenAI (EU ChatGPT/Codex, Oct 2026) | Statistical, same reason |
-| C2PA / Content Credentials | Claude file exports, OpenAI images and audio, Google media | Cryptographically *signed* provenance manifests. (The unsigned `docProps` author/program fields ARE covered — see *DOCX coverage* — but we do not strip signed claims.) |
+| Technique | Owner | Why it cannot be certified or removed here |
+| --------- | ----- | ------------------------------------------ |
+| Keyed statistical watermark certification (`SynthID-Text`, `textGrain`) | Google Gemini, Anthropic Claude (2026-08-02+), OpenAI ChatGPT / Codex | `--dewatermark` disrupts 5-gram tournament windows, but without the vendor's secret key no offline tool can verify zero residual signal |
+| Pixel- and audio-domain imperceptible watermarks (`SynthID-Image` / `Audio`) | Google Imagen / Veo / Lyria, Meta AudioSeal | Lives in pixel/DCT coefficients or audio waveforms; lossless metadata chunk stripping preserves bit-exact pixels |
+| External C2PA soft-binding registries | Cloud provenance lookup services | Embedded manifests are removed locally, but external perceptual-hash registries can still match an already-indexed asset |
 
 ## Keeping this current
 

@@ -133,6 +133,10 @@ mod tests {
             .0;
         let mut sources = sources.to_vec();
         sources.push((FormatId::Docx, docx));
+        sources.push((
+            FormatId::Html,
+            b"<html><body><h1>Bonjour</h1><p>\xc2\xa1Hola, mundo!</p></body></html>".to_vec(),
+        ));
 
         for (from, bytes) in sources {
             for to in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {

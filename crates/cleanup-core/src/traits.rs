@@ -11,6 +11,13 @@ pub struct Ctx {
     /// Hint that this is a preview run. Rules should behave identically; the *caller*
     /// decides whether to write. Kept on the context for future preview-only heuristics.
     pub dry_run: bool,
+    /// Opt-in statistical watermark disruption (`--dewatermark`).
+    ///
+    /// Default is `false` so standard Light / Standard / Aggressive runs never rewrite
+    /// prose words. When `true`, deterministic closed-class and discourse-level
+    /// canonicalizations break consecutive 5-gram token tournament windows (SynthID-Text,
+    /// textGrain) while leaving code, numbers, URLs, quotes, and named entities intact.
+    pub dewatermark: bool,
 }
 
 impl Ctx {
@@ -18,7 +25,13 @@ impl Ctx {
         Ctx {
             level,
             dry_run: false,
+            dewatermark: false,
         }
+    }
+
+    pub fn with_dewatermark(mut self, dewatermark: bool) -> Self {
+        self.dewatermark = dewatermark;
+        self
     }
 }
 

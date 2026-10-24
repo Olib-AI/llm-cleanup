@@ -1935,6 +1935,10 @@ const UI_DISCLAIMERS: &[&str] = &[
     "DeepSeek can make mistakes. Check important info.",
     "Meta AI can make mistakes.",
     "Le Chat can make mistakes. Check important info.",
+    "Qwen can make mistakes. Check important info.",
+    "Kimi can make mistakes. Check important info.",
+    "NotebookLM can be inaccurate; please double check its responses.",
+    "AI-generated content may be incorrect.",
 ];
 
 /// Interface labels that only make sense inside a chat window: role headers, buttons and
@@ -1950,6 +1954,8 @@ const UI_RESIDUE: &[&str] = &[
     "perplexity said:",
     "deepseek said:",
     "meta ai said:",
+    "kimi said:",
+    "qwen said:",
     "copy code",
     "regenerate response",
     "read aloud",
@@ -1963,6 +1969,7 @@ const UI_RESIDUE: &[&str] = &[
     "can make mistakes",
     "open in claude",
     "open in chatgpt",
+    "open in gemini",
     "start a new chat",
     "temporary chat",
 ];
@@ -1998,6 +2005,294 @@ pub fn chat_ui_residue() -> MarkerRule {
         false,
         UI_RESIDUE,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Google Gemini / AI Studio / NotebookLM grounding citations
+// ---------------------------------------------------------------------------
+
+/// Grounding citation envelopes emitted by Google Gemini, AI Studio, Vertex AI, and
+/// NotebookLM exports: `[cite_start]`, `[cite_end]`, and numeric `[cite: 1, 2, 5]`.
+///
+/// Ordinary scholarly prose such as `[cite: Smith 2024]` is deliberately ignored because
+/// the numeric grammar requires digits and separators only.
+pub struct GeminiCitationRule {
+    strip: bool,
+}
+
+impl GeminiCitationRule {
+    fn scan(text: &str, strip: bool) -> Vec<std::ops::Range<usize>> {
+        let lower = text.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+
+        while let Some(rel) = lower[i..].find("[cite") {
+            let start = i + rel;
+            let rest = &lower[start..];
+            if rest.starts_with("[cite_start]") {
+                let end = start + "[cite_start]".len();
+                out.push(start..end);
+                i = end;
+                continue;
+            }
+            if rest.starts_with("[cite_end]") {
+                let end = start + "[cite_end]".len();
+                out.push(start..end);
+                i = end;
+                continue;
+            }
+            if let Some(after_colon) = rest.strip_prefix("[cite:")
+                && let Some(close_rel) = after_colon.find(']')
+                && close_rel <= 128
+            {
+                let inner = &after_colon[..close_rel];
+                let has_digit = inner.bytes().any(|b| b.is_ascii_digit());
+                let valid_chars = inner
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || matches!(b, b' ' | b',' | b'-' | b':'));
+                if has_digit && valid_chars {
+                    let end = start + "[cite:".len() + close_rel + 1;
+                    // When stripping `Claim [cite: 1, 2].`, also drop the single space before
+                    // `[cite:` if followed immediately by sentence punctuation so no orphan
+                    // space is left before the period.
+                    let adj_start = if strip
+                        && start > 0
+                        && bytes[start - 1] == b' '
+                        && bytes
+                            .get(end)
+                            .is_some_and(|b| matches!(*b, b'.' | b',' | b';' | b':' | b'!' | b'?'))
+                    {
+                        start - 1
+                    } else {
+                        start
+                    };
+                    out.push(adj_start..end);
+                    i = end;
+                    continue;
+                }
+            }
+            i = start + 5;
+        }
+        out
+    }
+}
+
+impl Rule for GeminiCitationRule {
+    fn id(&self) -> &str {
+        if self.strip {
+            "markers.gemini-citations.strip"
+        } else {
+            "markers.gemini-citations"
+        }
+    }
+    fn min_level(&self) -> CleanupLevel {
+        if self.strip {
+            CleanupLevel::Aggressive
+        } else {
+            CleanupLevel::Light
+        }
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        Self::scan(text, self.strip)
+            .into_iter()
+            .map(|range| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: if self.strip {
+                    format!(
+                        "removed Gemini grounding citation marker {:?}",
+                        &text[range.clone()]
+                    )
+                } else {
+                    format!(
+                        "Gemini / NotebookLM grounding citation marker {:?}",
+                        &text[range.clone()]
+                    )
+                },
+                range,
+                replacement: self.strip.then(String::new),
+            })
+            .collect()
+    }
+}
+
+pub fn gemini_citations() -> GeminiCitationRule {
+    GeminiCitationRule { strip: false }
+}
+
+pub fn gemini_citations_strip() -> GeminiCitationRule {
+    GeminiCitationRule { strip: true }
+}
+
+// ---------------------------------------------------------------------------
+// C2PA 2.x Unstructured & Structured Text Manifests
+// ---------------------------------------------------------------------------
+
+/// Decode one Unicode Variation Selector into its C2PA Unstructured Text byte (`U+FE00..=U+FE0F`
+/// -> `0x00..=0x0F`, `U+E0100..=U+E01EF` -> `0x10..=0xFF`).
+fn decode_c2pa_vs_byte(ch: char) -> Option<u8> {
+    let u = ch as u32;
+    if (0xFE00..=0xFE0F).contains(&u) {
+        Some((u - 0xFE00) as u8)
+    } else if (0xE0100..=0xE01EF).contains(&u) {
+        Some((u - 0xE0100 + 0x10) as u8)
+    } else {
+        None
+    }
+}
+
+/// Strip validated C2PA 2.x Unstructured Text manifests (`U+FEFF` + variation-selector-encoded
+/// `C2PATXT\0` + version + JUMBF length + JUMBF payload).
+///
+/// Ordinary emoji/CJK variation selectors are 1 character long and never decode to the 8-byte
+/// `C2PATXT\0` magic header, so stripping at [`CleanupLevel::Light`] has zero false positives.
+pub struct C2paTextWrapperRule;
+
+impl C2paTextWrapperRule {
+    const MAGIC: &[u8; 8] = b"C2PATXT\0";
+}
+
+impl Rule for C2paTextWrapperRule {
+    fn id(&self) -> &str {
+        "markers.c2pa-text-manifest"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Light
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+
+        while cursor < text.len() {
+            let ch = text[cursor..].chars().next().expect("cursor < text.len()");
+            let (frame_start, vs_start) = if ch == '\u{FEFF}' {
+                let after_bom = cursor + ch.len_utf8();
+                if text[after_bom..]
+                    .chars()
+                    .next()
+                    .and_then(decode_c2pa_vs_byte)
+                    .is_some()
+                {
+                    (cursor, after_bom)
+                } else {
+                    cursor = after_bom;
+                    continue;
+                }
+            } else if decode_c2pa_vs_byte(ch).is_some() {
+                (cursor, cursor)
+            } else {
+                cursor += ch.len_utf8();
+                continue;
+            };
+
+            let mut decoded = Vec::new();
+            let mut end = vs_start;
+            for c in text[vs_start..].chars() {
+                if let Some(b) = decode_c2pa_vs_byte(c) {
+                    decoded.push(b);
+                    end += c.len_utf8();
+                } else {
+                    break;
+                }
+            }
+
+            if decoded.len() >= 13 && &decoded[..8] == Self::MAGIC && matches!(decoded[8], 1 | 2) {
+                let payload_len =
+                    u32::from_be_bytes([decoded[9], decoded[10], decoded[11], decoded[12]])
+                        as usize;
+                out.push(Finding {
+                    rule_id: self.id().to_string(),
+                    span_index: idx,
+                    range: frame_start..end,
+                    message: format!(
+                        "removed invisible C2PA Unstructured Text manifest wrapper (v{}, {} payload bytes)",
+                        decoded[8], payload_len
+                    ),
+                    replacement: Some(String::new()),
+                });
+            }
+            cursor = end.max(cursor + ch.len_utf8());
+        }
+        out
+    }
+}
+
+/// Detect (and on single-line inline envelopes, strip at Aggressive) C2PA 2.4 Structured Text
+/// `-----BEGIN C2PA MANIFEST-----` ... `-----END C2PA MANIFEST-----` blocks inside prose spans.
+/// Multi-line comment and front-matter blocks are removed whole by the format container scrubbers.
+pub struct C2paStructuredTextRule {
+    strip: bool,
+}
+
+impl C2paStructuredTextRule {
+    const BEGIN: &str = "-----BEGIN C2PA MANIFEST-----";
+    const END: &str = "-----END C2PA MANIFEST-----";
+}
+
+impl Rule for C2paStructuredTextRule {
+    fn id(&self) -> &str {
+        if self.strip {
+            "markers.c2pa-structured-manifest.strip"
+        } else {
+            "markers.c2pa-structured-manifest"
+        }
+    }
+    fn min_level(&self) -> CleanupLevel {
+        if self.strip {
+            CleanupLevel::Aggressive
+        } else {
+            CleanupLevel::Light
+        }
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(Self::BEGIN) {
+            let start = from + rel;
+            let after_begin = start + Self::BEGIN.len();
+            let Some(end_rel) = text[after_begin..].find(Self::END) else {
+                break;
+            };
+            let end = after_begin + end_rel + Self::END.len();
+            let inner = text[after_begin..after_begin + end_rel].trim();
+            if inner.is_empty() || inner.len() > 262_144 {
+                from = end;
+                continue;
+            }
+            let single_line = !text[start..end].contains(['\n', '\r']);
+            if self.strip && !single_line {
+                // Multi-line blocks belong to `Format::scrub_container`, because prose edits
+                // never cross line boundaries.
+                from = end;
+                continue;
+            }
+            out.push(Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                range: start..end,
+                message: if self.strip {
+                    "removed inline C2PA structured-text manifest block".to_string()
+                } else {
+                    "C2PA structured-text manifest block embedded in document".to_string()
+                },
+                replacement: self.strip.then(String::new),
+            });
+            from = end;
+        }
+        out
+    }
+}
+
+pub fn c2pa_structured_manifest() -> C2paStructuredTextRule {
+    C2paStructuredTextRule { strip: false }
+}
+
+pub fn c2pa_structured_manifest_strip() -> C2paStructuredTextRule {
+    C2paStructuredTextRule { strip: true }
 }
 
 #[cfg(test)]
@@ -2351,5 +2646,45 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn gemini_citations_strip_numeric_grounding_but_preserve_author_citations() {
+        let text =
+            "A [cite_start]grounded claim[cite_end] [cite: 1, 2, 5]. Compare [cite: Smith 2024].";
+        let flags = detect(&gemini_citations(), text);
+        assert_eq!(flags.len(), 3, "got {flags:?}");
+        let strips = detect(&gemini_citations_strip(), text);
+        assert_eq!(strips.len(), 3);
+        assert_eq!(&text[strips[2].range.clone()], " [cite: 1, 2, 5]");
+    }
+
+    #[test]
+    fn c2pa_unstructured_text_wrapper_decodes_and_strips_whole_frame() {
+        let encode_vs = |bytes: &[u8]| -> String {
+            let mut s = String::from("\u{FEFF}");
+            for &b in bytes {
+                let ch = if b < 0x10 {
+                    char::from_u32(0xFE00 + u32::from(b)).unwrap()
+                } else {
+                    char::from_u32(0xE0100 + u32::from(b - 0x10)).unwrap()
+                };
+                s.push(ch);
+            }
+            s
+        };
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"C2PATXT\0");
+        frame.push(1);
+        frame.extend_from_slice(&4u32.to_be_bytes());
+        frame.extend_from_slice(b"jumb");
+        let wrapped = format!("{}Clean prose.", encode_vs(&frame));
+
+        let found = detect(&C2paTextWrapperRule, &wrapped);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].replacement.as_deref(), Some(""));
+        assert_eq!(&wrapped[found[0].range.end..], "Clean prose.");
+        // Ordinary emoji + VS-16 must never trigger C2paTextWrapperRule.
+        assert!(detect(&C2paTextWrapperRule, "\u{2764}\u{FE0F} love").is_empty());
     }
 }

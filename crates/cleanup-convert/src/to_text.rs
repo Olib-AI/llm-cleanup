@@ -2,8 +2,18 @@
 
 use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
-use cleanup_core::FormatId;
+use cleanup_core::{Format, FormatId};
 use pulldown_cmark::{Event, Parser, TagEnd};
+
+pub(crate) fn html_paragraph_texts(src: &[u8]) -> Result<Vec<String>> {
+    let doc = cleanup_formats::Html.parse(src)?;
+    Ok(doc
+        .spans
+        .into_iter()
+        .map(|s| s.text.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
 
 pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
     let (text, engine, lossy) = match from {
@@ -18,6 +28,17 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
             "docx-extract",
             true,
         ),
+        FormatId::Html => (
+            html_paragraph_texts(src)?.join("\n\n").trim().to_string() + "\n",
+            "html-extract",
+            true,
+        ),
+        FormatId::Image => {
+            return Err(ConvertError::Unsupported {
+                from: "image",
+                to: "text",
+            });
+        }
     };
     let warnings = if lossy {
         vec!["all formatting and structure removed (plain-text output)".to_string()]

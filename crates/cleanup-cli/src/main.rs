@@ -4,9 +4,9 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use cleanup_convert::Target;
-use cleanup_core::{CleanupLevel, Ctx, clean};
+use cleanup_core::{CleanupLevel, Ctx, Document, clean};
 use cleanup_formats::{format_for_path, formatter_for_path};
-use cleanup_rules::builtin_rules;
+use cleanup_rules::{Pack, load_pack_str, measure_disruption, rules_with_packs};
 use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
     name = "aiclean",
     version,
     author = "Olib AI <dev@olib.ai>",
-    about = "Strip AI-generated fingerprints from Markdown/text/DOCX without breaking formatting.",
+    about = "Strip AI fingerprints and C2PA provenance from Markdown, text, HTML, DOCX, and images.",
     after_help = "llm-cleanup by Olib AI (https://www.olib.ai)"
 )]
 struct Cli {
@@ -28,7 +28,7 @@ struct Cli {
 enum Command {
     /// Clean one or more files (and optionally convert the result to another format).
     Clean {
-        /// Input files (.md, .txt, .docx).
+        /// Input files (.md, .txt, .html, .docx, .png, .jpg, .webp, .svg).
         inputs: Vec<PathBuf>,
         #[arg(short, long, value_enum, default_value = "standard")]
         level: LevelArg,
@@ -47,6 +47,12 @@ enum Command {
         /// Print a unified diff of the changes.
         #[arg(long)]
         diff: bool,
+        /// Opt-in deterministic n-gram window disruption for statistical token watermarks (SynthID-Text, textGrain).
+        #[arg(long)]
+        dewatermark: bool,
+        /// Additional YAML/JSON rule pack(s) to load alongside built-in rules.
+        #[arg(long = "pack")]
+        packs: Vec<PathBuf>,
         /// Also convert the cleaned file to this format (md|txt|docx|pdf). Inferred from -o if omitted.
         #[arg(long)]
         to: Option<String>,
@@ -67,11 +73,20 @@ enum Command {
         inputs: Vec<PathBuf>,
         #[arg(short, long, value_enum, default_value = "standard")]
         level: LevelArg,
+        /// Include opt-in statistical watermark window disruption in the preview diff.
+        #[arg(long)]
+        dewatermark: bool,
+        /// Additional YAML/JSON rule pack(s) to load alongside built-in rules.
+        #[arg(long = "pack")]
+        packs: Vec<PathBuf>,
     },
     /// List the active rules at a given level.
     Rules {
         #[arg(short, long, value_enum, default_value = "standard")]
         level: LevelArg,
+        /// Additional YAML/JSON rule pack(s) to include.
+        #[arg(long = "pack")]
+        packs: Vec<PathBuf>,
     },
     /// Show which AI models and fingerprints this build covers.
     Coverage {
@@ -107,7 +122,29 @@ struct Job<'a> {
     backup: bool,
     dry_run: bool,
     diff: bool,
+    dewatermark: bool,
+    packs: &'a [PathBuf],
     to: Option<String>,
+}
+
+fn load_extra_packs(paths: &[PathBuf]) -> Result<Vec<Pack>> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("reading rule pack {}", path.display()))?;
+        let pack = load_pack_str(&raw)
+            .map_err(|e| anyhow::anyhow!("invalid rule pack {}: {e}", path.display()))?;
+        out.push(pack);
+    }
+    Ok(out)
+}
+
+fn joined_prose(doc: &Document) -> String {
+    doc.spans
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn main() -> Result<()> {
@@ -120,6 +157,8 @@ fn main() -> Result<()> {
             backup,
             dry_run,
             diff,
+            dewatermark,
+            packs,
             to,
         } => {
             if inputs.is_empty() {
@@ -136,6 +175,8 @@ fn main() -> Result<()> {
                 backup,
                 dry_run,
                 diff,
+                dewatermark,
+                packs: &packs,
                 to,
             })
         }
@@ -148,7 +189,12 @@ fn main() -> Result<()> {
             }
             run_convert(&inputs, output, to)
         }
-        Command::Diff { inputs, level } => run_clean(Job {
+        Command::Diff {
+            inputs,
+            level,
+            dewatermark,
+            packs,
+        } => run_clean(Job {
             inputs: &inputs,
             level: level.into(),
             output: None,
@@ -156,12 +202,11 @@ fn main() -> Result<()> {
             backup: false,
             dry_run: true,
             diff: true,
+            dewatermark,
+            packs: &packs,
             to: None,
         }),
-        Command::Rules { level } => {
-            run_rules(level.into());
-            Ok(())
-        }
+        Command::Rules { level, packs } => run_rules(level.into(), &packs),
         Command::Coverage { provider } => {
             run_coverage(provider.as_deref());
             Ok(())
@@ -178,9 +223,12 @@ fn run_clean(job: Job) -> Result<()> {
         backup,
         dry_run,
         diff,
+        dewatermark,
+        packs,
         to,
     } = job;
-    let rules = builtin_rules();
+    let extra_packs = load_extra_packs(packs)?;
+    let rules = rules_with_packs(&extra_packs);
 
     for input in inputs {
         let fmt = formatter_for_path(input)
@@ -190,7 +238,7 @@ fn run_clean(job: Job) -> Result<()> {
             .parse(&bytes)
             .with_context(|| format!("parsing {}", input.display()))?;
 
-        let cx = Ctx::new(level);
+        let cx = Ctx::new(level).with_dewatermark(dewatermark);
         let (output_bytes, report) = clean(fmt.as_ref(), &doc, &rules, &cx)
             .with_context(|| format!("cleaning {}", input.display()))?;
 
@@ -235,6 +283,25 @@ fn run_clean(job: Job) -> Result<()> {
             }
             if report.container.iter().any(|c| c.scrubbable && !c.applied) {
                 println!("      (rerun with --level aggressive to scrub the fields above)");
+            }
+        }
+        if dewatermark && !doc.spans.is_empty() {
+            let before_prose = joined_prose(&doc);
+            if let Ok(after_doc) = fmt.parse(&output_bytes) {
+                let after_prose = joined_prose(&after_doc);
+                let m = measure_disruption(&before_prose, &after_prose);
+                if m.windows_total > 0 {
+                    println!(
+                        "  ✦ watermark disruption: {}/{} 5-gram windows invalidated ({:.1}%), bigram divergence {:.1}%",
+                        m.windows_broken,
+                        m.windows_total,
+                        m.window_disruption_rate * 100.0,
+                        m.bigram_divergence * 100.0
+                    );
+                    println!(
+                        "      (degrades SynthID-Text / textGrain window scoring; offline tools cannot certify keyed removal)"
+                    );
+                }
             }
         }
 
@@ -351,17 +418,30 @@ fn resolve_target(to: Option<&str>, output: Option<&Path>) -> Result<Option<Targ
     Ok(None)
 }
 
-fn run_rules(level: CleanupLevel) {
-    let rules = builtin_rules();
+fn run_rules(level: CleanupLevel, packs: &[PathBuf]) -> Result<()> {
+    let extra = load_extra_packs(packs)?;
+    let rules = rules_with_packs(&extra);
     println!("Rules (active at level {level} marked [x]):");
     for r in &rules {
-        let active = if level.includes(r.min_level()) {
+        let active = if r.id() == "watermark.ngram-disrupt" {
+            '*'
+        } else if level.includes(r.min_level()) {
             'x'
         } else {
             ' '
         };
-        println!("  [{active}] {:32} min-level={}", r.id(), r.min_level());
+        let note = if r.id() == "watermark.ngram-disrupt" {
+            " (opt-in: --dewatermark)"
+        } else {
+            ""
+        };
+        println!(
+            "  [{active}] {:38} min-level={}{note}",
+            r.id(),
+            r.min_level()
+        );
     }
+    Ok(())
 }
 
 /// Print the signature catalogue: what we know about, when we last checked, and which rules

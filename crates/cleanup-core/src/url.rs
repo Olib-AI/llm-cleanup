@@ -21,10 +21,13 @@ pub struct UrlReplacement {
 const AI_PROVIDERS: &[&str] = &[
     // OpenAI
     "chatgpt.com",
+    "chat.openai.com",
     "chatgpt",
     "openai",
+    "openai.com",
     // Microsoft
     "copilot.com",
+    "copilot.microsoft.com",
     "copilot",
     // Perplexity
     "perplexity",
@@ -32,10 +35,15 @@ const AI_PROVIDERS: &[&str] = &[
     // Anthropic
     "claude",
     "claude.ai",
+    "claude.com",
     "anthropic",
+    "anthropic.com",
     // Google
     "gemini",
     "gemini.google.com",
+    "aistudio.google.com",
+    "notebooklm",
+    "notebooklm.google.com",
     // xAI
     "grok",
     "grok.com",
@@ -43,7 +51,11 @@ const AI_PROVIDERS: &[&str] = &[
     // 2026 additions: the rest of the current landscape.
     "deepseek",
     "deepseek.com",
+    "chat.deepseek.com",
+    "kimi",
+    "kimi.ai",
     "kimi.com",
+    "kimi.moonshot.cn",
     "moonshot.ai",
     "meta.ai",
     "mistral.ai",
@@ -54,10 +66,16 @@ const AI_PROVIDERS: &[&str] = &[
     "qwen",
     "chatglm",
     "z.ai",
-    // Aggregators and answer engines that carry their own attribution.
+    // Aggregators, research agents, and answer engines that carry their own attribution.
     "poe.com",
     "you.com",
     "phind.com",
+    "genspark",
+    "genspark.ai",
+    "manus.im",
+    "arena.ai",
+    "lmarena.ai",
+    "doubao.com",
 ];
 
 fn is_ai_provider(value: &str) -> bool {
@@ -70,12 +88,16 @@ fn is_ai_tracking_param(param: &str) -> bool {
     let Some((name, value)) = param.split_once('=') else {
         return false;
     };
-    if name.eq_ignore_ascii_case("referrer") || name.eq_ignore_ascii_case("referer") {
+    if name.eq_ignore_ascii_case("referrer")
+        || name.eq_ignore_ascii_case("referer")
+        || name.eq_ignore_ascii_case("ref")
+    {
         return is_ai_provider(value);
     }
     (name.eq_ignore_ascii_case("utm_source")
         || name.eq_ignore_ascii_case("utm_medium")
-        || name.eq_ignore_ascii_case("utm_campaign"))
+        || name.eq_ignore_ascii_case("utm_campaign")
+        || name.eq_ignore_ascii_case("utm_content"))
         && is_ai_provider(value)
 }
 

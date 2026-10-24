@@ -1,6 +1,6 @@
 use cleanup_core::CleanupLevel;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// A template pack: a versioned, shareable set of detection rules. Authored in YAML
 /// (primary) or JSON (interchange); both deserialize to this one model.
@@ -38,6 +38,12 @@ pub struct RuleSpec {
     /// Term/phrase list for lexical & phrasal rules.
     #[serde(default)]
     pub terms: Vec<String>,
+    /// Uniform replacement string when `action: replace` applies the same target to `terms`.
+    #[serde(default)]
+    pub replacement: Option<String>,
+    /// Per-term `source -> target` map for `action: replace` packs.
+    #[serde(default)]
+    pub replacements: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +82,28 @@ impl Pack {
         for r in &self.rules {
             if !seen.insert(r.id.as_str()) {
                 return Err(format!("duplicate rule id: {}", r.id));
+            }
+            if r.action == Action::Replace && r.replacement.is_none() && r.replacements.is_empty() {
+                return Err(format!(
+                    "rule {}: action: replace requires `replacement` or `replacements`",
+                    r.id
+                ));
+            }
+            if let Some(repl) = &r.replacement
+                && repl.contains(['\n', '\r'])
+            {
+                return Err(format!(
+                    "rule {}: replacement must not contain newlines",
+                    r.id
+                ));
+            }
+            for repl in r.replacements.values() {
+                if repl.contains(['\n', '\r']) {
+                    return Err(format!(
+                        "rule {}: replacement must not contain newlines",
+                        r.id
+                    ));
+                }
             }
         }
         Ok(())
