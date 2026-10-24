@@ -1,0 +1,41 @@
+# TEMPORARY maintainer helper — deleted before this branch is merged.
+#
+# Runs `cargo fmt --all` on the branch it is dispatched against and pushes the
+# result back, so a contributor without a local rustfmt (or working from a
+# read-only sandbox) can still land a formatted tree. Manual dispatch only.
+name: fmt-apply
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Commit and push if anything changed
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "already formatted"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: cargo fmt (Rust 1.99.1)"
+          git push origin "HEAD:${{ github.ref_name }}"
