@@ -48,6 +48,10 @@ Fixed in this release:
 | RUSTSEC-2026-0194 | `quick-xml` (direct) | Quadratic attribute-parsing DoS on untrusted XML — **upgraded 0.38.4 → 0.41.0**. This is the parser that reads `word/document.xml` from an untrusted `.docx`. |
 | RUSTSEC-2026-0195 | `quick-xml` (direct) | Unbounded namespace allocation — **upgraded 0.38.4 → 0.41.0**. |
 | RUSTSEC-2026-0204 | `crossbeam-epoch` | Invalid pointer dereference in `fmt::Pointer` — **upgraded 0.9.18 → 0.9.21**. |
+| RUSTSEC-2026-0190 | `anyhow` (direct) | Unsoundness in `Error::downcast_mut()` — **upgraded 1.0.102 → 1.0.104** and the requirement in `Cargo.toml` now states the patched minimum. |
+| RUSTSEC-2026-0221 | `event-listener` | `!Send` tags can cross thread boundaries — **upgraded 5.4.1 → 5.4.2**. |
+| RUSTSEC-2026-0186 | `memmap2` | Unchecked pointer offset in `advise_range`/`flush_range` — **upgraded 0.9.10 → 0.9.12**. |
+| yanked | `clipboard-win` | The lock pinned a yanked 5.4.1; **moved to 5.4.3**. |
 
 Reviewed and accepted (not reachable):
 
