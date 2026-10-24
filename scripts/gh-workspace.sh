@@ -66,12 +66,15 @@ cmd_status() {
   local sha
   sha="$(resolve_sha "$ref")"
   echo "== Check Runs for $ref ($sha) =="
-  local payload
-  payload="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100")"
-  CHECKS_JSON="$payload" python3 - <<'PY'
-import json, os, sys
+  local tmp_json
+  tmp_json="$(mktemp)"
+  gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" > "$tmp_json"
+  python3 - "$tmp_json" <<'PY'
+import json, signal, sys
+from pathlib import Path
 
-data = json.loads(os.environ["CHECKS_JSON"])
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace"))
 runs = data.get("check_runs", [])
 if not runs:
     print("  (no check runs found yet)")
@@ -104,6 +107,7 @@ for r in runs:
             print(text)
             print("")
 PY
+  rm -f "$tmp_json"
 }
 
 cmd_wait() {
@@ -129,11 +133,13 @@ cmd_wait() {
   local elapsed=0
   local seen_any=0
   while (( elapsed < timeout_secs )); do
-    local raw_checks state
-    raw_checks="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100")"
-    state="$(CHECKS_JSON="$raw_checks" python3 - <<'PY'
-import json, os
-runs = json.loads(os.environ["CHECKS_JSON"]).get("check_runs", [])
+    local tmp_json state
+    tmp_json="$(mktemp)"
+    gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" > "$tmp_json"
+    state="$(python3 - "$tmp_json" <<'PY'
+import json, sys
+from pathlib import Path
+runs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")).get("check_runs", [])
 total = len(runs)
 active = [r["name"] for r in runs if r.get("status") != "completed"]
 failed = [
@@ -143,6 +149,7 @@ failed = [
 print(json.dumps({"total": total, "active": active, "failed": failed}))
 PY
 )"
+    rm -f "$tmp_json"
     local total active_count failed_count
     total="$(echo "$state" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')"
     active_count="$(echo "$state" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["active"]))')"
@@ -220,25 +227,26 @@ cmd_extract_patch() {
     esac
   done
 
-  local json_payload
+  local tmp_json tmp_patch
+  tmp_json="$(mktemp)"
+  tmp_patch="$(mktemp)"
+  trap 'rm -f "$tmp_json" "$tmp_patch"' RETURN
+
   if [[ "$target" =~ ^[0-9]{8,}$ ]]; then
-    json_payload="$(gh api "repos/$REPO/check-runs/$target")"
+    gh api "repos/$REPO/check-runs/$target" > "$tmp_json"
   else
     local sha
     sha="$(resolve_sha "$target")"
-    json_payload="$(gh api "repos/$REPO/commits/$sha/check-runs?per_page=100")"
+    gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" > "$tmp_json"
   fi
 
-  local tmp_patch
-  tmp_patch="$(mktemp)"
-  trap 'rm -f "$tmp_patch"' RETURN
-
-  CHECKS_JSON="$json_payload" python3 - "$tmp_patch" <<'PY'
-import base64, gzip, json, os, re, sys
+  python3 - "$tmp_json" "$tmp_patch" <<'PY'
+import base64, gzip, json, re, sys
 from pathlib import Path
 
-out_path = Path(sys.argv[1])
-data = json.loads(os.environ["CHECKS_JSON"])
+json_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+data = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
 runs = data["check_runs"] if "check_runs" in data else [data]
 
 for r in runs:
