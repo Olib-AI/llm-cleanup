@@ -349,6 +349,54 @@ rules:
             "here's the kicker", "plot twist", "sound familiar",
             "the catch?", "the twist?", "why should you care"]
 
+  # --- French and Spanish phrasing ------------------------------------------
+  # These are review-only lexical cues, not language classification. All language packs run
+  # together, so a bilingual/mixed-language document is handled in one pass. Accented case
+  # folding is Unicode-aware in LexiconFlagRule.
+  - id: lexical.fr.overused-verbs
+    description: French AI-favored vocabulary — review cues only
+    category: lexical
+    level: standard
+    action: flag
+    severity: low
+    terms: [explorer, souligner, mettre en lumière, mettre en évidence, favoriser,
+            faciliter, tirer parti, exploiter, renforcer, approfondir, incontournable,
+            essentiel, remarquable, fascinant, riche, complexe, dynamique]
+
+  - id: phrasal.fr.assistant-formulas
+    description: French assistant boilerplate and formulaic framing — review only
+    category: phrasal
+    level: standard
+    action: flag
+    severity: medium
+    terms: ["il est important de noter", "il convient de noter", "il est essentiel de",
+            "il faut souligner que", "il est intéressant de noter", "dans le paysage actuel",
+            "dans un monde en constante évolution", "à l'ère du numérique",
+            "en conclusion", "pour conclure", "en résumé", "plongeons dans",
+            "n'hésitez pas à", "j'espère que cela vous aidera", "excellente question"]
+
+  - id: lexical.es.overused-verbs
+    description: Spanish AI-favored vocabulary — review cues only
+    category: lexical
+    level: standard
+    action: flag
+    severity: low
+    terms: [explorar, destacar, subrayar, fomentar, facilitar, aprovechar, impulsar,
+            potenciar, fortalecer, mejorar, fundamental, esencial, crucial, notable,
+            fascinante, enriquecedor, complejo, dinámico]
+
+  - id: phrasal.es.assistant-formulas
+    description: Spanish assistant boilerplate and formulaic framing — review only
+    category: phrasal
+    level: standard
+    action: flag
+    severity: medium
+    terms: ["es importante señalar", "cabe destacar", "es fundamental tener en cuenta",
+            "es importante tener en cuenta", "en el panorama actual",
+            "en un mundo en constante evolución", "en la era digital",
+            "en conclusión", "para concluir", "en resumen", "profundicemos en",
+            "no dudes en", "espero que esto te ayude", "excelente pregunta"]
+
   - id: lexical.grok-tics
     description: Single words xAI's Grok models over-use relative to other families (per the Sept 2026 revision of Wikipedia's Signs of AI writing)
     category: lexical
