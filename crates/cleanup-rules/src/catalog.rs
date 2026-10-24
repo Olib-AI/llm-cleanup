@@ -233,6 +233,48 @@ const CATALOG: &[SignatureFamily] = &[
                 structural.markdown-tells",
     },
     SignatureFamily {
+        id: "chat-ui",
+        provider: "All chat UIs — the interface chrome around the answer",
+        models: "ChatGPT, Claude, Gemini, Copilot, Grok, Perplexity, DeepSeek, Meta AI, \
+                 Kimi, Le Chat (2026 interface copy)",
+        signatures: "The disclaimer line printed beneath every answer (\"ChatGPT can make \
+                     mistakes. Check important info.\") and the labels around it — role \
+                     headers (\"You said:\", \"ChatGPT said:\"), buttons (\"Copy code\", \
+                     \"Regenerate response\"), progress lines (\"Searching the web\", \
+                     \"Reading sources\") — all of which survive a careless copy/paste into \
+                     Word, Markdown or a note app",
+        rules: "markers.chat-ui-disclaimer, markers.chat-ui-disclaimer.strip, \
+                markers.chat-ui-residue",
+    },
+    SignatureFamily {
+        id: "structure",
+        provider: "All providers — document shape and formatting habits",
+        models: "Any model, any version (RLHF formatting defaults; measured 9–43x the \
+                 human rate in 2026 corpora)",
+        signatures: "Raw Markdown in plain text or DOCX (bold, ATX heading markers, fences, \
+                     task boxes), decorative emoji openers and emoji used as structure, \
+                     Title Case headings, and runs of three or more bold-label list items \
+                     (\"- **Speed:** faster\") — the inline-header vertical list. The \
+                     Markdown adapter recovers list runs from the source in its container \
+                     pass; literal markup in plain text and DOCX hits the prose rule. Real \
+                     Word bold is invisible to a prose rule and is left alone",
+        rules: "structural.markdown-tells, structural.heading-emoji, \
+                style.markdown.residue, style.emoji.opener, style.emoji.density, \
+                style.heading.title-case, style.list.inline-headers",
+    },
+    SignatureFamily {
+        id: "encoding",
+        provider: "All providers — encoding damage in the delivery path",
+        models: "Any model, any version: UTF-8 decoded as Windows-1252 upstream, copy-as-source \
+                 out of a chat UI or web page",
+        signatures: "Mojibake from a middleware that decoded UTF-8 as Windows-1252 \
+                     (â€™, â€œ, Ã©, and double- or triple-encoded forms such as \
+                     Ã¢â‚¬â„¢); HTML entities left when an answer is copied as source \
+                     (&nbsp;, &mdash;, &#8217;, &amp;lt;); raw HTML tags in prose \
+                     (<p>, <br>, <strong>, <span style=…>)",
+        rules: "typo.mojibake.repair, typo.html-entities.decode, markers.html-tags",
+    },
+    SignatureFamily {
         id: "unicode",
         provider: "All providers — invisible-character vectors",
         models: "Any model, any version (character-level smuggling)",
@@ -253,14 +295,16 @@ const CATALOG: &[SignatureFamily] = &[
         id: "typography",
         provider: "All providers — punctuation and typography",
         models: "Any model, any version (office-style smart punctuation)",
-        signatures: "Curly quotes, guillemets and primes, ellipsis and two-dot leader, \
-                     em/en dashes, hyphen family, fullwidth ASCII forms, CJK punctuation \
-                     in non-CJK text, detokenizer space markers and detokenized spacing \
-                     (space before punctuation), repeated sentence punctuation",
-        rules: "typo.quotes.straighten, typo.ellipsis.expand, typo.em-dash.to-comma, \
-                typo.en-dash.to-hyphen, typo.hyphens.normalize, typo.fullwidth.normalize, \
-                typo.cjk-punctuation.normalize, typo.detokenizer.normalize, \
-                style.spacing.detokenized, style.punctuation.repeated",
+        signatures: "Curly quotes, guillemets, primes and acute accents used as apostrophes, \
+                     ellipsis and two-dot leader, em/en dashes, hyphen family, typographic \
+                     ligatures (ﬁ ﬂ ﬀ), fullwidth ASCII forms, CJK punctuation in non-CJK \
+                     text, detokenizer space markers and detokenized spacing (space before \
+                     punctuation), repeated sentence punctuation",
+        rules: "typo.quotes.straighten, typo.ligatures.expand, typo.ellipsis.expand, \
+                typo.em-dash.to-comma, typo.en-dash.to-hyphen, typo.hyphens.normalize, \
+                typo.fullwidth.normalize, typo.cjk-punctuation.normalize, \
+                typo.detokenizer.normalize, style.spacing.detokenized, \
+                style.punctuation.repeated",
     },
     SignatureFamily {
         id: "lexical",
@@ -289,9 +333,12 @@ const CATALOG: &[SignatureFamily] = &[
                      stamped by a generation library or model (\"python-docx\", \"generated \
                      by python-docx\", the JS library's \"Un-named\" creator), Application \
                      naming the tool, and python-docx's 2013-12-23 default-template \
-                     creation date — none of which Word clears on resave. Reported as \
-                     container findings at every level; the matched fields are scrubbed \
-                     at aggressive. External hyperlink targets in `.rels` are also reported \
+                     creation date — none of which Word clears on resave. The reference \
+                     template's Application/AppVersion pair (python-docx: Microsoft \
+                     Macintosh Word 14.0000; pandoc: Microsoft Word 12.0.0 12.0000) is \
+                     reported report-only, because a genuine Word for Mac 2011 file carries \
+                     the same strings. Reported as container findings at every level; the \
+                     matched fields are scrubbed at aggressive. External hyperlink targets in `.rels` are also reported \
                      and have exact AI-provider attribution parameters removed at aggressive; \
                      prose in headers, footers, footnotes, endnotes and comments is cleaned \
                      by the ordinary prose rules.",

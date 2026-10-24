@@ -128,6 +128,26 @@ impl Rule for MarkdownResidue {
                 from = end;
             }
         }
+        // ATX heading markers at the start of a line are Markdown *structure*; the
+        // Markdown adapter never hands them to a rule. In a `.txt` or `.docx` they are
+        // raw model output that survived the paste, which the Pangram study measured at
+        // 23x the human rate.
+        let mut line_start = 0usize;
+        for line in text.split('\n') {
+            let trimmed = line.trim_start();
+            let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+            if (1..=6).contains(&hashes) && trimmed.as_bytes().get(hashes) == Some(&b' ') {
+                let start = line_start + (line.len() - trimmed.len());
+                out.push(Finding {
+                    rule_id: self.id().to_string(),
+                    span_index: idx,
+                    range: start..start + hashes,
+                    message: "Markdown heading marker left in plain prose".to_string(),
+                    replacement: None,
+                });
+            }
+            line_start += line.len() + 1;
+        }
         out.sort_by_key(|f| (f.range.start, f.range.end));
         out
     }
@@ -346,6 +366,193 @@ impl Rule for PlaceholderResidue {
     }
 }
 
+/// Flag Title Case headings ("Understanding the Modern Data Stack"). Every chat model was
+/// trained to capitalise headings this way, and it is one of the few structural tells that
+/// survives a complete change of vocabulary. Human publishers now use sentence case far
+/// more often, so a short, punctuation-free, Title Cased line is worth a look.
+///
+/// Deliberately conservative: 3–12 words, at least one lowercase letter (so ALL CAPS and
+/// acronym-heavy lines are skipped), no terminal punctuation, and at least 80% of the
+/// significant words capitalised.
+pub struct TitleCaseHeading;
+
+impl TitleCaseHeading {
+    const SMALL_WORDS: &[&str] = &[
+        "a", "an", "the", "and", "or", "but", "nor", "for", "of", "to", "in", "on", "at", "by",
+        "with", "from", "as", "is", "are", "was", "were", "be", "been", "vs", "via", "into",
+        "over", "under", "per", "than", "that", "this",
+    ];
+    const MIN_WORDS: usize = 3;
+    const MAX_WORDS: usize = 12;
+    const MAX_CHARS: usize = 120;
+
+    fn is_title_case(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || trimmed.len() > Self::MAX_CHARS || trimmed.contains(['\n', '\r']) {
+            return false;
+        }
+        // A heading does not end a sentence.
+        if trimmed.ends_with(['.', '!', '?', ',', ';', ':']) {
+            return false;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        if words.len() < Self::MIN_WORDS || words.len() > Self::MAX_WORDS {
+            return false;
+        }
+        let mut significant = 0usize;
+        let mut capitalized = 0usize;
+        for (index, word) in words.iter().enumerate() {
+            let bare: String = word.chars().filter(|ch| ch.is_alphabetic()).collect();
+            if bare.is_empty() {
+                continue;
+            }
+            let small = Self::SMALL_WORDS.contains(&bare.to_lowercase().as_str());
+            // A single letter is only plausible as one of the small words ("A Guide…").
+            if bare.chars().count() < 2 && !small {
+                return false;
+            }
+            // Acronyms and shout-case words mean this is not title case.
+            if bare.chars().count() > 1 && bare.chars().all(|ch| !ch.is_lowercase()) {
+                return false;
+            }
+            if index == 0 || !small {
+                significant += 1;
+                if bare.chars().next().is_some_and(|ch| ch.is_uppercase()) {
+                    capitalized += 1;
+                }
+            }
+        }
+        significant >= Self::MIN_WORDS && capitalized * 5 >= significant * 4
+    }
+}
+
+impl Rule for TitleCaseHeading {
+    fn id(&self) -> &str {
+        "style.heading.title-case"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        if !Self::is_title_case(text) {
+            return Vec::new();
+        }
+        let trimmed = text.trim();
+        let start = text.len() - text.trim_start().len();
+        vec![Finding {
+            rule_id: self.id().to_string(),
+            span_index: idx,
+            range: start..start + trimmed.len(),
+            message: format!("Title Case heading {trimmed:?} (model heading convention)"),
+            replacement: None,
+        }]
+    }
+}
+
+/// Flag "inline-header vertical lists": three or more consecutive lines that each open
+/// with a bold label (`**Speed:** faster`, `- **Cost:** lower`). The shape is a model
+/// default — RLHF raters rewarded it — and humans rarely bold the lead word of every item.
+///
+/// Line-based, so it sees plain-text documents (where lists keep their markers) and any
+/// DOCX paragraph that carries hard line breaks. A Word list whose items are separate
+/// paragraphs is out of reach for a per-span rule — the markers are formatting, not text —
+/// and is reported only for Markdown, by the adapter's container pass.
+pub struct InlineHeaderList;
+
+impl InlineHeaderList {
+    const MIN_ITEMS: usize = 3;
+    const MAX_LABEL_CHARS: usize = 80;
+
+    /// Strip a leading bullet or ordinal so the label check sees the content.
+    fn body(line: &str) -> &str {
+        let trimmed = line.trim_start();
+        if let Some(rest) = ["- ", "* ", "• ", "– ", "— "]
+            .iter()
+            .find_map(|prefix| trimmed.strip_prefix(prefix))
+        {
+            return rest;
+        }
+        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0
+            && let Some(rest) = trimmed[digits..]
+                .strip_prefix(". ")
+                .or_else(|| trimmed[digits..].strip_prefix(") "))
+        {
+            return rest;
+        }
+        trimmed
+    }
+
+    fn is_inline_header(line: &str) -> bool {
+        let body = Self::body(line);
+        let Some(after) = body.strip_prefix("**") else {
+            return false;
+        };
+        let Some(close) = after.find("**") else {
+            return false;
+        };
+        let label = &after[..close];
+        if label.is_empty()
+            || label.chars().count() > Self::MAX_LABEL_CHARS
+            || label.contains(['\n', '\r'])
+        {
+            return false;
+        }
+        matches!(
+            after[close + 2..].chars().next(),
+            None | Some(':') | Some('.') | Some(' ') | Some('-') | Some('\u{2014}')
+        )
+    }
+}
+
+impl Rule for InlineHeaderList {
+    fn id(&self) -> &str {
+        "style.list.inline-headers"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        let mut run_start: Option<usize> = None;
+        let mut run_end = 0usize;
+        let mut run_items = 0usize;
+        let flush = |start: Option<usize>, end: usize, items: usize, out: &mut Vec<Finding>| {
+            if let Some(start) = start
+                && items >= InlineHeaderList::MIN_ITEMS
+            {
+                out.push(Finding {
+                    rule_id: "style.list.inline-headers".to_string(),
+                    span_index: idx,
+                    range: start..end,
+                    message: format!(
+                        "{items} consecutive bold-label list items (inline-header list)"
+                    ),
+                    replacement: None,
+                });
+            }
+        };
+        for line in text.split('\n') {
+            if Self::is_inline_header(line) {
+                if run_start.is_none() {
+                    run_start = Some(offset);
+                }
+                run_items += 1;
+                run_end = offset + line.trim_end().len();
+            } else {
+                flush(run_start.take(), run_end, run_items, &mut out);
+                run_items = 0;
+            }
+            offset += line.len() + 1;
+        }
+        flush(run_start, run_end, run_items, &mut out);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +561,50 @@ mod tests {
     fn detect(rule: &dyn Rule, text: &str) -> Vec<Finding> {
         let span = ProseSpan::new(SpanAnchor::Bytes(0..text.len()), text);
         rule.detect(0, &span, &Ctx::new(CleanupLevel::Aggressive))
+    }
+
+    #[test]
+    fn flags_title_case_headings_but_not_sentences() {
+        assert_eq!(
+            detect(&TitleCaseHeading, "Understanding the Modern Data Stack").len(),
+            1
+        );
+        assert_eq!(
+            detect(&TitleCaseHeading, "A Guide to Better Sleep").len(),
+            1
+        );
+        // Sentence case, sentence punctuation, acronyms and short fragments are not tells.
+        assert!(detect(&TitleCaseHeading, "Understanding the modern data stack").is_empty());
+        assert!(detect(&TitleCaseHeading, "Understanding the Modern Data Stack.").is_empty());
+        assert!(detect(&TitleCaseHeading, "GPT-5 and the Future of AI").is_empty());
+        assert!(detect(&TitleCaseHeading, "Two words").is_empty());
+    }
+
+    #[test]
+    fn flags_runs_of_bold_label_list_items() {
+        let text = "- **Speed:** faster\n- **Cost:** lower\n- **Risk:** managed\n";
+        let found = detect(&InlineHeaderList, text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(text[found[0].range.clone()].starts_with("- **Speed:**"));
+        // Two items is a coincidence; ordinary bullets are not the tell.
+        let two = "- **Speed:** faster\n- **Cost:** lower\n";
+        assert!(detect(&InlineHeaderList, two).is_empty());
+        let plain = "- faster\n- lower\n- safer\n";
+        assert!(detect(&InlineHeaderList, plain).is_empty());
+    }
+
+    #[test]
+    fn numbered_inline_headers_are_detected() {
+        let text = "1. **Plan:** write it\n2. **Build:** do it\n3. **Ship:** send it";
+        assert_eq!(detect(&InlineHeaderList, text).len(), 1);
+    }
+
+    #[test]
+    fn flags_atx_heading_residue_in_plain_text() {
+        let text = "Intro paragraph.\n## A heading\nBody.";
+        let found = detect(&MarkdownResidue, text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(&text[found[0].range.clone()], "##");
     }
 
     #[test]

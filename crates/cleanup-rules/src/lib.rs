@@ -19,6 +19,7 @@ pub mod catalog;
 pub mod lexicon;
 pub mod markers;
 pub mod registry;
+pub mod repair;
 pub mod schema;
 pub mod style;
 pub mod typographic;
