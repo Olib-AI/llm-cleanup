@@ -9,5 +9,8 @@ description = "Format adapters (Markdown / plain text / DOCX) for llm-cleanup."
 [dependencies]
 cleanup-core = { workspace = true }
 pulldown-cmark = { workspace = true }
-quick-xml = "0.38"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+
+[lints]
+workspace = true

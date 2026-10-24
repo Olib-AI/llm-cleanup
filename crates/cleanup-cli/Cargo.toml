@@ -18,3 +18,6 @@ cleanup-convert = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 similar = { workspace = true }
+
+[lints]
+workspace = true

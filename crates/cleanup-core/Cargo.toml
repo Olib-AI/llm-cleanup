@@ -10,3 +10,6 @@ description = "Core IR, traits, pipeline, and byte-splice primitive for llm-clea
 serde = { workspace = true }
 thiserror = { workspace = true }
 unicode-segmentation = { workspace = true }
+
+[lints]
+workspace = true

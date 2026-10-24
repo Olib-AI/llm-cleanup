@@ -12,9 +12,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-rust-version = "1.95"
+# Minimum supported Rust version. Pinned to the toolchain in rust-toolchain.toml
+# (Rust 1.99.1, released 2026-10-15) so CI, contributors, and release builds agree.
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/Olib-AI/llm-cleanup"
 homepage = "https://www.olib.ai"
@@ -26,7 +28,7 @@ cleanup-core = { path = "crates/cleanup-core" }
 cleanup-formats = { path = "crates/cleanup-formats" }
 cleanup-rules = { path = "crates/cleanup-rules" }
 cleanup-convert = { path = "crates/cleanup-convert" }
-# External (pinned to live registry versions as of 2026-05-30)
+# External (pinned to live registry versions as of 2026-10-24; see SECURITY.md)
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_norway = "0.9.42"        # maintained serde_yaml fork (serde_yaml & serde_yml are deprecated)
@@ -34,12 +36,35 @@ thiserror = "2.0.18"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
+# Multi-keyword literal matcher (Aho-Corasick) for signature + lexicon rules.
+aho-corasick = "1.1.4"
 similar = "3.1.1"
 unicode-segmentation = "1.13.2"
 slint = "1.16.1"
 slint-build = "1.16.1"
 rfd = "0.17.2"
+# 0.41.0 is the first release patched for RUSTSEC-2026-0194 / RUSTSEC-2026-0195
+# (quadratic attribute parsing and unbounded namespace allocation on untrusted XML).
+quick-xml = "0.41.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# DOCX export only. 0.4.20 is the newest release whose OOXML writer we have
+# validated; see SECURITY.md for the transitive-advisory triage on docx-rs.
+docx-rs = "0.4.20"
+
+[workspace.lints.rust]
+# The workspace is safe Rust by construction. `deny` (rather than `forbid`) keeps a macro
+# expansion - Slint's generated UI bindings - able to carry its own `allow` attribute, while
+# any `unsafe` written in this tree still fails the build.
+unsafe_code = "deny"
+unused_must_use = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+undocumented_unsafe_blocks = "deny"
 
 [profile.release]
 lto = "thin"
 strip = true
+# Abort on panic: a corrupt document must never be written, and unwinding tables are
+# attack surface we do not need in a document transformer.
+panic = "abort"

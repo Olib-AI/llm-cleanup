@@ -11,7 +11,9 @@
 
 ---
 
-llm-cleanup strips the tell-tale residue that large language models leave behind (em dashes, curly quotes, the narrow no-break space, invisible "smuggling" characters, overused wording) from Markdown, plain text, and Word documents. It does this without breaking a single byte of your formatting: headings, bold, italic, lists, tables, links, code blocks, images, and shapes are preserved exactly. There is no network call and no LLM at runtime.
+llm-cleanup strips the tell-tale residue that large language models leave behind (em dashes, curly quotes, the narrow no-break space, invisible "smuggling" characters, chat-template tokens, citation plumbing, agent attribution trailers, overused wording) from Markdown, plain text, and Word documents. It does this without breaking a single byte of your formatting: headings, bold, italic, lists, tables, links, code blocks, images, and shapes are preserved exactly. There is no network call and no LLM at runtime.
+
+The rule set is reviewed against the model landscape each release. Coverage as of **October 2026** spans GPT-5.5/5.6/6, Claude Opus 5.x and Fable/Mythos 5.1, Gemini 3.x, Llama 4, Grok 4/5, Mistral Large 3, DeepSeek V4, Qwen3.8, Kimi K2.5–K3, GLM-5, Copilot, Perplexity Sonar and the 2026 crop of coding agents. Run `aiclean coverage` to print it, or read [docs/FINGERPRINTS.md](docs/FINGERPRINTS.md) for the sources.
 
 ## Why llm-cleanup
 
@@ -24,11 +26,17 @@ llm-cleanup strips the tell-tale residue that large language models leave behind
 
 ## What it cleans
 
-- Typographic tells: em dashes, en dashes, curly quotes and apostrophes, and the ellipsis character.
-- Invisible and "smuggling" characters: zero-width spaces, the narrow no-break space that some models emit, Unicode tag characters, stray variation selectors, exotic Unicode spaces, and bidirectional override controls (the "Trojan Source" vector).
-- Overused wording and provider phrasings, flagged for your review rather than blindly rewritten.
+**Invisible and "smuggling" characters.** Zero-width spaces, the narrow no-break space (`U+202F`, a ChatGPT tell), the math-mode invisibles (`U+2061`–`U+2064`) that leak out of reasoning traces, Unicode tag characters, stray variation selectors, blank filler glyphs (`U+3164`, `U+FFA0`, `U+2800`), exotic Unicode spaces, and bidirectional override controls (the "Trojan Source" vector). Mixed-script homoglyph words are reported.
 
-Statistical token watermarks (such as SynthID) live in word-choice probabilities, not in characters, so they are intentionally out of scope.
+**Typographic tells.** Em dashes, en dashes, curly quotes and guillemets, the ellipsis character, the hyphen family (`U+2010`–`U+2012`, the minus sign), and CJK fullwidth punctuation.
+
+**Machine residue.** Chat-template control tokens (`<|im_start|>`, `<|eot_id|>`, `｜end▁of▁sentence｜`, `[INST]`, `antml:`), chat-UI citation plumbing (`【9†source】`, `【45†L75-L83】`, `turn0search`, `oai_citation`), leaked reasoning blocks (`<think>…</think>`), and coding-agent attribution trailers (`Co-Authored-By: Claude … <noreply@anthropic.com>`, `🤖 Generated with [Claude Code]`).
+
+**Wording and style, flagged for your review.** Overused vocabulary, negative parallelism ("not just X, but Y"), superlative framing ("the single most"), sycophancy ("great question!"), unearned authority ("studies show"), decorative heading emoji, and raw Markdown left in a Word or text file. These are *reported*, never rewritten: single "AI-sounding" words are ordinary English, and changing them would change what you wrote.
+
+### What it cannot remove
+
+Statistical token watermarks live in *which words the model chose*, not in characters, so no text cleanup can remove them: Google **SynthID** (Gemini), Anthropic's watermark on Claude models released from 2026-08-02, and OpenAI **textGrain** (EU ChatGPT/Codex, announced 2026-10-05). Cryptographically signed **C2PA / Content Credentials** are file metadata rather than prose, and Office "author" metadata (`docProps/`) is a separate, not-yet-implemented feature. We would rather say this plainly than imply a cleaner defeats them.
 
 ## Install
 
@@ -40,6 +48,23 @@ cd llm-cleanup
 cargo build --release
 # binaries land in target/release/: aiclean (CLI) and aiclean-gui (desktop app)
 ```
+
+Building requires **Rust 1.99.1**. The pin lives in `rust-toolchain.toml`, so `cargo` picks it
+up automatically; run `rustup toolchain install 1.99.1` once if you use rustup.
+
+### Windows
+
+`aiclean.exe` is a single self-contained executable — no runtime, no sidecar files.
+
+`aiclean-gui.exe` is built against the dynamic MSVC runtime, so it needs the Microsoft Visual
+C++ runtime. The Windows download already contains it: `vcruntime140.dll`,
+`vcruntime140_1.dll`, `msvcp140.dll` and the rest of the redistributable set are deployed
+**app-local** next to the executable, so the app starts on a clean Windows install with no
+redistributable prompt and no administrator rights. Keep the folder together: if you move
+`aiclean-gui.exe`, copy the `.dll` files with it. See `WINDOWS-RUNTIME.txt` inside the zip.
+
+If you build the GUI yourself, `scripts/package-windows.ps1 -Verify` produces the same layout
+and fails loudly if the runtime is missing.
 
 ## Usage
 
@@ -70,9 +95,30 @@ List the active rules for a level:
 aiclean rules --level aggressive
 ```
 
+See which models and fingerprints this build knows about (and what it deliberately cannot do):
+
+```bash
+aiclean coverage
+aiclean coverage --provider anthropic
+```
+
 ### Desktop app
 
 Launch `aiclean-gui` (or open `llm-cleanup.app` on macOS). Choose a file, pick a cleanup level and an output format, review exactly what changed, and save.
+
+## Security
+
+- The workspace denies `unsafe` (`unsafe_code = "deny"` in `Cargo.toml`); there is no `unsafe` block in the tree.
+- `cargo audit` runs on every pull request, every push to `main`, and **daily** against the
+  live RustSec advisory database, so a newly published advisory fails the build even when
+  nothing changed here. Run it locally with `scripts/audit.sh`.
+- Ignored advisories are triaged individually, and only when the affected code path is
+  unreachable from this workspace. Every ignore records its reason and owner in
+  `.cargo/audit.toml`; the full table is in [SECURITY.md](SECURITY.md).
+- Dependabot watches the `cargo` ecosystem weekly. Parser crates (`quick-xml`, `zip`,
+  `pulldown-cmark`) are grouped into their own pull request for review.
+- The toolchain is pinned to Rust 1.99.1 in `rust-toolchain.toml`, and CI verifies that the
+  pin and the compiler that ran the audit are the same version.
 
 ## How it works
 

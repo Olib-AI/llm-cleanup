@@ -73,6 +73,12 @@ enum Command {
         #[arg(short, long, value_enum, default_value = "standard")]
         level: LevelArg,
     },
+    /// Show which AI models and fingerprints this build covers.
+    Coverage {
+        /// Only show families whose id or provider name contains this text.
+        #[arg(short, long)]
+        provider: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -154,6 +160,10 @@ fn main() -> Result<()> {
         }),
         Command::Rules { level } => {
             run_rules(level.into());
+            Ok(())
+        }
+        Command::Coverage { provider } => {
+            run_coverage(provider.as_deref());
             Ok(())
         }
     }
@@ -335,6 +345,44 @@ fn run_rules(level: CleanupLevel) {
             ' '
         };
         println!("  [{active}] {:32} min-level={}", r.id(), r.min_level());
+    }
+}
+
+/// Print the signature catalogue: what we know about, when we last checked, and which rules
+/// implement it. This is the user-facing answer to "is my model covered?".
+fn run_coverage(filter: Option<&str>) {
+    let needle = filter.map(|f| f.to_ascii_lowercase());
+    println!(
+        "AI fingerprint coverage (catalogue reviewed {})",
+        cleanup_rules::CATALOG_REVIEWED
+    );
+    println!();
+
+    let mut shown = 0usize;
+    for family in cleanup_rules::coverage() {
+        if let Some(needle) = &needle {
+            let haystack = format!("{} {}", family.id, family.provider).to_ascii_lowercase();
+            if !haystack.contains(needle.as_str()) {
+                continue;
+            }
+        }
+        shown += 1;
+        println!("{}  —  {}", family.id, family.provider);
+        println!("    models:     {}", family.models);
+        println!("    signatures: {}", family.signatures);
+        println!("    rules:      {}", family.rules);
+        println!();
+    }
+
+    if shown == 0 {
+        println!("no model family matched {:?}", filter.unwrap_or(""));
+        return;
+    }
+
+    println!("Out of scope — no deterministic character cleanup can remove these:");
+    for item in cleanup_rules::OUT_OF_SCOPE {
+        println!("  - {} [{}]", item.technique, item.owner);
+        println!("    {}", item.why);
     }
 }
 
