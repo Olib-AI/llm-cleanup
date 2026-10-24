@@ -135,7 +135,7 @@ jobs:
           $importsCrt = Select-String -Path stage\aiclean-gui.exe -Pattern 'VCRUNTIME140.dll','MSVCP140.dll' -SimpleMatch -Quiet
           Write-Host "binary imports the dynamic CRT: $importsCrt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: aiclean-gui-windows-amd64-ci
           path: stage/
