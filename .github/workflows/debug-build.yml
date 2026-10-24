@@ -32,15 +32,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.99.1"
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: cargo clippy
+      - name: cargo clippy + test
         run: |
           set +e
           cargo clippy --workspace --all-targets --locked -- -D warnings > /tmp/out.txt 2>&1
-          echo "exit=$?" >> /tmp/out.txt
+          echo "clippy exit=$?" >> /tmp/out.txt
+          cargo test --workspace --locked >> /tmp/out.txt 2>&1
+          echo "test exit=$?" >> /tmp/out.txt
           exit 0
 
       - name: Post output as a PR comment
