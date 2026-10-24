@@ -1,0 +1,42 @@
+name: Diagnostics (temporary)
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  clippy-output:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libfontconfig1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy with PR diagnostics
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets --locked -- -D warnings > /tmp/clippy.log 2>&1
+          status=$?
+          {
+            echo '### Temporary Clippy diagnostics'
+            echo '```text'
+            tail -c 50000 /tmp/clippy.log
+            echo '```'
+          } > /tmp/clippy-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/clippy-comment.md
+          exit "$status"
