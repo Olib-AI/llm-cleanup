@@ -6,6 +6,8 @@
 name: fmt-apply
 
 on:
+  push:
+    branches: ["arena/5edd72bb-llm-cleanup"]
   workflow_dispatch:
 
 permissions:
