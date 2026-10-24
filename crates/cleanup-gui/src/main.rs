@@ -171,7 +171,10 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
         let (out, report) = clean(fmt.as_ref(), &doc, &rules, &cx)?;
 
         let mut detail = String::new();
-        if report.applied_by_rule.is_empty() && report.flags.is_empty() {
+        if report.applied_by_rule.is_empty()
+            && report.flags.is_empty()
+            && report.container.is_empty()
+        {
             detail.push_str("No AI fingerprints found. Your file is already clean.\n");
         } else {
             if !report.applied_by_rule.is_empty() {
@@ -184,6 +187,19 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
                 detail.push_str("\nFlagged for your review (left unchanged):\n");
                 for (rule, n) in &report.flagged_by_rule {
                     detail.push_str(&format!("    {n} ×  {rule}\n"));
+                }
+            }
+            if !report.container.is_empty() {
+                detail.push_str("\nDocument metadata:\n");
+                for c in &report.container {
+                    detail.push_str(&format!(
+                        "    {} {}\n",
+                        if c.applied { "✓ scrubbed:" } else { "⚠" },
+                        c.message
+                    ));
+                }
+                if report.container.iter().any(|c| c.scrubbable && !c.applied) {
+                    detail.push_str("    (choose the aggressive level to scrub these fields)\n");
                 }
             }
         }
@@ -216,8 +232,8 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
         Ok((
             final_bytes,
             out_ext,
-            report.edits_applied,
-            report.flags.len(),
+            report.edits_applied + report.container.iter().filter(|c| c.applied).count(),
+            report.flags.len() + report.container.iter().filter(|c| !c.applied).count(),
             detail,
         ))
     })();
