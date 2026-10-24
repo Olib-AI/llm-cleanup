@@ -177,6 +177,28 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_prompt_fingerprint_is_removed_at_light() {
+        let input = "Prompt context.\nToday\u{02BC}s date is 2026/06/30.\nMore context.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Light);
+        assert_eq!(
+            out,
+            "Prompt context.\nToday's date is 2026-06-30.\nMore context.\n"
+        );
+        assert!(
+            report
+                .applied_by_rule
+                .iter()
+                .any(|(rule, _)| rule == "markers.claude-prompt-fingerprint")
+        );
+        assert_idempotent(&PlainText, input, CleanupLevel::Light);
+
+        // Do not turn a general discussion of dates into a Claude prompt fingerprint.
+        let prose = "Today’s date is June 30, 2026.\n";
+        let (prose_out, _) = clean_str(&PlainText, prose, CleanupLevel::Light);
+        assert_eq!(prose_out, prose);
+    }
+
+    #[test]
     fn fullwidth_forms_normalize_at_aggressive_only() {
         let input = "Note\u{FF08}one\u{FF09}\u{FF0C}done.\n";
         let (standard_out, _) = clean_str(&PlainText, input, CleanupLevel::Standard);

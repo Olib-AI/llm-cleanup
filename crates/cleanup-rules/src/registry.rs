@@ -1,8 +1,9 @@
 use crate::lexicon::LexiconFlagRule;
 use crate::markers::{
     AgentTrailerLineRule, AiTrackingUrlFlagRule, AiTrackingUrlStripRule, CitationBracketRule,
-    CitationBracketStripRule, LegacyCitationStripRule, ReasoningBlockRule, ReasoningTraceRule,
-    SpecialTokenPatternRule, agent_trailers, chat_tokens, chat_tokens_strip, chat_ui_disclaimers,
+    CitationBracketStripRule, ClaudePromptFingerprintRule, LegacyCitationStripRule,
+    ReasoningBlockRule, ReasoningTraceRule, SpecialTokenPatternRule, agent_trailers, chat_tokens,
+    chat_tokens_strip, chat_ui_disclaimers,
     chat_ui_disclaimers_strip, chat_ui_residue, citation_artifacts, model_identifiers,
     private_use_citations, private_use_citations_strip, tool_calls, turn_citations,
     turn_citations_strip,
@@ -91,6 +92,7 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(turn_citations_strip()),
         Box::new(CitationBracketStripRule),
         Box::new(LegacyCitationStripRule),
+        Box::new(ClaudePromptFingerprintRule),
         Box::new(agent_trailers()),
         Box::new(AgentTrailerLineRule),
         Box::new(tool_calls()),

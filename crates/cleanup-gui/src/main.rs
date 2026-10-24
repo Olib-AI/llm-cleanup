@@ -52,6 +52,77 @@ fn target_from_idx(n: i32) -> Option<Target> {
     }
 }
 
+/// Rule IDs are useful in the CLI and logs, but make a noisy consumer-facing report.
+/// Keep the desktop report in plain language while retaining a readable fallback for
+/// data-driven rules added to the built-in pack.
+fn friendly_rule_name(rule_id: &str) -> String {
+    let known = match rule_id {
+        "typo.mojibake.repair" => "Encoding damage",
+        "typo.html-entities.decode" => "HTML entities",
+        "typo.invisibles.strip" => "Invisible characters",
+        "unicode.ansi.strip" => "Terminal escape sequences",
+        "unicode.controls.strip" => "Control characters",
+        "unicode.smuggled.strip" => "Smuggled Unicode characters",
+        "unicode.fillers.strip" => "Invisible filler glyphs",
+        "unicode.spaces.normalize" => "Unusual spaces",
+        "unicode.bidi.strip-overrides" => "Text-direction overrides",
+        "unicode.bidi.flag" => "Text-direction controls",
+        "unicode.private-use.flag" | "unicode.private-use.strip" => "Private-use characters",
+        "unicode.combining.flag" => "Stacked combining marks",
+        "unicode.zero-width.flag" | "unicode.zero-width.strip" => "Zero-width joiners",
+        "unicode.confusables.flag" => "Mixed-script lookalikes",
+        "typo.quotes.straighten" => "Curly quotes and apostrophes",
+        "typo.ligatures.expand" => "Typographic ligatures",
+        "typo.ellipsis.expand" => "Ellipsis characters",
+        "typo.hyphens.normalize" => "Special hyphens",
+        "typo.en-dash.to-hyphen" => "En dashes",
+        "typo.em-dash.to-comma" => "Em dashes",
+        "typo.fullwidth.normalize" => "Full-width punctuation",
+        "typo.cjk-punctuation.normalize" => "CJK punctuation",
+        "typo.detokenizer.normalize" => "Tokenizer spacing artifacts",
+        "markers.chat-tokens" | "markers.chat-tokens.strip" => "Chat-template tokens",
+        "markers.chat-tokens.pattern" => "Unrecognized chat tokens",
+        "markers.citation-artifacts" => "Citation artifacts",
+        "markers.citation-brackets" | "markers.citation-brackets.strip" => "Citation markers",
+        "markers.private-use-citations" | "markers.private-use-citations.strip" => {
+            "Private-use citation markers"
+        }
+        "markers.turn-citations" | "markers.turn-citations.strip" => "Citation identifiers",
+        "markers.ai-tracking-urls" | "markers.ai-tracking-urls.strip" => {
+            "AI tracking parameters"
+        }
+        "markers.legacy-citations.strip" => "Legacy citation markers",
+        "markers.claude-prompt-fingerprint" => "Claude Code prompt fingerprints",
+        "markers.agent-trailers" | "markers.agent-trailer-lines" => "AI attribution trailers",
+        "markers.tool-calls" => "Tool-call scaffolding",
+        "markers.reasoning-block" | "markers.reasoning-trace" => "Reasoning traces",
+        "markers.model-identifiers" => "Model identifiers",
+        "markers.chat-ui-disclaimer" | "markers.chat-ui-disclaimer.strip" => {
+            "Chat UI disclaimers"
+        }
+        "markers.chat-ui-residue" => "Chat interface residue",
+        "markers.html-tags" => "Raw HTML tags",
+        _ => {
+            let mut parts: Vec<&str> = rule_id.split('.').skip(1).collect();
+            if parts.last().is_some_and(|part| {
+                matches!(
+                    *part,
+                    "strip" | "flag" | "normalize" | "repair" | "decode" | "expand"
+                )
+            }) {
+                parts.pop();
+            }
+            let mut label = parts.join(" ").replace(['-', '_'], " ");
+            if let Some(first) = label.chars().next() {
+                let uppercase = first.to_uppercase().to_string();
+                label.replace_range(..first.len_utf8(), &uppercase);
+            }
+            return label;
+        }
+    };
+    known.to_string()
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let ui = AppWindow::new()?;
     register_fonts();
@@ -175,31 +246,34 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
             && report.flags.is_empty()
             && report.container.is_empty()
         {
-            detail.push_str("No AI fingerprints found. Your file is already clean.\n");
+            detail.push_str(
+                "Everything looks clean.\n\nNo supported AI fingerprints were found in this document. Your copy is ready to save.\n",
+            );
         } else {
             if !report.applied_by_rule.is_empty() {
-                detail.push_str("Removed / normalized:\n");
+                detail.push_str("Removed & normalized\n\n");
                 for (rule, n) in &report.applied_by_rule {
-                    detail.push_str(&format!("    {n} ×  {rule}\n"));
+                    detail.push_str(&format!("  {n}  {}\n", friendly_rule_name(rule)));
                 }
             }
             if !report.flagged_by_rule.is_empty() {
-                detail.push_str("\nFlagged for your review (left unchanged):\n");
+                detail.push_str("\nLeft for your review\n\n");
                 for (rule, n) in &report.flagged_by_rule {
-                    detail.push_str(&format!("    {n} ×  {rule}\n"));
+                    detail.push_str(&format!("  {n}  {}\n", friendly_rule_name(rule)));
                 }
+                detail.push_str("\nThese items were not changed.\n");
             }
             if !report.container.is_empty() {
-                detail.push_str("\nDocument metadata:\n");
+                detail.push_str("\nDocument metadata\n\n");
                 for c in &report.container {
                     detail.push_str(&format!(
-                        "    {} {}\n",
-                        if c.applied { "✓ scrubbed:" } else { "⚠" },
+                        "  {} {}\n",
+                        if c.applied { "✓" } else { "•" },
                         c.message
                     ));
                 }
                 if report.container.iter().any(|c| c.scrubbable && !c.applied) {
-                    detail.push_str("    (choose the aggressive level to scrub these fields)\n");
+                    detail.push_str("\nChoose Aggressive to scrub the marked fields.\n");
                 }
             }
         }
@@ -214,15 +288,15 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
         let (final_bytes, out_ext) = if let Some(t) = target {
             let (b, rep) = cleanup_convert::convert(fmt.id(), &out, t)?;
             detail.push_str(&format!(
-                "\nConvert to {} (via {}):\n",
+                "\nOutput\n\nConverted to {} using {}.\n",
                 t.label(),
                 rep.engine
             ));
             if rep.warnings.is_empty() {
-                detail.push_str("    formatting preserved\n");
+                detail.push_str("Formatting preserved.\n");
             }
             for w in &rep.warnings {
-                detail.push_str(&format!("    ⚠ {w}\n"));
+                detail.push_str(&format!("Review: {w}\n"));
             }
             (b, t.ext().to_string())
         } else {
@@ -246,20 +320,45 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
                 s.out_ext = out_ext;
             }
             ui.set_did_run(true);
+            ui.set_has_error(false);
             ui.set_cleaned_count(cleaned as i32);
             ui.set_flagged_count(flagged as i32);
             ui.set_preview_text(detail.into());
             ui.set_can_save(true);
-            ui.set_status("Ready to save.".into());
+            ui.set_status("Ready to save · your original file stays untouched.".into());
         }
         Err(e) => {
             state.borrow_mut().cleaned = None;
             ui.set_did_run(true);
+            ui.set_has_error(true);
             ui.set_cleaned_count(0);
             ui.set_flagged_count(0);
-            ui.set_preview_text(format!("Could not process this file:\n{e}").into());
+            ui.set_preview_text(format!("{e}").into());
             ui.set_can_save(false);
-            ui.set_status("Error".into());
+            ui.set_status(
+                "Could not process this file. Choose another document to try again.".into(),
+            );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friendly_rule_name;
+
+    #[test]
+    fn report_labels_hide_internal_rule_ids() {
+        assert_eq!(
+            friendly_rule_name("markers.claude-prompt-fingerprint"),
+            "Claude Code prompt fingerprints"
+        );
+        assert_eq!(
+            friendly_rule_name("lexical.overused-verbs"),
+            "Overused verbs"
+        );
+        assert_eq!(
+            friendly_rule_name("unicode.spaces.normalize"),
+            "Unusual spaces"
+        );
     }
 }
