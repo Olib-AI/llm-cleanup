@@ -18,4 +18,4 @@ pub use ir::{DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor};
 pub use level::CleanupLevel;
 pub use pipeline::{CleanReport, clean};
 pub use splice::{render_byte_spliced, splice};
-pub use traits::{Ctx, Edit, EditSet, Finding, Format, Rule};
+pub use traits::{ContainerFinding, Ctx, Edit, EditSet, Finding, Format, Rule};
