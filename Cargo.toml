@@ -46,8 +46,8 @@ slint-build = "1.16.1"
 rfd = "0.17.2"
 # 0.41.0 is the first release patched for RUSTSEC-2026-0194 / RUSTSEC-2026-0195
 # (quadratic attribute parsing and unbounded namespace allocation on untrusted XML).
-quick-xml = "0.41.0"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.42.0"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # DOCX export only. 0.4.20 is the newest release whose OOXML writer we have
 # validated; see SECURITY.md for the transitive-advisory triage on docx-rs.
 docx-rs = "0.4.20"
