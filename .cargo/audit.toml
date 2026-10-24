@@ -57,5 +57,9 @@ quiet = false
 deny = ["unsound"]
 
 [database]
-# Advisory database used by CI and by `scripts/audit.sh`.
+# Advisory database used by CI and by `scripts/audit.sh`. `stale = false` turns an
+# advisory DB that has not been refreshed in 90 days into a build failure, so a green
+# audit never means "we checked an old database".
 url = "https://github.com/RustSec/advisory-db"
+fetch = true
+stale = false
