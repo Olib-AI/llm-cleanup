@@ -27,7 +27,9 @@
 //! via [`Format::scrub_container`]) empty the matched creator/description/application
 //! fields.
 
-use cleanup_core::ir::{DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor};
+use cleanup_core::ir::{
+    DecodedSegment, DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor,
+};
 use cleanup_core::splice::render_byte_spliced;
 use cleanup_core::{ContainerFinding, CoreError, Edit, EditSet, Format, Result};
 use quick_xml::events::Event;
@@ -204,6 +206,79 @@ fn paragraph_wt_ranges(xml: &[u8]) -> Result<Vec<Vec<Range<usize>>>> {
         buf.clear();
     }
     Ok(paragraphs)
+}
+
+/// Decode one `<w:t>` body while retaining an exact map back to its XML bytes.
+///
+/// XML requires `<` to be escaped and generators commonly escape `>`, `&`, quotes, and
+/// non-ASCII characters as numeric entities. Running rules over the raw body would therefore
+/// miss exactly the angle-bracket tokens used by chat templates and reasoning traces. A
+/// decoded character can occupy a different number of bytes from its entity, so a plain
+/// `Segments` anchor is not sufficient here.
+fn decode_xml_text(raw: &str, source: Range<usize>) -> (String, DecodedSegment) {
+    fn entity_char(body: &str) -> Option<char> {
+        match body {
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "amp" => Some('&'),
+            "apos" => Some('\''),
+            "quot" => Some('"'),
+            _ => {
+                let (digits, radix) = if let Some(hex) =
+                    body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
+                {
+                    (hex, 16)
+                } else if let Some(decimal) = body.strip_prefix('#') {
+                    (decimal, 10)
+                } else {
+                    return None;
+                };
+                if digits.is_empty() {
+                    return None;
+                }
+                u32::from_str_radix(digits, radix)
+                    .ok()
+                    .and_then(char::from_u32)
+            }
+        }
+    }
+
+    let mut decoded = String::with_capacity(raw.len());
+    let mut boundaries = vec![0usize];
+    let mut cursor = 0usize;
+    while cursor < raw.len() {
+        let mut consumed = 0usize;
+        let mut ch = None;
+        if raw.as_bytes()[cursor] == b'&'
+            && let Some(relative_end) = raw[cursor + 1..].find(';')
+        {
+            let end = cursor + 1 + relative_end;
+            // XML's named entities are short and numeric character references are bounded in
+            // practice. The cap avoids scanning a huge run of ordinary text after a stray `&`.
+            if end - cursor <= 16
+                && let Some(decoded_char) = entity_char(&raw[cursor + 1..end])
+            {
+                ch = Some(decoded_char);
+                consumed = end + 1 - cursor;
+            }
+        }
+        if consumed == 0 {
+            ch = raw[cursor..].chars().next();
+            consumed = ch.expect("cursor is inside raw").len_utf8();
+        }
+        let ch = ch.expect("a source character or decoded entity");
+        decoded.push(ch);
+        // Interior bytes of a multi-byte decoded character are not legal edit boundaries.
+        // Fill them with the entity's start; legal boundaries below map exactly.
+        while boundaries.len() < decoded.len() {
+            boundaries.push(cursor);
+        }
+        boundaries.push(cursor + consumed);
+        cursor += consumed;
+    }
+    debug_assert_eq!(boundaries.len(), decoded.len() + 1);
+    debug_assert_eq!(boundaries.last(), Some(&(source.end - source.start)));
+    (decoded, DecodedSegment { source, boundaries })
 }
 
 /// Rebuild the zip from the original, replacing the given parts. Everything else
@@ -391,6 +466,112 @@ fn metadata_hits(part: &str, xml: &[u8]) -> Vec<MetaHit> {
     hits
 }
 
+#[derive(Debug)]
+struct RelationshipUrlHit {
+    part: String,
+    range: Range<usize>,
+    replacement: String,
+}
+
+/// Find an attribute's raw value range inside a relationship start/empty tag. Keeping the
+/// range, rather than reserializing the XML, preserves namespace prefixes, attribute order,
+/// whitespace, and every unrelated relationship byte.
+fn raw_attribute_range(tag: &[u8], wanted: &[u8]) -> Option<Range<usize>> {
+    let mut cursor = 0usize;
+    while cursor < tag.len() {
+        if tag[cursor].is_ascii_whitespace() || matches!(tag[cursor], b'<' | b'/' | b'>' | b'=') {
+            cursor += 1;
+            continue;
+        }
+        let name_start = cursor;
+        while cursor < tag.len()
+            && !tag[cursor].is_ascii_whitespace()
+            && !matches!(tag[cursor], b'=' | b'/' | b'>')
+        {
+            cursor += 1;
+        }
+        let name_end = cursor;
+        while cursor < tag.len() && tag[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if tag.get(name_start..name_end) == Some(wanted) && tag.get(cursor) == Some(&b'=') {
+            cursor += 1;
+            while cursor < tag.len() && tag[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            let quote = *tag.get(cursor)?;
+            if !matches!(quote, b'\'' | b'"') {
+                return None;
+            }
+            let start = cursor + 1;
+            let end = tag[start..].iter().position(|b| *b == quote)? + start;
+            return Some(start..end);
+        }
+        // Continue at the next attribute separator. The name scan already stopped at a
+        // delimiter, so this loop always makes progress.
+    }
+    None
+}
+
+fn relationship_tag_hit(xml: &[u8], tag_range: Range<usize>) -> Option<(Range<usize>, String)> {
+    let tag = xml.get(tag_range.clone())?;
+    let type_range = raw_attribute_range(tag, b"Type")?;
+    let type_value = std::str::from_utf8(tag.get(type_range)?).ok()?;
+    if !type_value.ends_with("/hyperlink") {
+        return None;
+    }
+    if let Some(mode_range) = raw_attribute_range(tag, b"TargetMode") {
+        let mode = std::str::from_utf8(tag.get(mode_range)?).ok()?;
+        if !mode.eq_ignore_ascii_case("External") {
+            return None;
+        }
+    }
+    let target_range = raw_attribute_range(tag, b"Target")?;
+    let target = std::str::from_utf8(tag.get(target_range.clone())?).ok()?;
+    let replacement = cleanup_core::url::clean_ai_tracking_url(target)?;
+    Some((
+        (tag_range.start + target_range.start)..(tag_range.start + target_range.end),
+        replacement,
+    ))
+}
+
+/// External hyperlink targets live in `.rels`, outside `<w:t>` prose. Inspect them as
+/// package structure and never touch internal relationships or non-hyperlink targets.
+fn relationship_url_hits(zip_bytes: &[u8]) -> Vec<RelationshipUrlHit> {
+    let Ok(names) = part_names(zip_bytes) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for name in names.into_iter().filter(|name| name.ends_with(".rels")) {
+        let Ok(xml) = read_part(zip_bytes, &name) else {
+            continue;
+        };
+        let mut reader = Reader::from_reader(xml.as_slice());
+        let mut buf = Vec::new();
+        loop {
+            let pre = reader.buffer_position() as usize;
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                    if e.name().local_name().as_ref() == b"Relationship" =>
+                {
+                    let end = reader.buffer_position() as usize;
+                    if let Some((range, replacement)) = relationship_tag_hit(&xml, pre..end) {
+                        out.push(RelationshipUrlHit {
+                            part: name.clone(),
+                            range,
+                            replacement,
+                        });
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+    out
+}
+
 /// Read a part if present; metadata inspection is advisory and must never fail a clean.
 fn read_part_opt(zip_bytes: &[u8], part: &str) -> Option<Vec<u8>> {
     read_part(zip_bytes, part).ok()
@@ -408,17 +589,20 @@ impl Format for Docx {
         for ((name, xml), base) in parts.iter().zip(bases) {
             for segs in paragraph_wt_ranges(xml)? {
                 let mut text = String::new();
-                for r in &segs {
-                    let part = std::str::from_utf8(&xml[r.clone()]).map_err(|e| {
+                let mut decoded_segments = Vec::with_capacity(segs.len());
+                for r in segs {
+                    let raw = std::str::from_utf8(&xml[r.clone()]).map_err(|e| {
                         CoreError::Encoding(format!("{name} text is not UTF-8: {e}"))
                     })?;
-                    text.push_str(part);
+                    let source = (r.start + base)..(r.end + base);
+                    let (decoded, segment) = decode_xml_text(raw, source);
+                    text.push_str(&decoded);
+                    decoded_segments.push(segment);
                 }
-                let segs = segs
-                    .into_iter()
-                    .map(|r| (r.start + base)..(r.end + base))
-                    .collect();
-                spans.push(ProseSpan::new(SpanAnchor::Segments(segs), text));
+                spans.push(ProseSpan::new(
+                    SpanAnchor::DecodedSegments(decoded_segments),
+                    text,
+                ));
             }
         }
         let meta = DocMeta {
@@ -455,6 +639,7 @@ impl Format for Docx {
             .map(|span| {
                 let start = match &span.anchor {
                     SpanAnchor::Segments(segs) => segs.first().map_or(0, |r| r.start),
+                    SpanAnchor::DecodedSegments(segs) => segs.first().map_or(0, |s| s.source.start),
                     SpanAnchor::Bytes(r) => r.start,
                 };
                 // The part whose [base, base+len) window contains the span.
@@ -481,6 +666,14 @@ impl Format for Docx {
                     SpanAnchor::Segments(segs) => SpanAnchor::Segments(
                         segs.iter()
                             .map(|r| (r.start - base)..(r.end - base))
+                            .collect(),
+                    ),
+                    SpanAnchor::DecodedSegments(segs) => SpanAnchor::DecodedSegments(
+                        segs.iter()
+                            .map(|segment| DecodedSegment {
+                                source: (segment.source.start - base)..(segment.source.end - base),
+                                boundaries: segment.boundaries.clone(),
+                            })
                             .collect(),
                     ),
                     SpanAnchor::Bytes(r) => SpanAnchor::Bytes((r.start - base)..(r.end - base)),
@@ -524,6 +717,17 @@ impl Format for Docx {
 
     fn container_findings(&self, doc: &Document) -> Vec<ContainerFinding> {
         let mut out = Vec::new();
+        for hit in relationship_url_hits(&doc.aux) {
+            out.push(ContainerFinding {
+                rule_id: "markers.ai-tracking-urls.container".to_string(),
+                message: format!(
+                    "{} external hyperlink target contains AI-provider attribution",
+                    hit.part
+                ),
+                scrubbable: true,
+                applied: false,
+            });
+        }
         for part in [CORE_PART, APP_PART] {
             let Some(xml) = read_part_opt(&doc.aux, part) else {
                 continue;
@@ -554,6 +758,23 @@ impl Format for Docx {
 
     fn scrub_container(&self, _doc: &Document, rendered: &[u8]) -> Option<Vec<u8>> {
         let mut replacements = Vec::new();
+        let mut relationship_parts: std::collections::BTreeMap<
+            String,
+            Vec<(Range<usize>, String)>,
+        > = std::collections::BTreeMap::new();
+        for hit in relationship_url_hits(rendered) {
+            relationship_parts
+                .entry(hit.part)
+                .or_default()
+                .push((hit.range, hit.replacement));
+        }
+        for (part, edits) in relationship_parts {
+            // Relationship hits are offsets in the decompressed part, not in the zip. Apply
+            // them to that part's XML before rezip; never splice them into `rendered` itself.
+            let xml = read_part_opt(rendered, &part)?;
+            let scrubbed = cleanup_core::splice(&xml, &edits).ok()?;
+            replacements.push((part, scrubbed));
+        }
         for part in [CORE_PART, APP_PART] {
             let Some(xml) = read_part_opt(rendered, part) else {
                 continue;
@@ -615,6 +836,35 @@ mod tests {
     fn replace_in(text: &str, needle: &str) -> Range<usize> {
         let start = text.find(needle).unwrap();
         start..start + needle.len()
+    }
+
+    #[test]
+    fn xml_entities_are_decoded_for_rules_without_losing_source_offsets() {
+        let raw = "A&amp;B &lt;|im_end|&gt; &#x200B;";
+        let (decoded, segment) = decode_xml_text(raw, 10..10 + raw.len());
+        assert_eq!(decoded, "A&B <|im_end|> \u{200B}");
+        assert_eq!(segment.decoded_len(), decoded.len());
+        assert_eq!(segment.boundaries.first(), Some(&0));
+        assert_eq!(segment.boundaries.last(), Some(&raw.len()));
+
+        let doc = part_xml("w:document", &["&lt;|im_end|&gt;"]);
+        let bytes = make_docx(&[(DOC_PART, &doc)]);
+        let parsed = Docx.parse(&bytes).unwrap();
+        assert_eq!(parsed.spans[0].text, "<|im_end|>");
+        let output = Docx
+            .render(
+                &parsed,
+                &EditSet {
+                    edits: vec![Edit {
+                        span_index: 0,
+                        range: 0..parsed.spans[0].text.len(),
+                        replacement: String::new(),
+                        rule_id: "test".to_string(),
+                    }],
+                },
+            )
+            .unwrap();
+        assert!(part_text(&output, DOC_PART).contains("<w:t></w:t>"));
     }
 
     #[test]

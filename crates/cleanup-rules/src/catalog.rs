@@ -74,16 +74,19 @@ const CATALOG: &[SignatureFamily] = &[
                      chat-UI citation plumbing in all its forms — bracket citations \
                      (【9†source】, 【45†L75-L83】), the Private-Use-Area wrappers the UI \
                      actually stores (U+E200…U+E201/U+E202, incl. cited-span markers \
-                     U+E203/U+E204/U+E206), bare turn0search0-style IDs at any turn/source \
-                     number, oai_citation, and utm_source=chatgpt.com tracking parameters \
-                     left on cited links; gpt-oss harmony control tokens; leaked \
+                     U+E203/U+E204/U+E206), visible cite/filecite envelopes, bare \
+                     turn0search0/turn0block0/turn0url0-style IDs at any turn/source number, \
+                     oai_citation and legacy oaicite envelopes, and AI-provider tracking \
+                     parameters left on cited links; gpt-oss harmony control tokens; leaked \
                      tool-call/function scaffolding; corrective framing (\"rather than\", \
                      \"not simply\")",
         rules: "typo.invisibles.strip, unicode.spaces.normalize, markers.citation-artifacts, \
                 markers.citation-brackets, markers.private-use-citations, \
                 markers.private-use-citations.strip, markers.turn-citations, \
-                markers.turn-citations.strip, markers.chat-tokens, \
-                markers.chat-tokens.pattern, markers.tool-calls, \
+                markers.turn-citations.strip, markers.citation-brackets.strip, \
+                markers.legacy-citations.strip, markers.ai-tracking-urls, \
+                markers.ai-tracking-urls.strip, markers.chat-tokens, \
+                markers.chat-tokens.pattern, markers.chat-tokens.strip, markers.tool-calls, \
                 markers.model-identifiers, phrasal.negative-parallelism",
     },
     SignatureFamily {
@@ -119,7 +122,8 @@ const CATALOG: &[SignatureFamily] = &[
         id: "meta",
         provider: "Meta — Llama, Meta AI",
         models: "Llama 4 family, Meta AI",
-        signatures: "Llama 3/4 chat-template tokens, first-person \"I'm Meta AI\" identity, \
+        signatures: "Llama 3/4 chat-template tokens, including Llama 4 header/eot and \
+                     reasoning-thinking serialization, first-person \"I'm Meta AI\" identity, \
                      assistant disclaimers",
         rules: "markers.chat-tokens, markers.chat-tokens.strip, markers.chat-tokens.pattern, \
                 markers.model-identifiers, phrasal.model-self-reference",
@@ -221,8 +225,10 @@ const CATALOG: &[SignatureFamily] = &[
                      (Co-Authored-By: Claude, 🤖 Generated with [Claude Code], \
                      Claude-Session:) — the literal ones and the same patterns naming \
                      models released after this catalogue was written; leaked tool-call \
-                     scaffolding; decorative emoji and raw Markdown in generated docs",
+                     scaffolding; ANSI terminal escapes copied from agent output; decorative \
+                     emoji and raw Markdown in generated docs",
         rules: "markers.agent-trailers, markers.agent-trailer-lines, markers.tool-calls, \
+                unicode.ansi.strip, \
                 style.emoji.opener, style.emoji.density, style.markdown.residue, \
                 structural.markdown-tells",
     },
@@ -235,11 +241,13 @@ const CATALOG: &[SignatureFamily] = &[
                      homoglyphs (Greek, Cyrillic, Armenian, Cherokee lookalikes); C0/C1 \
                      control characters and noncharacters; Private-Use-Area residue; \
                      combining-mark (Zalgo) runs; zero-width runs encoding hidden bits \
-                     (\"Sneaky Bits\") and stray joiners inside Latin words",
+                     (\"Sneaky Bits\") and stray joiners inside Latin words; reserved \
+                     default-ignorable Unicode ranges and complete ANSI terminal sequences",
         rules: "typo.invisibles.strip, unicode.smuggled.strip, unicode.fillers.strip, \
                 unicode.spaces.normalize, unicode.bidi.strip-overrides, unicode.bidi.flag, \
-                unicode.confusables.flag, unicode.controls.strip, unicode.private-use.flag, \
-                unicode.private-use.strip, unicode.combining.flag, unicode.zero-width.flag",
+                unicode.confusables.flag, unicode.controls.strip, unicode.ansi.strip, \
+                unicode.private-use.flag, unicode.private-use.strip, unicode.combining.flag, \
+                unicode.zero-width.flag, unicode.zero-width.strip",
     },
     SignatureFamily {
         id: "typography",
@@ -283,8 +291,10 @@ const CATALOG: &[SignatureFamily] = &[
                      naming the tool, and python-docx's 2013-12-23 default-template \
                      creation date — none of which Word clears on resave. Reported as \
                      container findings at every level; the matched fields are scrubbed \
-                     at aggressive. Prose in headers, footers, footnotes, endnotes and \
-                     comments is cleaned by the ordinary prose rules.",
+                     at aggressive. External hyperlink targets in `.rels` are also reported \
+                     and have exact AI-provider attribution parameters removed at aggressive; \
+                     prose in headers, footers, footnotes, endnotes and comments is cleaned \
+                     by the ordinary prose rules.",
         // Implemented by the DOCX adapter's container.findings hook
         // (container.docx-generator-metadata), which is not a prose rule.
         rules: "",

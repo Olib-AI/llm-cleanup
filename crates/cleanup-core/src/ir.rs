@@ -49,6 +49,24 @@ pub struct DocMeta {
     pub had_bom: bool,
 }
 
+/// One XML text run whose decoded prose can have a different byte length from its source.
+///
+/// `boundaries` contains one source-relative byte offset for every decoded byte boundary. For
+/// example, `&lt;` decodes to `<` and has boundaries `[0, 4]`. Offsets inside a multi-byte
+/// character are never queried (rule ranges must be UTF-8 boundaries), but the vector keeps a
+/// value for them so indexing remains simple and checked.
+#[derive(Debug, Clone)]
+pub struct DecodedSegment {
+    pub source: Range<usize>,
+    pub boundaries: Vec<usize>,
+}
+
+impl DecodedSegment {
+    pub fn decoded_len(&self) -> usize {
+        self.boundaries.len().saturating_sub(1)
+    }
+}
+
 /// How a prose span's text maps back into the original document.
 #[derive(Debug, Clone)]
 pub enum SpanAnchor {
@@ -59,6 +77,9 @@ pub enum SpanAnchor {
     /// the runs it covers (the first run receives the replacement, later runs are trimmed), so
     /// every run keeps its own `<w:rPr>` formatting.
     Segments(Vec<Range<usize>>),
+    /// DOCX runs with an explicit decoded-text-to-XML-source map. This is required because XML
+    /// entities such as `&lt;` and `&#x200B;` are multiple source bytes but one prose character.
+    DecodedSegments(Vec<DecodedSegment>),
 }
 
 /// The only editable unit. Holds prose text and nothing structural — a rule that receives
@@ -83,7 +104,7 @@ impl ProseSpan {
     pub fn byte_range(&self) -> Option<Range<usize>> {
         match &self.anchor {
             SpanAnchor::Bytes(r) => Some(r.clone()),
-            SpanAnchor::Segments(_) => None,
+            SpanAnchor::Segments(_) | SpanAnchor::DecodedSegments(_) => None,
         }
     }
 

@@ -54,7 +54,9 @@ impl Rule for StripInvisibles {
             | '\u{180E}'
             | '\u{034F}'
             | '\u{2061}'..='\u{2064}'
+            | '\u{2065}' // reserved, but Default_Ignorable by Unicode for forward compatibility
             | '\u{206A}'..='\u{206F}'
+            | '\u{FFF0}'..='\u{FFF8}' // reserved default-ignorable format range
             | '\u{FFF9}'..='\u{FFFB}'
             | '\u{1BCA0}'..='\u{1BCA3}'
             // Mongolian free variation selectors and the musical format controls: two

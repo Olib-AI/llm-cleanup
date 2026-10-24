@@ -39,7 +39,7 @@ pub fn assert_idempotent(fmt: &dyn Format, input: &str, level: CleanupLevel) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cleanup_formats::{Markdown, PlainText};
+    use cleanup_formats::{Docx, Markdown, PlainText};
 
     #[test]
     fn markdown_preserves_structure_and_cleans_prose() {
@@ -311,11 +311,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn aggressive_removes_current_citation_and_token_residue() {
+        let input = "A<|header_start|>user<|header_end|> B \
+                     C【cite|turn0block1|turn2url0】 D (oaicite:2){index=2}.\n";
+        let (out, _) = clean_str(&PlainText, input, CleanupLevel::Aggressive);
+        assert!(!out.contains("header_start"));
+        assert!(!out.contains("turn0block"));
+        assert!(!out.contains("oaicite"));
+        assert!(out.contains('A') && out.contains('D'));
+        assert_idempotent(&PlainText, input, CleanupLevel::Aggressive);
+    }
+
+    #[test]
+    fn unknown_special_token_shapes_remain_report_only() {
+        let input = "Quote <|future_token_9|> exactly.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, input);
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.chat-tokens.pattern")
+        );
+    }
+
+    #[test]
+    fn unknown_pua_citation_payloads_remain_report_only() {
+        let input = "keep \u{E200}entity\u{E202}turn0search0\u{E201} intact";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(
+            out, input,
+            "unknown envelope was partially deleted: {out:?}"
+        );
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.private-use-citations")
+        );
+    }
+
+    #[test]
+    fn ansi_sequences_are_removed_without_leaving_parameters() {
+        let input = "plain \u{1b}[31mred\u{1b}[0m and \u{1b}]0;title\u{7}done\n";
+        let (out, _) = clean_str(&PlainText, input, CleanupLevel::Light);
+        assert_eq!(out, "plain red and done\n");
+        let malformed = "before \u{1b}]0;unterminated visible text";
+        let (out, _) = clean_str(&PlainText, malformed, CleanupLevel::Light);
+        assert!(out.contains("visible text"));
+    }
+
+    #[test]
+    fn markdown_link_destinations_scrub_ai_attribution_only() {
+        let input = "[source](https://e.test/?a=1&utm_source=chatgpt.com&b=2#frag)\n\n\
+                     <https://e.test/?utm_source=copilot.com>\n\n\
+                     `[code](https://e.test/?utm_source=chatgpt.com)`\n\n\
+                     [multiline](\n  <https://e.test/?utm_source=chatgpt.com>\n)\n";
+        let (out, report) = analyze(&Markdown, input, CleanupLevel::Aggressive);
+        assert!(
+            out.contains("[source](https://e.test/?a=1&b=2#frag)"),
+            "{out}"
+        );
+        assert_eq!(out.matches("<https://e.test/>").count(), 2, "{out}");
+        assert!(out.contains("`[code](https://e.test/?utm_source=chatgpt.com)`"));
+        assert!(report.container.iter().any(|c| c.applied));
+        assert_idempotent(&Markdown, input, CleanupLevel::Aggressive);
+    }
+
     // -----------------------------------------------------------------------
     // DOCX package coverage: prose everywhere + generator metadata
     // -----------------------------------------------------------------------
 
-    use cleanup_formats::Docx;
     use std::io::{Cursor, Read, Write};
 
     fn make_docx_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
@@ -397,6 +464,41 @@ mod tests {
         // …and cleaning the cleaned file is a no-op.
         let (_, again) = analyze_bytes(&Docx, &out, CleanupLevel::Standard);
         assert!(!again.changed, "second pass should find nothing: {again:?}");
+    }
+
+    #[test]
+    fn docx_escaped_chat_tokens_are_cleaned_without_touching_xml_structure() {
+        let body = wrap("w:document", &pt("Before &lt;|im_end|&gt; after."));
+        let bytes = make_docx_bytes(&[("word/document.xml", &body)]);
+        let (out, report) = analyze_bytes(&Docx, &bytes, CleanupLevel::Aggressive);
+        assert!(report.edits_applied >= 1, "{report:?}");
+        let xml = docx_part_text(&out, "word/document.xml");
+        assert!(!xml.contains("im_end"), "{xml}");
+        assert!(xml.contains("Before  after."), "{xml}");
+        assert!(xml.contains("<w:r><w:t>"), "run structure retained");
+        let (_, again) = analyze_bytes(&Docx, &out, CleanupLevel::Aggressive);
+        assert!(!again.changed, "{again:?}");
+    }
+
+    #[test]
+    fn docx_external_hyperlinks_scrub_ai_attribution_only() {
+        let body = wrap("w:document", &pt("A linked source."));
+        let rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://e.test/?a=1&amp;utm_source=chatgpt.com&amp;b=2#frag" TargetMode="External"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://e.test/?utm_source=newsletter" TargetMode="External"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://e.test/?utm_source=chatgpt.com" TargetMode="External"/></Relationships>"#;
+        let bytes = make_docx_bytes(&[
+            ("word/document.xml", &body),
+            ("word/_rels/document.xml.rels", rels),
+        ]);
+        let (out, report) = analyze_bytes(&Docx, &bytes, CleanupLevel::Aggressive);
+        assert!(report.container.iter().any(|c| c.applied), "{report:?}");
+        let scrubbed = docx_part_text(&out, "word/_rels/document.xml.rels");
+        assert!(
+            scrubbed.contains("Target=\"https://e.test/?a=1&amp;b=2#frag\""),
+            "{scrubbed}"
+        );
+        assert!(scrubbed.contains("Target=\"https://e.test/?utm_source=newsletter\""));
+        assert!(scrubbed.contains("Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"https://e.test/?utm_source=chatgpt.com\""));
+        let (_, again) = analyze_bytes(&Docx, &out, CleanupLevel::Aggressive);
+        assert!(!again.changed, "{again:?}");
     }
 
     #[test]
