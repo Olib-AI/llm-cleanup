@@ -42,7 +42,7 @@ jobs:
       # GUI ships the app-local runtime (see scripts/package-windows.ps1).
       RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain (1.99.1)
         uses: dtolnay/rust-toolchain@stable
@@ -115,7 +115,7 @@ jobs:
           - { os: ubuntu-latest, artifact: aiclean-gui-linux-amd64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
