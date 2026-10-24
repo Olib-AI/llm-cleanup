@@ -10,6 +10,11 @@
 # Everything in this pack is FLAG-ONLY: it points at wording, it never rewrites it. Term
 # lists were refreshed against the Graphite "AI Tells" studies (Sept/Oct 2026, 90k
 # generations across nine model families), provider documentation, and observed UI residue.
+# Vocabulary additions in the 2026-10 refresh are evidence-weighted rather than vibes:
+# Kobak et al. (Science Advances 2025, 15.1M PubMed abstracts: "delves" at 28x,
+# "underscores" 13.8x, "showcasing" 10.7x expected frequency), Reinhart et al. (PNAS
+# 2025), and WikiProject AI Cleanup's "Signs of AI writing" (Sept 2026 revision:
+# copula avoidance, trailing participles, promotional puffery, model-specific tics).
 # Model-version-specific terms are grouped by family so they can be retired when a model
 # stops using them. Coverage table: docs/FINGERPRINTS.md.
 
@@ -28,11 +33,13 @@ rules:
     level: standard
     action: flag
     severity: medium
-    terms: [delve, leverage, utilize, harness, streamline, underscore, foster,
-            facilitate, spearhead, elevate, unlock, unleash, embody, supercharge,
-            navigate, reimagine, redefine, reshape, galvanize, orchestrate,
-            operationalize, catalyze, amplify, illuminate, demystify, unpack,
-            champion, empower]
+    terms: [delve, delves, delved, leverage, utilize, harness, streamline, underscore,
+            underscores, underscored, foster, facilitate, spearhead, elevate, unlock,
+            unleash, embody, supercharge, navigate, reimagine, redefine, reshape,
+            galvanize, orchestrate, operationalize, catalyze, amplify, illuminate,
+            demystify, unpack, champion, empower, showcase, showcases, showcasing,
+            bolster, bolstered, enhance, garner, garnered, elucidate, encompass,
+            exemplify, expedite, cultivate, propel, revolutionize, underpin, underpins]
 
   - id: lexical.overused-nouns
     description: AI-favored nouns and metaphors — flagged for review
@@ -43,7 +50,8 @@ rules:
     terms: [tapestry, testament, landscape, realm, synergy, paradigm, ecosystem,
             cornerstone, beacon, bedrock, nexus, interplay, plethora, myriad,
             journey, quest, canvas, mosaic, symphony, fabric, scaffold, flywheel,
-            "north star", value proposition, "deep dive", "double down"]
+            intricacies, complexities, camaraderie, "north star", value proposition,
+            "deep dive", "double down", "treasure trove", "game-changer"]
 
   - id: lexical.inflated-adjectives
     description: Promotional / inflated adjectives — flagged for review
@@ -56,7 +64,8 @@ rules:
             unparalleled, cutting-edge, game-changing, state-of-the-art, impactful,
             actionable, world-class, best-in-class, future-proof, next-generation,
             bespoke, curated, thought-provoking, dependable, indispensable,
-            mission-critical]
+            mission-critical, vibrant, commendable, compelling, enduring, captivating,
+            unwavering, paramount]
 
   - id: lexical.llm-tics
     description: Single words that the 2026 models over-use relative to human writers
@@ -66,7 +75,7 @@ rules:
     severity: low
     terms: [notably, arguably, ultimately, fundamentally, inherently, invariably,
             ostensibly, decidedly, remarkably, tellingly, crucially, importantly,
-            holistic, robustly, simply]
+            holistic, robustly, simply, meticulously, intriguingly, curiously]
 
   - id: lexical.hedges
     description: Hedge stacking — assistant register rather than a point of view
@@ -91,7 +100,10 @@ rules:
             "embark on a journey", "at the end of the day", "needless to say",
             "with that in mind", "here's the thing", "the bottom line is",
             "in the ever-evolving landscape", "in the realm of", "at its core",
-            "the real question is", "in a nutshell", "spoiler alert"]
+            "the real question is", "in a nutshell", "spoiler alert",
+            "in today's digital age", "in today's interconnected world",
+            "in an era where", "it's no secret that", "let's face it",
+            "as we navigate", "the world of today demands"]
 
   - id: phrasal.machine-residue
     description: Chat/model leakage that should never appear in finished prose
@@ -105,7 +117,10 @@ rules:
             "i don't have personal opinions", "my knowledge cutoff",
             "my training data", "as of my last update",
             "i cannot browse", "i can't browse the internet",
-            "i don't have access to real-time"]
+            "i don't have access to real-time", "as of my knowledge cutoff",
+            "i cannot access the internet", "i do not have real-time access",
+            "i'm not able to browse", "my last training update",
+            "i don't have browsing capabilities"]
 
   - id: phrasal.chatgpt-residue
     description: Assistant/chat residue common in ChatGPT/GPT-5.x/GPT-6 outputs — should never appear in finished prose
@@ -153,7 +168,8 @@ rules:
     severity: high
     terms: ["not just", "not only", "more than just", "isn't just", "is not just",
             "not merely", "not simply", "less like", "not because", "but rather",
-            "rather than", "instead of merely", "it's not about", "it isn't about"]
+            "rather than", "instead of merely", "it's not about", "it isn't about",
+            "not only about", "no longer just", "more than a mere"]
 
   - id: phrasal.superlative-framing
     description: Superlative framing ("the single most", "one of the most important") — measured at 100x+ human rate for Claude Opus 5
@@ -175,7 +191,9 @@ rules:
             "you're absolutely right", "that's a fantastic", "happy to help",
             "let me know if", "feel free to", "would you like me to",
             "is there anything else", "just let me know", "i'm here to help",
-            "hope this helps", "don't hesitate to"]
+            "hope this helps", "don't hesitate to", "great point",
+            "excellent point", "couldn't agree more", "wonderful question",
+            "i love this question", "absolutely spot on"]
 
   - id: phrasal.formal-transitions
     description: Over-signposting transitions common across LLMs (notably ChatGPT and Gemini)
@@ -207,7 +225,9 @@ rules:
     terms: ["studies show", "research shows", "studies have shown", "experts agree",
             "experts say", "scientists agree", "it's widely known",
             "it is widely believed", "many people believe", "industry experts",
-            "best practices suggest", "data suggests", "evidence suggests"]
+            "best practices suggest", "data suggests", "evidence suggests",
+            "research suggests", "studies indicate", "experts recommend",
+            "it is widely acknowledged", "it is generally accepted"]
 
   - id: phrasal.ai-disclaimer
     description: Provenance disclaimers and disclosures added to (or left in) documents
@@ -250,3 +270,89 @@ rules:
     severity: low
     terms: ["why it matters", "what this means for you", "the bottom line",
             "key takeaways", "what's next", "how it works", "the takeaway"]
+
+  # --- Measured 2024–2026 patterns (see the header note for sources) ----------
+  - id: phrasal.copula-avoidance
+    description: Copula avoidance — "serves as / boasts / features" doing the work of plain "is / has" (a repetition-penalty artefact; "is/are" fell ~10% in post-2023 academic text)
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["serves as", "stands as", "functions as", "operates as",
+            "boasts a", "boasts an", "features a", "features an",
+            "marks a significant", "represents a significant"]
+
+  - id: phrasal.trailing-participles
+    description: Trailing -ing significance clauses ("…, highlighting its importance") — the sentence-final participle pad identified by WikiProject AI Cleanup
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["highlighting the", "highlighting its", "emphasizing the",
+            "underscoring the", "showcasing the", "reflecting a",
+            "reflecting the", "solidifying its", "cementing its",
+            "reinforcing its", "enhancing its"]
+
+  - id: phrasal.academic-formulas
+    description: Formulaic academic scaffolding that spiked in post-2022 scientific prose ("plays a crucial role", "a growing body of")
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["plays a crucial role", "plays a vital role", "plays a pivotal role",
+            "play a crucial role", "a growing body of", "sheds light on",
+            "paves the way for", "paving the way for", "has emerged as",
+            "have emerged as", "gained traction", "in the context of",
+            "in recent years,", "a burgeoning field"]
+
+  - id: phrasal.marketing-formulas
+    description: Formulaic marketing scaffolding ("unlock the power of", "take it to the next level") — landing-page register in generated copy
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: medium
+    terms: ["unlock the power of", "harness the power of", "elevate your",
+            "supercharge your", "to the next level", "revolutionize the way",
+            "say goodbye to", "look no further", "whether you're a",
+            "no matter your", "welcome to the future of", "the future is here"]
+
+  - id: phrasal.promotional-puffery
+    description: Brochure puffery ("nestled in the heart of", "hidden gem") — promotional register and place-writing clichés of generated copy
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["nestled in the heart of", "in the heart of", "renowned for",
+            "hidden gem", "rich cultural heritage", "rich tapestry of",
+            "diverse array of", "breathtaking views", "must-visit",
+            "commitment to excellence", "natural beauty"]
+
+  - id: phrasal.professional-disclaimer
+    description: Transfer-of-liability disclaimers the assistant wraps around advice ("this is not medical advice", "consult a professional")
+    category: phrasal
+    level: standard
+    action: flag
+    severity: medium
+    terms: ["this is not medical advice", "this is not legal advice",
+            "this is not financial advice", "i am not a medical professional",
+            "i'm not a medical professional", "i am not a lawyer",
+            "consult a healthcare professional", "consult a qualified professional",
+            "seek professional advice", "this does not constitute"]
+
+  - id: phrasal.rhetorical-pivots
+    description: Engagement-bait rhetorical pivots ("But what does this mean?", "Sound familiar?") — social-post assembly habits in generated prose
+    category: phrasal
+    level: aggressive
+    action: flag
+    severity: low
+    terms: ["but what does this mean", "what does this mean for you",
+            "here's the kicker", "plot twist", "sound familiar",
+            "the catch?", "the twist?", "why should you care"]
+
+  - id: lexical.grok-tics
+    description: Single words xAI's Grok models over-use relative to other families (per the Sept 2026 revision of Wikipedia's Signs of AI writing)
+    category: lexical
+    level: aggressive
+    action: flag
+    severity: low
+    terms: [causal, causally, correlate, correlates, empirically]

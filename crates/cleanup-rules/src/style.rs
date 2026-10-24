@@ -12,7 +12,8 @@ use cleanup_core::{CleanupLevel, Ctx, Finding, Rule};
 /// ordinary writing, but a rocket *opening every bullet* is a model habit.
 const DECORATION_EMOJI: &[char] = &[
     '✨', '🚀', '💡', '🔥', '✅', '🎯', '📌', '📝', '🔑', '⚡', '🌟', '💪', '🙌', '👉', '📊', '🧠',
-    '🛠', '🎉', '🤖', '⏰', '📈', '🧵', '❗', '❓', '⚠',
+    '🛠', '🎉', '🤖', '⏰', '📈', '🧵', '❗', '❓', '⚠', '✔', '⭐', '🔹', '🔸', '📣', '🔍', '🧩',
+    '📚', '🗂', '🏁',
 ];
 
 fn is_emoji(c: char) -> bool {
@@ -110,7 +111,7 @@ impl Rule for MarkdownResidue {
     fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
         let text = span.text.as_str();
         let mut out = Vec::new();
-        for needle in ["**", "__"] {
+        for needle in ["**", "__", "~~", "```"] {
             let mut from = 0usize;
             while let Some(rel) = text[from..].find(needle) {
                 let start = from + rel;
@@ -120,7 +121,7 @@ impl Rule for MarkdownResidue {
                     span_index: idx,
                     range: start..end,
                     message: format!(
-                        "Markdown emphasis marker {needle:?} left in plain prose (raw model output)"
+                        "Markdown syntax {needle:?} left in plain prose (raw model output)"
                     ),
                     replacement: None,
                 });
@@ -176,6 +177,175 @@ impl Rule for RepeatedPunctuation {
     }
 }
 
+/// Flag a plain ASCII space before sentence punctuation (`word ,`, `word .`, `word !`).
+/// This is the visible scar of detokenization: models emit the punctuation as its own
+/// token and a naive detokenizer joins tokens with spaces. Typed English essentially
+/// never does this. Flag-only and aggressive-only: French typography puts a (narrow
+/// no-break) space before `! ? ; :`, and a document *in* French should be reviewed by a
+/// human, not silently re-spaced — the rule only fires on a regular U+0020, never on the
+/// no-break spaces French actually uses.
+pub struct DetokenizedSpacing;
+
+impl Rule for DetokenizedSpacing {
+    fn id(&self) -> &str {
+        "style.spacing.detokenized"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let mut out = Vec::new();
+        for k in 1..chars.len() {
+            let (i, ch) = chars[k];
+            if ch != ' ' {
+                continue;
+            }
+            let prev = chars[k - 1].1;
+            let Some(&(punct_at, punct)) = chars.get(k + 1) else {
+                continue;
+            };
+            if !matches!(punct, ',' | '.' | '!' | '?' | ';' | ':') || !prev.is_alphanumeric() {
+                continue;
+            }
+            let after = chars.get(k + 2).map(|c| c.1);
+            // Spaced ellipsis ("word ...") and digit-grouping colons (times, ratios)
+            // are deliberate styles, not detokenizer scars.
+            if punct == '.' && after == Some('.') {
+                continue;
+            }
+            if punct == ':' && after.is_some_and(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            out.push(Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                range: i..punct_at + punct.len_utf8(),
+                message: format!(
+                    "space before {punct:?} (detokenized punctuation; French typography \
+                     aside, English keeps punctuation against the word)"
+                ),
+                replacement: None,
+            });
+        }
+        out
+    }
+}
+
+/// Flag unfilled template placeholders: `[Your Name]`, `[INSERT SOURCE]`, `[TODO: …]`,
+/// `2026-XX-XX`, leftover lorem ipsum. A model asked for a template produces the
+/// brackets; a finished human document almost never ships them, which is why editors
+/// treat shipped placeholders as a near-definitive tell of unedited generation.
+pub struct PlaceholderResidue;
+
+impl PlaceholderResidue {
+    const BRACKET_OPENERS: &[&str] = &[
+        "insert",
+        "your",
+        "add ",
+        "enter",
+        "replace",
+        "placeholder",
+        "todo",
+        "tbd",
+        "xxx",
+    ];
+    const BRACKET_EXACT: &[&str] = &[
+        "citation needed",
+        "source",
+        "link",
+        "name",
+        "date",
+        "title",
+        "image",
+        "company",
+    ];
+    const MAX_BRACKET_CHARS: usize = 64;
+
+    fn bracket_findings(&self, idx: usize, text: &str) -> Vec<Finding> {
+        let lower = text.to_ascii_lowercase();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find('[') {
+            let start = from + rel;
+            let inner_start = start + 1;
+            let Some(close_rel) = text[inner_start..].find(']') else {
+                break;
+            };
+            let close = inner_start + close_rel;
+            let inner = &lower[inner_start..close];
+            let trimmed = inner.trim();
+            let is_placeholder = !trimmed.is_empty()
+                && inner.chars().count() <= Self::MAX_BRACKET_CHARS
+                && !inner.contains(['\n', '\r'])
+                && (Self::BRACKET_OPENERS.iter().any(|o| trimmed.starts_with(o))
+                    || Self::BRACKET_EXACT.contains(&trimmed));
+            if is_placeholder {
+                out.push(Finding {
+                    rule_id: self.id().to_string(),
+                    span_index: idx,
+                    range: start..close + 1,
+                    message: format!(
+                        "unfilled placeholder {:?} shipped in the text",
+                        &text[start..close + 1]
+                    ),
+                    replacement: None,
+                });
+            }
+            from = close + 1;
+        }
+        // Lorem ipsum and digit-masked template dates (`2026-XX-XX`).
+        let mut from = 0usize;
+        while let Some(rel) = lower[from..].find("lorem ipsum") {
+            let start = from + rel;
+            out.push(Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                range: start..start + "lorem ipsum".len(),
+                message: "lorem ipsum placeholder text shipped in the document".to_string(),
+                replacement: None,
+            });
+            from = start + "lorem ipsum".len();
+        }
+        let bytes = text.as_bytes();
+        for (i, w) in bytes.windows(3).enumerate() {
+            if (w[0] == b'-' || w[0] == b'/')
+                && w[1] == b'X'
+                && w[2] == b'X'
+                && i > 0
+                && bytes[i - 1].is_ascii_digit()
+            {
+                let mut end = i + 3;
+                while end < bytes.len() && bytes[end] == b'X' {
+                    end += 1;
+                }
+                out.push(Finding {
+                    rule_id: self.id().to_string(),
+                    span_index: idx,
+                    range: i..end,
+                    message: "masked template value (`-XX`) shipped in the text".to_string(),
+                    replacement: None,
+                });
+            }
+        }
+        out.sort_by_key(|f| (f.range.start, f.range.end));
+        out
+    }
+}
+
+impl Rule for PlaceholderResidue {
+    fn id(&self) -> &str {
+        "style.placeholder.residue"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Standard
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        self.bracket_findings(idx, span.text.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +388,55 @@ mod tests {
             detect(&RepeatedPunctuation, "Really?! Yes!! Done...").len(),
             2
         );
+    }
+
+    #[test]
+    fn flags_detokenized_spacing_not_real_styles() {
+        assert_eq!(
+            detect(&DetokenizedSpacing, "Revenue grew , then fell . Why ?").len(),
+            3
+        );
+        assert!(detect(&DetokenizedSpacing, "Normal punctuation. Yes, really!").is_empty());
+        assert!(detect(&DetokenizedSpacing, "A spaced ellipsis ... trails off").is_empty());
+        assert!(detect(&DetokenizedSpacing, "Ratio 3 :2 is a style").is_empty());
+        // French no-break spacing never trips the rule: it is not a U+0020 space.
+        assert!(detect(&DetokenizedSpacing, "Attention\u{202F}!").is_empty());
+    }
+
+    #[test]
+    fn flags_unfilled_placeholders() {
+        assert_eq!(
+            detect(&PlaceholderResidue, "Dear [Your Name], welcome.").len(),
+            1
+        );
+        assert_eq!(
+            detect(
+                &PlaceholderResidue,
+                "Per the report [INSERT SOURCE], sales rose."
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            detect(&PlaceholderResidue, "Dated 2026-XX-XX in the draft.").len(),
+            1
+        );
+        assert_eq!(
+            detect(&PlaceholderResidue, "Lorem ipsum dolor sit amet.").len(),
+            1
+        );
+        // Ordinary brackets and citations are not placeholders.
+        assert!(
+            detect(
+                &PlaceholderResidue,
+                "As shown [12], results (see appendix) hold."
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn flags_strikethrough_and_fence_residue() {
+        assert_eq!(detect(&MarkdownResidue, "a ~~mistake~~ here").len(), 2);
     }
 }

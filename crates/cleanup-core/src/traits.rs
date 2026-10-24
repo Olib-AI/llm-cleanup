@@ -51,6 +51,21 @@ pub struct EditSet {
     pub edits: Vec<Edit>,
 }
 
+/// A document-level (container) finding that is not tied to any prose span — e.g. a
+/// fingerprint in DOCX package metadata (`docProps/core.xml`) identifying the tool that
+/// generated the file. Container findings are always reported; the `scrubbable` ones are
+/// additionally *removed* at [`CleanupLevel::Aggressive`] via [`Format::scrub_container`].
+#[derive(Debug, Clone)]
+pub struct ContainerFinding {
+    pub rule_id: String,
+    pub message: String,
+    /// Whether [`Format::scrub_container`] knows how to remove this fingerprint.
+    pub scrubbable: bool,
+    /// Whether the pipeline actually scrubbed it (Aggressive only). Set by the pipeline;
+    /// format adapters always construct findings with `applied: false`.
+    pub applied: bool,
+}
+
 /// A format adapter. Parses bytes into prose spans and renders edits back by **splicing
 /// into the original bytes** — never by reserializing a parsed tree.
 pub trait Format {
@@ -67,6 +82,22 @@ pub trait Format {
     /// A canonical fingerprint of *structure only* (prose text excluded), used by the
     /// pipeline's post-edit self-check to prove no formatting changed.
     fn skeleton(&self, bytes: &[u8]) -> Result<String>;
+
+    /// Container-level fingerprints outside the prose (file/package metadata).
+    /// Best-effort and purely advisory: return an empty vec when none are found or the
+    /// container has no inspectable metadata. Default: none.
+    fn container_findings(&self, _doc: &Document) -> Vec<ContainerFinding> {
+        Vec::new()
+    }
+
+    /// Remove the scrubbable [`ContainerFinding`]s from already-rendered bytes, returning
+    /// the scrubbed bytes, or `None` when nothing was changed. The pipeline calls this
+    /// only at [`CleanupLevel::Aggressive`] and only when scrubbable findings exist. The
+    /// scrub must not touch prose — the structural skeleton is (deliberately) blind to
+    /// metadata, so honesty here is by construction of each adapter. Default: no-op.
+    fn scrub_container(&self, _doc: &Document, _rendered: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A detection rule. Format-agnostic: it only ever sees prose text.

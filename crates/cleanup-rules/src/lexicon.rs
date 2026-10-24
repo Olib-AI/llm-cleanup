@@ -1,7 +1,7 @@
 //! A data-driven, flag-only rule built from a template's term list. Flag-only because single
 //! "AI words" are ordinary English; we surface them for review and never auto-replace.
 
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, MatchKind};
 use cleanup_core::ir::ProseSpan;
 use cleanup_core::{CleanupLevel, Ctx, Finding, Rule};
 
@@ -17,8 +17,13 @@ impl LexiconFlagRule {
         // ASCII-case-insensitive multi-term matcher over the ORIGINAL text — correct byte
         // offsets, linear time, and (unlike the old lowercase approach) no whole-span bail-out
         // when the text contains a non-ASCII character. Our shipped term lists are ASCII.
+        // LeftmostLongest so an inflected or phrasal term ("delves", "deep dive") wins over
+        // a shorter nested term ("delve", "dive") starting at the same offset; with the
+        // default match kind the short match would be reported, fail the word-boundary
+        // check below, and the longer one would never be tried.
         let matcher = AhoCorasick::builder()
             .ascii_case_insensitive(true)
+            .match_kind(MatchKind::LeftmostLongest)
             .build(&terms)
             .expect("lexicon terms are valid aho-corasick patterns");
         let message = if message.is_empty() {
@@ -68,5 +73,42 @@ impl Rule for LexiconFlagRule {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cleanup_core::ir::SpanAnchor;
+
+    fn detect(rule: &LexiconFlagRule, text: &str) -> Vec<Finding> {
+        let span = ProseSpan::new(SpanAnchor::Bytes(0..text.len()), text);
+        rule.detect(0, &span, &Ctx::new(CleanupLevel::Aggressive))
+    }
+
+    #[test]
+    fn longest_term_wins_so_inflections_match() {
+        // With the default match kind, "delve" would match inside "delves", fail the
+        // word-boundary check, and the inflected form would never be reported.
+        let rule = LexiconFlagRule::new(
+            "test.inflections".to_string(),
+            CleanupLevel::Standard,
+            vec!["delve".to_string(), "delves".to_string()],
+            "test".to_string(),
+        );
+        let found = detect(&rule, "It delves, then we delve.");
+        assert_eq!(found.len(), 2, "got {found:?}");
+        assert_eq!(found[0].range, 3..9);
+    }
+
+    #[test]
+    fn substrings_of_longer_words_do_not_match() {
+        let rule = LexiconFlagRule::new(
+            "test.boundaries".to_string(),
+            CleanupLevel::Standard,
+            vec!["delve".to_string()],
+            "test".to_string(),
+        );
+        assert!(detect(&rule, "The delver indelves.").is_empty());
     }
 }

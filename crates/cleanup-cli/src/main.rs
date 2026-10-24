@@ -200,8 +200,10 @@ fn run_clean(job: Job) -> Result<()> {
 
         // Change summary.
         println!("{}  (level: {level})", input.display());
-        if report.edits_applied == 0 {
+        if report.edits_applied == 0 && !report.changed {
             println!("  ✓ no AI fingerprints removed");
+        } else if report.edits_applied == 0 {
+            println!("  ✓ no prose fingerprints removed (metadata only — see below)");
         } else {
             println!(
                 "  ✓ cleaned {} AI fingerprint{}:",
@@ -222,6 +224,19 @@ fn run_clean(job: Job) -> Result<()> {
                 println!("      {n:>3} ×  {rule}");
             }
         }
+        if !report.container.is_empty() {
+            println!("  ⚑ document metadata fingerprints:");
+            for c in &report.container {
+                if c.applied {
+                    println!("      ✓ scrubbed: {}", c.message);
+                } else {
+                    println!("      ⚠ {}", c.message);
+                }
+            }
+            if report.container.iter().any(|c| c.scrubbable && !c.applied) {
+                println!("      (rerun with --level aggressive to scrub the fields above)");
+            }
+        }
 
         if diff {
             print_diff(&bytes, &output_bytes);
@@ -230,8 +245,9 @@ fn run_clean(job: Job) -> Result<()> {
             continue;
         }
 
-        // Same format and nothing changed: don't re-save an identical file.
-        if !converting && report.edits_applied == 0 {
+        // Same format and nothing changed (no prose edits, no metadata scrub):
+        // don't re-save an identical file.
+        if !converting && !report.changed {
             println!("  → file is already clean, nothing written");
             continue;
         }

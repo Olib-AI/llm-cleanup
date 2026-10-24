@@ -58,8 +58,10 @@ pub const OUT_OF_SCOPE: &[OutOfScope] = &[
     OutOfScope {
         technique: "C2PA / Content Credentials",
         owner: "Claude file exports, OpenAI images and audio, Google media",
-        why: "Cryptographically signed file metadata. Stripping it is a container-level \
-              operation and a separate feature request (it is not prose).",
+        why: "Cryptographically signed provenance manifests. (Distinct from the unsigned \
+              author/program metadata in docProps/core.xml and app.xml, which we DO flag \
+              and, at aggressive, scrub — see the docx-generators family.) Removing \
+              signed claims is neither a prose edit nor something this tool does.",
     },
 ];
 
@@ -69,12 +71,20 @@ const CATALOG: &[SignatureFamily] = &[
         provider: "OpenAI — ChatGPT, Codex, API",
         models: "GPT-5.5, GPT-5.6 Sol, GPT-6 Astra, o3/o4-mini",
         signatures: "U+202F narrow no-break space and stray invisibles from long answers; \
-                     chat-UI citation plumbing (【9†source】, 【45†L75-L83】, turn0search, \
-                     oai_citation); gpt-oss harmony control tokens; corrective framing \
-                     (\"rather than\", \"not simply\")",
+                     chat-UI citation plumbing in all its forms — bracket citations \
+                     (【9†source】, 【45†L75-L83】), the Private-Use-Area wrappers the UI \
+                     actually stores (U+E200…U+E201/U+E202, incl. cited-span markers \
+                     U+E203/U+E204/U+E206), bare turn0search0-style IDs at any turn/source \
+                     number, oai_citation, and utm_source=chatgpt.com tracking parameters \
+                     left on cited links; gpt-oss harmony control tokens; leaked \
+                     tool-call/function scaffolding; corrective framing (\"rather than\", \
+                     \"not simply\")",
         rules: "typo.invisibles.strip, unicode.spaces.normalize, markers.citation-artifacts, \
-                markers.citation-brackets, markers.chat-tokens, markers.model-identifiers, \
-                phrasal.negative-parallelism",
+                markers.citation-brackets, markers.private-use-citations, \
+                markers.private-use-citations.strip, markers.turn-citations, \
+                markers.turn-citations.strip, markers.chat-tokens, \
+                markers.chat-tokens.pattern, markers.tool-calls, \
+                markers.model-identifiers, phrasal.negative-parallelism",
     },
     SignatureFamily {
         id: "anthropic",
@@ -82,12 +92,15 @@ const CATALOG: &[SignatureFamily] = &[
         models: "Opus 5 / 5.5, Sonnet 5, Haiku 4.5, Fable 5.1, Mythos 5.1",
         signatures: "Em and en dashes (heavily reduced from Opus 5.5 onward, still present in \
                      older models); superlative framing (\"the single most\", \"dependable\") \
-                     measured at 100x+ human rate; extended-thinking markup; Claude Code \
-                     commit and PR trailers; a statistical watermark on models released \
-                     on/after 2026-08-02 (out of scope)",
+                     measured at 100x+ human rate; extended-thinking markup and leaked \
+                     tool-use scaffolding (<invoke>, <function_calls>); Claude Code commit \
+                     and PR trailers, incl. versioned Co-Authored-By lines for unreleased \
+                     model names (matched by pattern); a statistical watermark on models \
+                     released on/after 2026-08-02 (out of scope)",
         rules: "typo.em-dash.to-comma, typo.en-dash.to-hyphen, markers.reasoning-block, \
-                markers.reasoning-trace, markers.agent-trailers, markers.model-identifiers, \
-                phrasal.claude-residue, phrasal.superlative-framing",
+                markers.reasoning-trace, markers.agent-trailers, markers.agent-trailer-lines, \
+                markers.tool-calls, markers.model-identifiers, phrasal.claude-residue, \
+                phrasal.superlative-framing",
     },
     SignatureFamily {
         id: "google",
@@ -95,9 +108,12 @@ const CATALOG: &[SignatureFamily] = &[
         models: "Gemini 3 Pro / 3.1 Pro / Flash",
         signatures: "Zero-width and non-breaking spaces picked up from the Docs/Keep \
                      clipboard, footnote-style citation markers, formal transitions \
-                     (\"furthermore\", \"moreover\"); SynthID watermark (out of scope)",
-        rules: "typo.invisibles.strip, unicode.spaces.normalize, \
-                phrasal.gemini-affirmations, phrasal.formal-transitions",
+                     (\"furthermore\", \"moreover\"); Gemma chat tokens (<start_of_turn>, \
+                     <|turn|>, <|think|>, <|channel|>thought) in self-hosted output; \
+                     SynthID watermark (out of scope)",
+        rules: "typo.invisibles.strip, unicode.spaces.normalize, markers.chat-tokens, \
+                markers.chat-tokens.pattern, phrasal.gemini-affirmations, \
+                phrasal.formal-transitions",
     },
     SignatureFamily {
         id: "meta",
@@ -105,44 +121,50 @@ const CATALOG: &[SignatureFamily] = &[
         models: "Llama 4 family, Meta AI",
         signatures: "Llama 3/4 chat-template tokens, first-person \"I'm Meta AI\" identity, \
                      assistant disclaimers",
-        rules: "markers.chat-tokens, markers.chat-tokens.strip, markers.model-identifiers, \
-                phrasal.model-self-reference",
+        rules: "markers.chat-tokens, markers.chat-tokens.strip, markers.chat-tokens.pattern, \
+                markers.model-identifiers, phrasal.model-self-reference",
     },
     SignatureFamily {
         id: "xai",
         provider: "xAI — Grok",
         models: "Grok 4, Grok 5",
         signatures: "Inline render directives (<grok:render), self-identification, emoji-heavy \
-                     bullet formatting",
+                     bullet formatting; measured overuse of causal/empirical connectives in \
+                     AI-generated Wikipedia text (\"empirically\", \"correlate\", \"causally\")",
         rules: "markers.citation-artifacts, markers.model-identifiers, style.emoji.opener, \
-                style.emoji.density",
+                style.emoji.density, lexical.grok-tics",
     },
     SignatureFamily {
         id: "mistral",
         provider: "Mistral AI — Le Chat, Mistral Large",
         models: "Mistral Large 3, Le Chat",
-        signatures: "Mistral/community [INST] and <<SYS>> instruction markers, product-name \
+        signatures: "Mistral/community [INST] and <<SYS>> instruction markers, V7 template \
+                     sections ([SYSTEM_PROMPT], [AVAILABLE_TOOLS], [TOOL_CALLS]), product-name \
                      leakage (\"Le Chat\")",
-        rules: "markers.chat-tokens, markers.model-identifiers",
+        rules: "markers.chat-tokens, markers.tool-calls, markers.model-identifiers",
     },
     SignatureFamily {
         id: "deepseek",
         provider: "DeepSeek",
         models: "DeepSeek V4 Flash / V4 Pro / V4.1 Flash, V3.x, R1",
-        signatures: "Fullwidth sentence-final punctuation inside English text; reasoning \
-                     traces that leak as visible \"thinking\"; DeepSeek sentence tokens \
-                     (<|begin▁of▁sentence|>, ｜end▁of▁sentence｜)",
-        rules: "typo.fullwidth.normalize, markers.chat-tokens, markers.chat-tokens.strip, \
-                markers.reasoning-trace, markers.reasoning-block, \
-                markers.model-identifiers",
+        signatures: "Fullwidth and CJK punctuation inside English text (、。：；？！), \
+                     visible detokenizer space markers (Ġ, ▁) from tokenizer dumps; \
+                     reasoning traces that leak as visible \"thinking\"; DeepSeek sentence \
+                     tokens (<|begin▁of▁sentence|>, ｜end▁of▁sentence｜)",
+        rules: "typo.fullwidth.normalize, typo.cjk-punctuation.normalize, \
+                typo.detokenizer.normalize, markers.chat-tokens, markers.chat-tokens.strip, \
+                markers.chat-tokens.pattern, markers.reasoning-trace, \
+                markers.reasoning-block, markers.model-identifiers",
     },
     SignatureFamily {
         id: "alibaba",
         provider: "Alibaba — Qwen",
         models: "Qwen3.8-Max, Qwen3.8-27B, Qwen Code",
-        signatures: "Fullwidth parentheses/colons, chat-template tokens, always-on thinking \
-                     output that can be pasted into the document",
-        rules: "typo.fullwidth.normalize, markers.chat-tokens, markers.agent-trailers, \
+        signatures: "Fullwidth parentheses/colons and CJK punctuation in English text, \
+                     ChatML tokens, always-on thinking output that can be pasted into the \
+                     document",
+        rules: "typo.fullwidth.normalize, typo.cjk-punctuation.normalize, \
+                markers.chat-tokens, markers.chat-tokens.pattern, markers.agent-trailers, \
                 markers.model-identifiers",
     },
     SignatureFamily {
@@ -151,24 +173,29 @@ const CATALOG: &[SignatureFamily] = &[
         models: "Kimi K2.5, K2.6, K3",
         signatures: "Sentence tokens with fullwidth pipes, always-on reasoning dumps, \
                      self-identification",
-        rules: "markers.chat-tokens, markers.reasoning-block, markers.model-identifiers",
+        rules: "markers.chat-tokens, markers.chat-tokens.pattern, markers.reasoning-block, \
+                markers.model-identifiers",
     },
     SignatureFamily {
         id: "zhipu",
         provider: "Zhipu AI — GLM",
         models: "GLM-5, GLM-5.1",
-        signatures: "Fullwidth punctuation, chat-template tokens, reasoning traces",
-        rules: "typo.fullwidth.normalize, markers.chat-tokens, markers.reasoning-trace",
+        signatures: "Fullwidth and CJK punctuation, chat-template tokens ([gMASK]<sop>, \
+                     <|observation|>), reasoning traces",
+        rules: "typo.fullwidth.normalize, typo.cjk-punctuation.normalize, \
+                markers.chat-tokens, markers.chat-tokens.pattern, markers.reasoning-trace",
     },
     SignatureFamily {
         id: "microsoft",
         provider: "Microsoft — Copilot (Word, Edge, VS Code)",
         models: "Copilot (GPT-5.6 family under the hood)",
         signatures: "Assistant disclaimers kept in the document, Copilot attribution, \
-                     Office metadata naming the assistant as author (metadata is out of \
-                     scope), raw Markdown pasted into Word",
+                     utm_source=copilot.com tracking parameters, raw Markdown pasted into \
+                     Word, unfilled template placeholders ([Your Name], [INSERT …]); \
+                     Office metadata naming the assistant as author (see docx-generators)",
         rules: "phrasal.machine-residue, phrasal.sycophancy, markers.agent-trailers, \
-                structural.markdown-tells, style.markdown.residue",
+                markers.citation-artifacts, structural.markdown-tells, \
+                style.markdown.residue, style.placeholder.residue",
     },
     SignatureFamily {
         id: "perplexity",
@@ -192,9 +219,12 @@ const CATALOG: &[SignatureFamily] = &[
         models: "2026 releases",
         signatures: "Attribution trailers in commits, PR bodies and changelogs \
                      (Co-Authored-By: Claude, 🤖 Generated with [Claude Code], \
-                     Claude-Session:), decorative emoji and raw Markdown in generated docs",
-        rules: "markers.agent-trailers, style.emoji.opener, style.emoji.density, \
-                style.markdown.residue, structural.markdown-tells",
+                     Claude-Session:) — the literal ones and the same patterns naming \
+                     models released after this catalogue was written; leaked tool-call \
+                     scaffolding; decorative emoji and raw Markdown in generated docs",
+        rules: "markers.agent-trailers, markers.agent-trailer-lines, markers.tool-calls, \
+                style.emoji.opener, style.emoji.density, style.markdown.residue, \
+                structural.markdown-tells",
     },
     SignatureFamily {
         id: "unicode",
@@ -202,19 +232,62 @@ const CATALOG: &[SignatureFamily] = &[
         models: "Any model, any version (character-level smuggling)",
         signatures: "Unicode tag characters, variation-selector runs, filler glyphs \
                      (U+3164, U+FFA0, U+2800), bidi overrides (Trojan Source), mixed-script \
-                     homoglyphs",
+                     homoglyphs (Greek, Cyrillic, Armenian, Cherokee lookalikes); C0/C1 \
+                     control characters and noncharacters; Private-Use-Area residue; \
+                     combining-mark (Zalgo) runs; zero-width runs encoding hidden bits \
+                     (\"Sneaky Bits\") and stray joiners inside Latin words",
         rules: "typo.invisibles.strip, unicode.smuggled.strip, unicode.fillers.strip, \
                 unicode.spaces.normalize, unicode.bidi.strip-overrides, unicode.bidi.flag, \
-                unicode.confusables.flag",
+                unicode.confusables.flag, unicode.controls.strip, unicode.private-use.flag, \
+                unicode.private-use.strip, unicode.combining.flag, unicode.zero-width.flag",
     },
     SignatureFamily {
         id: "typography",
         provider: "All providers — punctuation and typography",
         models: "Any model, any version (office-style smart punctuation)",
-        signatures: "Curly quotes and guillemets, ellipsis, em/en dashes, hyphen family, \
-                     fullwidth ASCII forms, double spaces around punctuation",
+        signatures: "Curly quotes, guillemets and primes, ellipsis and two-dot leader, \
+                     em/en dashes, hyphen family, fullwidth ASCII forms, CJK punctuation \
+                     in non-CJK text, detokenizer space markers and detokenized spacing \
+                     (space before punctuation), repeated sentence punctuation",
         rules: "typo.quotes.straighten, typo.ellipsis.expand, typo.em-dash.to-comma, \
-                typo.en-dash.to-hyphen, typo.hyphens.normalize, typo.fullwidth.normalize",
+                typo.en-dash.to-hyphen, typo.hyphens.normalize, typo.fullwidth.normalize, \
+                typo.cjk-punctuation.normalize, typo.detokenizer.normalize, \
+                style.spacing.detokenized, style.punctuation.repeated",
+    },
+    SignatureFamily {
+        id: "lexical",
+        provider: "All providers — measured excess vocabulary and phrasing",
+        models: "Any model, any version (flag-only; evidence-weighted, never auto-rewritten)",
+        signatures: "Post-ChatGPT excess words measured on 15.1M PubMed abstracts (delve, \
+                     showcase, underscore, tapestry — Kobak et al., Science Advances 2025), \
+                     the WikiProject AI Cleanup watch list, copula avoidance (\"serves \
+                     as\" for \"is\"), negative parallelism, trailing -ing clauses, academic \
+                     and marketing formulas, promotional puffery, professional disclaimers, \
+                     rhetorical pivots, throat-clearing and sycophancy",
+        rules: "lexical.overused-verbs, lexical.overused-nouns, lexical.inflated-adjectives, \
+                lexical.llm-tics, lexical.hedges, phrasal.copula-avoidance, \
+                phrasal.negative-parallelism, phrasal.trailing-participles, \
+                phrasal.academic-formulas, phrasal.marketing-formulas, \
+                phrasal.promotional-puffery, phrasal.professional-disclaimer, \
+                phrasal.rhetorical-pivots, phrasal.throat-clearing, phrasal.sycophancy, \
+                phrasal.fake-authority, phrasal.formal-transitions",
+    },
+    SignatureFamily {
+        id: "docx-generators",
+        provider: "DOCX generator libraries — python-docx, JS docx, Apache POI, docx4j",
+        models: "Underlies ChatGPT code interpreter, Claude/Gemini document generation, \
+                 most custom AI pipelines",
+        signatures: "Package metadata, not prose: creator / lastModifiedBy / description \
+                     stamped by a generation library or model (\"python-docx\", \"generated \
+                     by python-docx\", the JS library's \"Un-named\" creator), Application \
+                     naming the tool, and python-docx's 2013-12-23 default-template \
+                     creation date — none of which Word clears on resave. Reported as \
+                     container findings at every level; the matched fields are scrubbed \
+                     at aggressive. Prose in headers, footers, footnotes, endnotes and \
+                     comments is cleaned by the ordinary prose rules.",
+        // Implemented by the DOCX adapter's container.findings hook
+        // (container.docx-generator-metadata), which is not a prose rule.
+        rules: "",
     },
 ];
 

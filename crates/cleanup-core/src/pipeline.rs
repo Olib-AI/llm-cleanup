@@ -1,6 +1,7 @@
 use crate::error::{CoreError, Result};
 use crate::ir::Document;
-use crate::traits::{Ctx, Edit, EditSet, Finding, Format, Rule};
+use crate::level::CleanupLevel;
+use crate::traits::{ContainerFinding, Ctx, Edit, EditSet, Finding, Format, Rule};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Default)]
@@ -15,7 +16,11 @@ pub struct CleanReport {
     pub applied_by_rule: Vec<(String, usize)>,
     /// Flag-only counts grouped by rule id (sorted).
     pub flagged_by_rule: Vec<(String, usize)>,
-    /// Whether the output differs from the input.
+    /// Container-level findings (package/file metadata fingerprints — not prose).
+    /// `applied: true` marks ones actually scrubbed (Aggressive only).
+    pub container: Vec<ContainerFinding>,
+    /// Whether the output differs from the input (span edits applied, or a container
+    /// fingerprint scrubbed).
     pub changed: bool,
 }
 
@@ -31,7 +36,9 @@ fn group_by_rule<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<(String, usize)>
 /// Run detection + transformation over a parsed document and return cleaned bytes + a report.
 ///
 /// Guarantees:
-/// - empty edit set ⇒ output is byte-identical to input;
+/// - empty edit set ⇒ output is byte-identical to input, except that at Aggressive a
+///   *container metadata* scrub may still rewrite non-prose package metadata (all prose
+///   bytes remain untouched; see `report.container`);
 /// - edits never overlap (deterministic leftmost/first-rule resolution);
 /// - the output's structural skeleton equals the input's, or we abort with
 ///   [`CoreError::SelfCheck`] (we never emit a structurally-changed file).
@@ -71,11 +78,18 @@ pub fn clean(
     report.findings = findings;
     report.flagged_by_rule = group_by_rule(report.flags.iter().map(|f| f.rule_id.as_str()));
 
-    // Phase 2 — resolve conflicts: sort by (span, start), drop overlaps (first wins).
+    // Phase 2 — resolve conflicts: sort by (span, start, longest first), drop overlaps
+    // (first wins). The longest-first tie-break matters now that whole-artifact deletions
+    // exist alongside single-character normalizations: deleting a leaked citation marker
+    // such as `\u{E200}cite\u{E202}turn0search0\u{E201}` or a fullwidth chat token
+    // (`｜end▁of▁sentence｜`) must win over the one-character edits that would otherwise
+    // merely re-spell its first character and leave the rest of the artifact behind.
+    // Beyond the tie-break the sort is stable, so rule order still decides true ties.
     edits.sort_by(|a, b| {
         a.span_index
             .cmp(&b.span_index)
             .then(a.range.start.cmp(&b.range.start))
+            .then(b.range.end.cmp(&a.range.end))
     });
     let mut resolved: Vec<Edit> = Vec::new();
     for e in edits {
@@ -89,26 +103,46 @@ pub fn clean(
     }
     report.edits_applied = resolved.len();
     report.applied_by_rule = group_by_rule(resolved.iter().map(|e| e.rule_id.as_str()));
+    let has_edits = !resolved.is_empty();
+
+    // Container-level (package metadata) findings live outside the prose spans. They are
+    // always reported; scrubbable ones are removed in phase 4, at Aggressive only.
+    report.container = fmt.container_findings(doc);
+    let want_scrub = cx.level.includes(CleanupLevel::Aggressive)
+        && report.container.iter().any(|c| c.scrubbable);
+
+    let mut output = fmt.render(doc, &EditSet { edits: resolved })?;
+
+    // Phase 3 — post-edit structural self-check (the keystone safety net). Skipped when
+    // nothing was edited: rendering an empty EditSet is identity by trait contract.
+    if has_edits {
+        let before = fmt.skeleton(&doc.source)?;
+        let after = fmt.skeleton(&output)?;
+        if before != after {
+            return Err(CoreError::SelfCheck(
+                "document structure changed during cleaning; aborting and keeping the original"
+                    .to_string(),
+            ));
+        }
+    }
+
+    // Phase 4 — metadata scrub (Aggressive only). Deliberately *after* the skeleton
+    // check: the skeleton is blind to container metadata by design, and scrubbing must
+    // never be able to mask a structural problem in the prose render.
+    let mut scrubbed = false;
+    if want_scrub && let Some(scrubbed_bytes) = fmt.scrub_container(doc, &output) {
+        output = scrubbed_bytes;
+        scrubbed = true;
+        for c in &mut report.container {
+            if c.scrubbable {
+                c.applied = true;
+            }
+        }
+    }
+
     // Format-independent: edits exist only when a rule produced a real change. (Comparing
     // output == source is wrong for DOCX, whose output is a freshly re-zipped container.)
-    report.changed = !resolved.is_empty();
-
-    if resolved.is_empty() {
-        let out = fmt.render(doc, &EditSet::default())?;
-        return Ok((out, report));
-    }
-
-    let output = fmt.render(doc, &EditSet { edits: resolved })?;
-
-    // Phase 3 — post-edit structural self-check (the keystone safety net).
-    let before = fmt.skeleton(&doc.source)?;
-    let after = fmt.skeleton(&output)?;
-    if before != after {
-        return Err(CoreError::SelfCheck(
-            "document structure changed during cleaning; aborting and keeping the original"
-                .to_string(),
-        ));
-    }
+    report.changed = has_edits || scrubbed;
 
     Ok((output, report))
 }

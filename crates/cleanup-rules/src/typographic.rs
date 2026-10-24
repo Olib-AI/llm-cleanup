@@ -56,7 +56,13 @@ impl Rule for StripInvisibles {
             | '\u{2061}'..='\u{2064}'
             | '\u{206A}'..='\u{206F}'
             | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{1BCA0}'..='\u{1BCA3}' => Some((
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            // Mongolian free variation selectors and the musical format controls: two
+            // more invisible, copy-stable families used by the same smuggling encoders
+            // (and occasionally hallucinated by models reproducing encoded text).
+            | '\u{180B}'..='\u{180D}'
+            | '\u{180F}'
+            | '\u{1D173}'..='\u{1D182}' => Some((
                 String::new(),
                 format!("removed invisible character U+{:04X}", ch as u32),
             )),
@@ -71,7 +77,9 @@ impl Rule for StripInvisibles {
 }
 
 /// Curly/smart quotes → straight quotes, including the Continental guillemets and the
-/// low-9 („…“) forms that German/French-localised models produce in English text.
+/// low-9 („…“) forms that German/French-localised models produce in English text, and
+/// the prime/double-prime pair (`′`/`″`, plus their reversed and modifier-letter forms)
+/// that models substitute for apostrophes and inch marks.
 pub struct NormalizeQuotes;
 impl Rule for NormalizeQuotes {
     fn id(&self) -> &str {
@@ -82,11 +90,12 @@ impl Rule for NormalizeQuotes {
     }
     fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
         scan_chars(self.id(), idx, span, |ch| match ch {
-            '\u{201C}' | '\u{201D}' | '\u{00AB}' | '\u{00BB}' | '\u{201E}' | '\u{201F}' => {
+            '\u{201C}' | '\u{201D}' | '\u{00AB}' | '\u{00BB}' | '\u{201E}' | '\u{201F}'
+            | '\u{2033}' | '\u{2036}' | '\u{02BA}' => {
                 Some(("\"".to_string(), "straightened double quote".to_string()))
             }
             '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2039}' | '\u{203A}'
-            | '\u{02BC}' => Some((
+            | '\u{02BC}' | '\u{2032}' | '\u{2035}' | '\u{02B9}' => Some((
                 "'".to_string(),
                 "straightened single quote / apostrophe".to_string(),
             )),
@@ -108,6 +117,8 @@ impl Rule for NormalizeEllipsis {
     fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
         scan_chars(self.id(), idx, span, |ch| match ch {
             '\u{2026}' | '\u{22EF}' => Some(("...".to_string(), "expanded ellipsis".to_string())),
+            // Two-dot leader (U+2025), occasionally emitted where a human types "..".
+            '\u{2025}' => Some(("..".to_string(), "expanded two-dot leader".to_string())),
             _ => None,
         })
     }
@@ -237,7 +248,7 @@ impl Rule for NormalizeHyphens {
         let mut out = Vec::new();
         for (i, ch) in text.char_indices() {
             let convert = match ch {
-                '\u{2010}' | '\u{2011}' | '\u{2012}' => true,
+                '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2043}' | '\u{FE63}' => true,
                 '\u{2212}' => {
                     let prev = text[..i].chars().next_back();
                     let next = text[i + ch.len_utf8()..].chars().next();
@@ -286,6 +297,87 @@ impl Rule for NormalizeFullwidthForms {
                 None
             }
         })
+    }
+}
+
+/// CJK punctuation marks that Chinese/Japanese-trained models drop into otherwise-Latin
+/// prose (the fullwidth ASCII range is `NormalizeFullwidthForms`; these are the dedicated
+/// CJK code points outside it): ideographic comma/full stop, corner-bracket quotes, the
+/// wave dash, katakana middle dot, and the halfwidth kana punctuation forms. Aggressive
+/// only, like fullwidth normalization, because a genuinely CJK document wants them.
+pub struct NormalizeCjkPunctuation;
+impl Rule for NormalizeCjkPunctuation {
+    fn id(&self) -> &str {
+        "typo.cjk-punctuation.normalize"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        scan_chars(self.id(), idx, span, |ch| {
+            let replacement = match ch {
+                '\u{3001}' | '\u{FF64}' => ",",
+                '\u{3002}' | '\u{FF61}' => ".",
+                '\u{300C}' | '\u{300D}' | '\u{300E}' | '\u{300F}' | '\u{FF62}' | '\u{FF63}' => "\"",
+                '\u{301C}' => "~",
+                '\u{30FB}' | '\u{FF65}' => " ",
+                _ => return None,
+            };
+            Some((
+                replacement.to_string(),
+                format!(
+                    "normalized CJK punctuation U+{:04X} to {replacement:?}",
+                    ch as u32
+                ),
+            ))
+        })
+    }
+}
+
+/// Detokenizer residue: characters that *represent* spaces inside a tokenizer's
+/// vocabulary and should have been decoded back to spaces before anyone saw the text.
+/// SentencePiece's `▁` (U+2581, used by Llama/Qwen/T5-family tokenizers) is unambiguous.
+/// Byte-level BPE's `Ġ` (U+0120, space) and `Ċ` (U+010A, newline) are also genuine
+/// Maltese capital letters, so they are only rewritten mid-text — when the previous
+/// character is a letter or punctuation (where a space belongs) and a letter follows;
+/// a word-initial `Ġ` (a name, a sentence start) is left alone. Aggressive only.
+pub struct NormalizeDetokenizer;
+impl Rule for NormalizeDetokenizer {
+    fn id(&self) -> &str {
+        "typo.detokenizer.normalize"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let chars: Vec<(usize, char)> = span.text.char_indices().collect();
+        let mut out = Vec::new();
+        for k in 0..chars.len() {
+            let (i, ch) = chars[k];
+            let convert = match ch {
+                '\u{2581}' => true,
+                '\u{0120}' | '\u{010A}' => {
+                    let prev = if k > 0 { Some(chars[k - 1].1) } else { None };
+                    let next = chars.get(k + 1).map(|c| c.1);
+                    prev.is_some_and(|p| p.is_ascii_alphanumeric() || p.is_ascii_punctuation())
+                        && next.is_some_and(|n| n.is_ascii_alphabetic())
+                }
+                _ => false,
+            };
+            if convert {
+                out.push(Finding {
+                    rule_id: self.id().to_string(),
+                    span_index: idx,
+                    range: i..i + ch.len_utf8(),
+                    message: format!(
+                        "replaced detokenizer space marker U+{:04X} with a plain space",
+                        ch as u32
+                    ),
+                    replacement: Some(" ".to_string()),
+                });
+            }
+        }
+        out
     }
 }
 
@@ -345,5 +437,33 @@ mod tests {
         let text = "note\u{FF08}one\u{FF09} and \u{4E2D}\u{6587}";
         let got = run(&NormalizeFullwidthForms, text, CleanupLevel::Aggressive);
         assert_eq!(apply(text, &got), "note(one) and \u{4E2D}\u{6587}");
+    }
+
+    #[test]
+    fn straightens_primes_and_expands_two_dot_leader() {
+        let text = "6\u{2032}2\u{2033} tall\u{2025}ish";
+        let quotes = run(&NormalizeQuotes, text, CleanupLevel::Standard);
+        assert_eq!(apply(text, &quotes), "6'2\" tall\u{2025}ish");
+        let dots = run(&NormalizeEllipsis, text, CleanupLevel::Standard);
+        assert_eq!(apply(text, &dots), "6\u{2032}2\u{2033} tall..ish");
+    }
+
+    #[test]
+    fn normalizes_cjk_punctuation() {
+        let text = "Done\u{3002} Next\u{3001}then \u{300C}quoted\u{300D} wave\u{301C} end";
+        let got = run(&NormalizeCjkPunctuation, text, CleanupLevel::Aggressive);
+        assert_eq!(apply(text, &got), "Done. Next,then \"quoted\" wave~ end");
+    }
+
+    #[test]
+    fn detokenizer_markers_become_spaces_but_maltese_capitals_survive() {
+        let text = "hello\u{2581}world and\u{0120}again";
+        let got = run(&NormalizeDetokenizer, text, CleanupLevel::Aggressive);
+        assert_eq!(apply(text, &got), "hello world and again");
+
+        // Word-initial Ġ (a Maltese capital) is a letter, not a leaked space.
+        let maltese = "\u{0120}ordan went home.";
+        let got = run(&NormalizeDetokenizer, maltese, CleanupLevel::Aggressive);
+        assert!(got.is_empty(), "got {got:?}");
     }
 }

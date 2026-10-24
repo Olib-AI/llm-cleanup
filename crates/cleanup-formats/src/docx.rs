@@ -1,20 +1,35 @@
 //! DOCX adapter.
 //!
-//! A `.docx` is a zip (OPC package). The cleanable prose lives in `<w:t>` text nodes inside
-//! `word/document.xml`. We:
-//!   1. extract `word/document.xml` and find the byte range of each `<w:t>`'s text content
+//! A `.docx` is a zip (OPC package). Cleanable prose lives in `<w:t>` text nodes, and not
+//! only in the body: LLM generators (and Word users pasting LLM output) put fingerprints
+//! in headers, footers, footnotes, endnotes and reviewer comments too, and detectors
+//! scan all of them. We therefore treat every prose-bearing part — `word/document.xml`,
+//! `word/header*.xml`, `word/footer*.xml`, `word/footnotes.xml`, `word/endnotes.xml`,
+//! `word/comments.xml` — uniformly. We:
+//!   1. extract each prose part and find the byte range of each `<w:t>`'s text content
 //!      (the WHOLE inner content, so XML entities like `&amp;` stay intact),
 //!   2. group the `<w:t>` of each paragraph (`<w:p>`) into ONE logical span so phrases split
 //!      across runs are matched (the "multi-run problem"), splitting at `<w:tab>`/`<w:br>` so
-//!      runs are never glued into false matches across a visual break,
+//!      runs are never glued into false matches across a visual break. `Document::source`
+//!      is the parts' XML concatenated (each span's segments carry its part's base offset),
 //!   3. run the rules on that logical text and map each edit back onto the runs it covers
 //!      (first run gets the replacement, later runs are trimmed) — every run keeps its `<w:rPr>`,
-//!   4. rebuild the zip, copying every other part (images, shapes, styles, numbering, …) byte
-//!      for byte, so formatting and embedded objects are preserved exactly.
+//!   4. rebuild the zip, splicing only the parts that received edits and copying every
+//!      other part (images, shapes, styles, numbering, …) byte for byte, so formatting
+//!      and embedded objects are preserved exactly.
+//!
+//! Package metadata is a fingerprint of its own: AI pipelines (ChatGPT's code
+//! interpreter, Claude/Gemini document features) typically write files with libraries
+//! such as python-docx or the JS `docx` package, whose default templates stamp
+//! `docProps/core.xml`/`docProps/app.xml` with recognizable creators, descriptions and
+//! template dates — and resaving in Word does *not* clear creator/description. We
+//! report such metadata as container findings at every level, and (Aggressive only,
+//! via [`Format::scrub_container`]) empty the matched creator/description/application
+//! fields.
 
 use cleanup_core::ir::{DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor};
 use cleanup_core::splice::render_byte_spliced;
-use cleanup_core::{CoreError, Edit, EditSet, Format, Result};
+use cleanup_core::{ContainerFinding, CoreError, Edit, EditSet, Format, Result};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::io::{Cursor, Read, Write};
@@ -34,6 +49,84 @@ fn read_part(zip_bytes: &[u8], part: &str) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+/// Zip entry names, in archive order.
+fn part_names(zip_bytes: &[u8]) -> Result<Vec<String>> {
+    let mut archive = ZipArchive::new(Cursor::new(zip_bytes))
+        .map_err(|e| CoreError::Parse(format!("not a valid .docx (zip) file: {e}")))?;
+    (0..archive.len())
+        .map(|i| {
+            archive
+                .by_index_raw(i)
+                .map(|f| f.name().to_string())
+                .map_err(|e| CoreError::Parse(format!("zip read: {e}")))
+        })
+        .collect()
+}
+
+/// Does this package part carry `<w:t>` prose?
+fn is_prose_part(name: &str) -> bool {
+    // Header/footer parts are numbered (header1.xml, footer2.xml, …); the notes and
+    // comments parts have fixed names. Deliberately name-based: every mainstream
+    // producer (Word, Google Docs, LibreOffice, python-docx, …) uses these names.
+    fn numbered(name: &str, prefix: &str) -> bool {
+        name.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(".xml"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    }
+    name == DOC_PART
+        || matches!(
+            name,
+            "word/footnotes.xml" | "word/endnotes.xml" | "word/comments.xml"
+        )
+        || numbered(name, "word/header")
+        || numbered(name, "word/footer")
+}
+
+/// All prose parts with their XML, in the canonical order used everywhere below: the
+/// body first, then the rest alphabetically. Deterministic order matters — the
+/// concatenated [`Document::source`] (and therefore every span offset) is built from it
+/// independently in `parse`, `render` and `skeleton`. `word/document.xml` is required
+/// (a `.docx` without a body is not a word-processing document at all).
+fn prose_parts(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut names: Vec<String> = part_names(zip_bytes)?
+        .into_iter()
+        .filter(|n| is_prose_part(n))
+        .collect();
+    names.sort_by(|a, b| (a != DOC_PART, a).cmp(&(b != DOC_PART, b)));
+    if !names.iter().any(|n| n == DOC_PART) {
+        return Err(CoreError::Parse(format!(
+            "{DOC_PART} not found in .docx: not a word-processing document"
+        )));
+    }
+    let mut archive = ZipArchive::new(Cursor::new(zip_bytes))
+        .map_err(|e| CoreError::Parse(format!("not a valid .docx (zip) file: {e}")))?;
+    names
+        .into_iter()
+        .map(|name| {
+            let mut buf = Vec::new();
+            archive
+                .by_name(&name)
+                .map_err(|e| CoreError::Parse(format!("{name} not found in .docx: {e}")))?
+                .read_to_end(&mut buf)?;
+            Ok((name, buf))
+        })
+        .collect()
+}
+
+/// Concatenate the parts' XML into the single buffer spans are anchored into
+/// (`\n`-separated, which no `<w:t>` content can straddle), returning each part's
+/// base offset within it. This is the one place the layout is defined.
+fn concat_parts(parts: &[(String, Vec<u8>)]) -> (Vec<u8>, Vec<usize>) {
+    let mut source = Vec::new();
+    let mut bases = Vec::with_capacity(parts.len());
+    for (_, xml) in parts {
+        bases.push(source.len());
+        source.extend_from_slice(xml);
+        source.push(b'\n');
+    }
+    (source, bases)
 }
 
 /// Escape the three characters that are significant in XML text content, so a replacement can
@@ -113,31 +206,24 @@ fn paragraph_wt_ranges(xml: &[u8]) -> Result<Vec<Vec<Range<usize>>>> {
     Ok(paragraphs)
 }
 
-/// Rebuild the zip from the original, replacing only `word/document.xml`. Everything else
-/// (images, shapes, styles, numbering, headers/footers, …) is copied verbatim.
-fn rezip(original: &[u8], doc_xml: &[u8]) -> Result<Vec<u8>> {
+/// Rebuild the zip from the original, replacing the given parts. Everything else
+/// (images, shapes, styles, numbering, untouched prose parts, …) is copied verbatim.
+fn rezip(original: &[u8], replacements: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+    let names = part_names(original)?;
     let mut archive = ZipArchive::new(Cursor::new(original))
         .map_err(|e| CoreError::Parse(format!("re-reading .docx zip failed: {e}")))?;
-    let names: Vec<String> = (0..archive.len())
-        .map(|i| {
-            archive
-                .by_index_raw(i)
-                .map(|f| f.name().to_string())
-                .map_err(|e| CoreError::Parse(format!("zip read: {e}")))
-        })
-        .collect::<Result<_>>()?;
 
     let mut out = Vec::new();
     {
         let mut writer = ZipWriter::new(Cursor::new(&mut out));
         for (i, name) in names.iter().enumerate() {
-            if name == DOC_PART {
+            if let Some((_, bytes)) = replacements.iter().find(|(n, _)| n == name) {
                 let opts = zip::write::SimpleFileOptions::default()
                     .compression_method(zip::CompressionMethod::Deflated);
                 writer
                     .start_file(name, opts)
                     .map_err(|e| CoreError::Parse(format!("zip write: {e}")))?;
-                writer.write_all(doc_xml)?;
+                writer.write_all(bytes)?;
             } else {
                 let entry = archive
                     .by_index_raw(i)
@@ -154,9 +240,9 @@ fn rezip(original: &[u8], doc_xml: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Structural fingerprint of `document.xml`: element names + attributes, with `<w:t>` text
-/// content excluded entirely (so editing or emptying a run's text leaves the fingerprint
-/// unchanged). Accepts either a full `.docx` (zip) or raw `document.xml`.
+/// Structural fingerprint of prose-part XML (possibly several parts concatenated):
+/// element names + attributes, with `<w:t>` text content excluded entirely (so editing
+/// or emptying a run's text leaves the fingerprint unchanged).
 fn xml_skeleton(xml: &[u8]) -> Result<String> {
     fn write_open(out: &mut String, e: &quick_xml::events::BytesStart, self_closing: bool) {
         out.push('<');
@@ -203,59 +289,435 @@ fn xml_skeleton(xml: &[u8]) -> Result<String> {
     Ok(out)
 }
 
+const CORE_PART: &str = "docProps/core.xml";
+const APP_PART: &str = "docProps/app.xml";
+
+/// Case-insensitive substrings that betray programmatic/AI generation in package
+/// metadata fields. "python-docx" is what ChatGPT's code interpreter writes; the model
+/// and vendor names appear when AI document features stamp themselves as author; the
+/// library names mark the other common programmatic pipelines.
+const GENERATOR_SIGNS: &[&str] = &[
+    "python-docx",
+    "chatgpt",
+    "openai",
+    "gpt-",
+    "claude",
+    "anthropic",
+    "gemini",
+    "copilot",
+    "apache poi",
+    "docx4j",
+    "generated by ai",
+    "ai-generated",
+    "large language model",
+];
+
+/// python-docx's bundled default template was saved at this exact instant; every file
+/// written without touching core properties still carries it (revision 1, zero editing
+/// time) no matter when it was actually generated.
+const PYTHON_DOCX_TEMPLATE_DATE: &str = "2013-12-23T23:15:00Z";
+
+/// Inner-text byte ranges of the named leaf elements (matched by local name, so any
+/// namespace prefix works), in document order — the metadata analogue of `paragraph_wt_ranges`.
+fn element_text_ranges(xml: &[u8], wanted: &[&str]) -> Vec<(String, Range<usize>)> {
+    let mut reader = Reader::from_reader(xml);
+    let mut out = Vec::new();
+    let mut open: Option<(String, usize)> = None;
+    let mut buf = Vec::new();
+    loop {
+        let pre = reader.buffer_position() as usize;
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let qname = e.name();
+                let local_name = qname.local_name();
+                let local: &[u8] = local_name.as_ref();
+                if let Ok(name) = std::str::from_utf8(local)
+                    && wanted.contains(&name)
+                {
+                    open = Some((name.to_string(), reader.buffer_position() as usize));
+                }
+            }
+            Ok(Event::End(e)) => {
+                if let Some((name, start)) = open.take() {
+                    if e.name().local_name().as_ref() == name.as_bytes() && pre >= start {
+                        out.push((name, start..pre));
+                    } else {
+                        // Mismatched close (nested markup): keep waiting for ours.
+                        open = Some((name, start));
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+/// One generator-metadata hit: `(field, value, text range, scrubbable)`.
+type MetaHit = (String, String, Range<usize>, bool);
+
+/// Scan one `docProps` part for generator fingerprints. Pure text-field matching —
+/// the fields below are the ones Word shows in File ▸ Properties and the ones
+/// detector tooling reads.
+fn metadata_hits(part: &str, xml: &[u8]) -> Vec<MetaHit> {
+    let fields: &[&str] = if part == CORE_PART {
+        &["creator", "lastModifiedBy", "description", "created"]
+    } else {
+        &["Application"]
+    };
+    let mut hits = Vec::new();
+    for (field, range) in element_text_ranges(xml, fields) {
+        let Ok(raw) = std::str::from_utf8(&xml[range.clone()]) else {
+            continue;
+        };
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let lower = value.to_lowercase();
+        if field == "created" {
+            // Template-date fingerprint: report-only (we never invent a date).
+            if value == PYTHON_DOCX_TEMPLATE_DATE {
+                hits.push((field, value.to_string(), range, false));
+            }
+        } else if GENERATOR_SIGNS.iter().any(|s| lower.contains(s))
+            || (field == "creator" && lower == "un-named")
+        {
+            hits.push((field, value.to_string(), range, true));
+        }
+    }
+    hits
+}
+
+/// Read a part if present; metadata inspection is advisory and must never fail a clean.
+fn read_part_opt(zip_bytes: &[u8], part: &str) -> Option<Vec<u8>> {
+    read_part(zip_bytes, part).ok()
+}
+
 impl Format for Docx {
     fn id(&self) -> FormatId {
         FormatId::Docx
     }
 
     fn parse(&self, bytes: &[u8]) -> Result<Document> {
-        let xml = read_part(bytes, DOC_PART)?;
-        let paragraphs = paragraph_wt_ranges(&xml)?;
-        let mut spans = Vec::with_capacity(paragraphs.len());
-        for segs in paragraphs {
-            let mut text = String::new();
-            for r in &segs {
-                let part = std::str::from_utf8(&xml[r.clone()]).map_err(|e| {
-                    CoreError::Encoding(format!("document.xml text is not UTF-8: {e}"))
-                })?;
-                text.push_str(part);
+        let parts = prose_parts(bytes)?;
+        let (source, bases) = concat_parts(&parts);
+        let mut spans = Vec::new();
+        for ((name, xml), base) in parts.iter().zip(bases) {
+            for segs in paragraph_wt_ranges(xml)? {
+                let mut text = String::new();
+                for r in &segs {
+                    let part = std::str::from_utf8(&xml[r.clone()]).map_err(|e| {
+                        CoreError::Encoding(format!("{name} text is not UTF-8: {e}"))
+                    })?;
+                    text.push_str(part);
+                }
+                let segs = segs
+                    .into_iter()
+                    .map(|r| (r.start + base)..(r.end + base))
+                    .collect();
+                spans.push(ProseSpan::new(SpanAnchor::Segments(segs), text));
             }
-            spans.push(ProseSpan::new(SpanAnchor::Segments(segs), text));
         }
         let meta = DocMeta {
             format: FormatId::Docx,
             newline: Newline::Lf,
             had_bom: false,
         };
-        let mut doc = Document::new(xml, spans, meta);
+        let mut doc = Document::new(source, spans, meta);
         doc.aux = bytes.to_vec();
         Ok(doc)
     }
 
     fn render(&self, doc: &Document, edits: &EditSet) -> Result<Vec<u8>> {
-        // Escape replacements so spliced text can never make document.xml malformed.
-        let escaped = EditSet {
-            edits: edits
-                .edits
+        // Escape replacements so spliced text can never make any part's XML malformed.
+        let escaped: Vec<Edit> = edits
+            .edits
+            .iter()
+            .map(|e| Edit {
+                span_index: e.span_index,
+                range: e.range.clone(),
+                replacement: xml_escape(&e.replacement),
+                rule_id: e.rule_id.clone(),
+            })
+            .collect();
+
+        // Re-derive the part layout from the original zip (the same deterministic order
+        // `parse` used), then splice each part on its own so offsets stay part-local.
+        let parts = prose_parts(&doc.aux)?;
+        let (_, bases) = concat_parts(&parts);
+        // Global span index -> part ordinal, via each span's first segment.
+        let span_part: Vec<usize> = doc
+            .spans
+            .iter()
+            .map(|span| {
+                let start = match &span.anchor {
+                    SpanAnchor::Segments(segs) => segs.first().map_or(0, |r| r.start),
+                    SpanAnchor::Bytes(r) => r.start,
+                };
+                // The part whose [base, base+len) window contains the span.
+                parts
+                    .iter()
+                    .zip(&bases)
+                    .position(|((_, xml), base)| start >= *base && start < base + xml.len())
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let mut replacements = Vec::new();
+        for (pi, ((name, xml), base)) in parts.iter().zip(&bases).enumerate() {
+            // This part's spans (in global order) with ranges shifted part-local,
+            // and its edits renumbered accordingly.
+            let mut local_spans: Vec<ProseSpan> = Vec::new();
+            let mut renumber: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            for (gi, span) in doc.spans.iter().enumerate() {
+                if span_part[gi] != pi {
+                    continue;
+                }
+                let anchor = match &span.anchor {
+                    SpanAnchor::Segments(segs) => SpanAnchor::Segments(
+                        segs.iter()
+                            .map(|r| (r.start - base)..(r.end - base))
+                            .collect(),
+                    ),
+                    SpanAnchor::Bytes(r) => SpanAnchor::Bytes((r.start - base)..(r.end - base)),
+                };
+                renumber.insert(gi, local_spans.len());
+                local_spans.push(ProseSpan::new(anchor, span.text.clone()));
+            }
+            let local_edits: Vec<Edit> = escaped
                 .iter()
-                .map(|e| Edit {
-                    span_index: e.span_index,
-                    range: e.range.clone(),
-                    replacement: xml_escape(&e.replacement),
-                    rule_id: e.rule_id.clone(),
+                .filter_map(|e| {
+                    renumber.get(&e.span_index).map(|&li| Edit {
+                        span_index: li,
+                        range: e.range.clone(),
+                        replacement: e.replacement.clone(),
+                        rule_id: e.rule_id.clone(),
+                    })
                 })
-                .collect(),
-        };
-        let edited_xml = render_byte_spliced(doc, &escaped)?;
-        rezip(&doc.aux, &edited_xml)
+                .collect();
+            if local_edits.is_empty() {
+                continue; // untouched part: raw-copied by rezip
+            }
+            let part_doc = Document::new(xml.clone(), local_spans, doc.meta.clone());
+            let edited = render_byte_spliced(&part_doc, &EditSet { edits: local_edits })?;
+            replacements.push((name.clone(), edited));
+        }
+        rezip(&doc.aux, &replacements)
     }
 
     fn skeleton(&self, bytes: &[u8]) -> Result<String> {
+        // Cover every prose part, so the pipeline's self-check also proves the
+        // header/footer/footnote/comment structure survived. For a zip this is the
+        // skeleton of the same concatenated layout `parse` built `Document::source`
+        // from; raw XML input (a lone part) is fingerprinted as-is.
         let xml = if bytes.starts_with(b"PK\x03\x04") {
-            read_part(bytes, DOC_PART)?
+            concat_parts(&prose_parts(bytes)?).0
         } else {
             bytes.to_vec()
         };
         xml_skeleton(&xml)
+    }
+
+    fn container_findings(&self, doc: &Document) -> Vec<ContainerFinding> {
+        let mut out = Vec::new();
+        for part in [CORE_PART, APP_PART] {
+            let Some(xml) = read_part_opt(&doc.aux, part) else {
+                continue;
+            };
+            for (field, value, _, scrubbable) in metadata_hits(part, &xml) {
+                let message = if field == "created" {
+                    format!(
+                        "{part} creation date {value:?} is the python-docx default \
+                         template stamp — the file was almost certainly generated \
+                         programmatically (report-only; dates are never rewritten)"
+                    )
+                } else {
+                    format!(
+                        "{part} <{field}> = {value:?} matches a known AI/programmatic \
+                         generator fingerprint; resaving in Word does not clear it"
+                    )
+                };
+                out.push(ContainerFinding {
+                    rule_id: "container.docx-generator-metadata".to_string(),
+                    message,
+                    scrubbable,
+                    applied: false,
+                });
+            }
+        }
+        out
+    }
+
+    fn scrub_container(&self, _doc: &Document, rendered: &[u8]) -> Option<Vec<u8>> {
+        let mut replacements = Vec::new();
+        for part in [CORE_PART, APP_PART] {
+            let Some(xml) = read_part_opt(rendered, part) else {
+                continue;
+            };
+            let edits: Vec<(Range<usize>, String)> = metadata_hits(part, &xml)
+                .into_iter()
+                .filter(|(_, _, _, scrubbable)| *scrubbable)
+                .map(|(_, _, range, _)| (range, String::new()))
+                .collect();
+            if edits.is_empty() {
+                continue;
+            }
+            let scrubbed = cleanup_core::splice(&xml, &edits).ok()?;
+            replacements.push((part.to_string(), scrubbed));
+        }
+        if replacements.is_empty() {
+            return None;
+        }
+        rezip(rendered, &replacements).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn part_xml(root: &str, paras: &[&str]) -> String {
+        let ps: String = paras
+            .iter()
+            .map(|t| format!("<w:p><w:r><w:t>{t}</w:t></w:r></w:p>"))
+            .collect();
+        format!(
+            r#"<?xml version="1.0"?><{root} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{ps}</{root}>"#
+        )
+    }
+
+    fn make_docx(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut w = ZipWriter::new(Cursor::new(&mut buf));
+            for (name, xml) in entries {
+                w.start_file(
+                    *name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )
+                .unwrap();
+                w.write_all(xml.as_bytes()).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    fn part_text(zip_bytes: &[u8], part: &str) -> String {
+        String::from_utf8(read_part(zip_bytes, part).unwrap()).unwrap()
+    }
+
+    fn replace_in(text: &str, needle: &str) -> Range<usize> {
+        let start = text.find(needle).unwrap();
+        start..start + needle.len()
+    }
+
+    #[test]
+    fn prose_parts_cover_headers_and_footnotes() {
+        let doc = part_xml("w:document", &["Body text."]);
+        let hdr = part_xml("w:hdr", &["Header text."]);
+        let ftn = r#"<?xml version="1.0"?><w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>Footnote text.</w:t></w:r></w:p></w:footnote></w:footnotes>"#;
+        let bytes = make_docx(&[
+            (DOC_PART, &doc),
+            ("word/header1.xml", &hdr),
+            ("word/footnotes.xml", ftn),
+            ("word/styles.xml", "<w:styles/>"),
+        ]);
+        let fmt = Docx;
+        let parsed = fmt.parse(&bytes).unwrap();
+        let texts: Vec<&str> = parsed.spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["Body text.", "Footnote text.", "Header text."]);
+
+        // Edit the header span only; the other parts must round-trip byte-identical.
+        let (hi, hspan) = parsed
+            .spans
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.text == "Header text.")
+            .unwrap();
+        let edits = EditSet {
+            edits: vec![Edit {
+                span_index: hi,
+                range: replace_in(&hspan.text, "Header"),
+                replacement: "[clean]".to_string(),
+                rule_id: "test".to_string(),
+            }],
+        };
+        let out = fmt.render(&parsed, &edits).unwrap();
+        assert!(part_text(&out, "word/header1.xml").contains("[clean] text."));
+        assert_eq!(read_part(&out, DOC_PART).unwrap(), doc.as_bytes());
+        assert_eq!(
+            read_part(&out, "word/footnotes.xml").unwrap(),
+            ftn.as_bytes()
+        );
+        // Structure fingerprint is unchanged by a pure text edit, across all parts.
+        assert_eq!(fmt.skeleton(&bytes).unwrap(), fmt.skeleton(&out).unwrap());
+        assert_eq!(
+            fmt.skeleton(&parsed.source).unwrap(),
+            fmt.skeleton(&bytes).unwrap()
+        );
+    }
+
+    #[test]
+    fn comments_and_endnotes_are_prose_parts() {
+        let doc = part_xml("w:document", &["Body."]);
+        let comments = r#"<?xml version="1.0"?><w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="0"><w:p><w:r><w:t>Reviewer note.</w:t></w:r></w:p></w:comment></w:comments>"#;
+        let bytes = make_docx(&[
+            (DOC_PART, &doc),
+            ("word/comments.xml", comments),
+            ("word/header12.xml", &part_xml("w:hdr", &["H12."])),
+            (
+                "word/headerSettings.xml",
+                &part_xml("w:hdr", &["Not prose."]),
+            ),
+        ]);
+        let parsed = Docx.parse(&bytes).unwrap();
+        let texts: Vec<&str> = parsed.spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["Body.", "Reviewer note.", "H12."]);
+    }
+
+    #[test]
+    fn generator_metadata_flagged_and_scrubbed() {
+        let doc = part_xml("w:document", &["Some body."]);
+        let core = r#"<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"><dc:creator>python-docx</dc:creator><cp:lastModifiedBy>python-docx</cp:lastModifiedBy><dc:description>generated by python-docx</dc:description><dcterms:created>2013-12-23T23:15:00Z</dcterms:created></cp:coreProperties>"#;
+        let app = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>ChatGPT</Application></Properties>"#;
+        let bytes = make_docx(&[(DOC_PART, &doc), (CORE_PART, core), (APP_PART, app)]);
+        let fmt = Docx;
+        let parsed = fmt.parse(&bytes).unwrap();
+
+        let findings = fmt.container_findings(&parsed);
+        assert_eq!(findings.len(), 5, "{findings:?}");
+        assert!(findings.iter().all(|f| !f.applied));
+        // Only the template-date hit is report-only.
+        assert_eq!(findings.iter().filter(|f| f.scrubbable).count(), 4);
+
+        let rendered = fmt.render(&parsed, &EditSet::default()).unwrap();
+        let scrubbed = fmt.scrub_container(&parsed, &rendered).unwrap();
+        let core_out = part_text(&scrubbed, CORE_PART);
+        assert!(core_out.contains("<dc:creator></dc:creator>"), "{core_out}");
+        assert!(core_out.contains("<cp:lastModifiedBy></cp:lastModifiedBy>"));
+        assert!(core_out.contains("<dc:description></dc:description>"));
+        // The date is never rewritten.
+        assert!(core_out.contains("2013-12-23T23:15:00Z"));
+        let app_out = part_text(&scrubbed, APP_PART);
+        assert!(app_out.contains("<Application></Application>"), "{app_out}");
+        // Body prose untouched by a metadata scrub.
+        assert_eq!(read_part(&scrubbed, DOC_PART).unwrap(), doc.as_bytes());
+    }
+
+    #[test]
+    fn human_metadata_is_not_flagged() {
+        let doc = part_xml("w:document", &["Some body."]);
+        let core = r#"<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>Jane Doe</dc:creator><dc:description>Quarterly budget notes</dc:description></cp:coreProperties>"#;
+        let app = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Microsoft Office Word</Application></Properties>"#;
+        let bytes = make_docx(&[(DOC_PART, &doc), (CORE_PART, core), (APP_PART, app)]);
+        let parsed = Docx.parse(&bytes).unwrap();
+        assert!(Docx.container_findings(&parsed).is_empty());
+        assert!(Docx.scrub_container(&parsed, &bytes).is_none());
     }
 }
