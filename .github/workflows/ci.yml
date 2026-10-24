@@ -12,6 +12,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,8 +25,11 @@ jobs:
   lint-and-test:
     name: Lint & test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux GUI build dependencies
         run: |
@@ -51,16 +55,33 @@ jobs:
           [ "$pinned" = "$actual" ]
 
       - name: Check formatting
-        run: cargo fmt --all --check
+        run: cargo fmt --all --check 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Check the workspace builds without default features
-        run: cargo check --workspace --locked --no-default-features
+        run: cargo check --workspace --locked --no-default-features 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
+
+      - name: Publish API-accessible lint & test report
+        if: always() && hashFiles('.github/scripts/publish_check_report.py') != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          CONCLUSION="failure"
+          [ "$JOB_STATUS" = "success" ] && CONCLUSION="success"
+          python3 .github/scripts/publish_check_report.py \
+            --name "CI Report (lint-and-test)" \
+            --title "Lint & test: $CONCLUSION" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --summary "Captured fmt, clippy, test, and no-default-features check logs." \
+            --log-file "$RUNNER_TEMP/ci-lint.log"
 
   build:
     name: Build (${{ matrix.os }})
@@ -70,8 +91,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
@@ -90,7 +114,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build workspace (CLI + GUI)
-        run: cargo build --workspace --release --locked
+        shell: bash
+        run: cargo build --workspace --release --locked 2>&1 | tee "$RUNNER_TEMP/ci-build.log"
+
+      - name: Publish API-accessible build report
+        if: always() && hashFiles('.github/scripts/publish_check_report.py') != ''
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+          MATRIX_OS: ${{ matrix.os }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          CONCLUSION="failure"
+          [ "$JOB_STATUS" = "success" ] && CONCLUSION="success"
+          python3 .github/scripts/publish_check_report.py \
+            --name "CI Report (build-$MATRIX_OS)" \
+            --title "Build ($MATRIX_OS): $CONCLUSION" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --summary "Release build log for \`$MATRIX_OS\`." \
+            --log-file "$RUNNER_TEMP/ci-build.log"
 
   # ---------------------------------------------------------------------------
   # Windows runtime check: build the GUI, stage it exactly the way the release
@@ -104,7 +148,7 @@ jobs:
     needs: lint-and-test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain (1.99.1)
         uses: dtolnay/rust-toolchain@stable
@@ -135,7 +179,7 @@ jobs:
           $importsCrt = Select-String -Path stage\aiclean-gui.exe -Pattern 'VCRUNTIME140.dll','MSVCP140.dll' -SimpleMatch -Quiet
           Write-Host "binary imports the dynamic CRT: $importsCrt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: aiclean-gui-windows-amd64-ci
           path: stage/

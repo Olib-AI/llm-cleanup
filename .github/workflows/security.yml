@@ -49,8 +49,11 @@ jobs:
   cargo-audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -62,7 +65,7 @@ jobs:
         uses: taiki-e/install-action@cargo-audit
 
       - name: cargo audit (policy from .cargo/audit.toml)
-        run: cargo audit --deny unsound
+        run: cargo audit --deny unsound 2>&1 | tee "$RUNNER_TEMP/cargo-audit.log"
 
       - name: Assert the toolchain pin is what we audited against
         run: |
@@ -75,7 +78,24 @@ jobs:
         if: always()
         run: cargo audit --json > cargo-audit.json || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish API-accessible audit report
+        if: always() && hashFiles('.github/scripts/publish_check_report.py') != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          CONCLUSION="failure"
+          [ "$JOB_STATUS" = "success" ] && CONCLUSION="success"
+          python3 .github/scripts/publish_check_report.py \
+            --name "Security Report (cargo-audit)" \
+            --title "cargo audit: $CONCLUSION" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --summary "RustSec advisory check via \`cargo audit --deny unsound\`." \
+            --log-file "$RUNNER_TEMP/cargo-audit.log"
+
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: cargo-audit-report
@@ -96,7 +116,7 @@ jobs:
       issues: write
       checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

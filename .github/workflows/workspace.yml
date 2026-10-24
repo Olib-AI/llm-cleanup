@@ -1,0 +1,548 @@
+# =============================================================================
+# llm-cleanup — Remote Rust CI/CD Workspace
+# =============================================================================
+# Interactive & automated GitHub Actions workspace for contributors and coding
+# agents working in environments without a local Rust 1.99.1 toolchain,
+# crates.io access, Linux GUI dev libraries, macOS/Windows hosts, or direct
+# access to `*.actions.githubusercontent.com` log/artifact blob URLs.
+#
+# Supported modes (`workflow_dispatch` or `[ws:mode=...]` in commit messages):
+#   * full          — fmt, clippy, tests, no-default-features check, cargo-audit,
+#                     release build, and `aiclean` CLI smoke suite
+#   * check         — fast toolchain check + rustfmt + clippy + cargo check
+#   * test          — cargo test (workspace or `-p <package>` with optional args)
+#   * build         — release build on ubuntu / macos / windows (or all 3) +
+#                     platform bundle verification (macOS .app, Windows VC CRT)
+#   * audit         — RustSec `cargo audit --deny unsound` + JSON advisory summary
+#   * run           — build `aiclean` and execute CLI commands (`args`) or smoke run
+#   * fmt-diff      — run `cargo fmt --all` and emit a `git apply`-ready patch
+#   * lockfile-diff — resolve/update `Cargo.lock`, verify build/test/audit, and
+#                     emit a lossless `base64-gzip` patch via Check Run output
+#
+# Every job publishes structured `output.summary` and `output.text` to the
+# GitHub Checks API (`POST /repos/{owner}/{repo}/check-runs`), making full
+# compiler diagnostics, test output, CLI output, and patches readable via
+# `gh api` (`scripts/gh-workspace.sh`) over `api.github.com` alone.
+
+name: Rust Workspace
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Workspace operation to run"
+        required: true
+        type: choice
+        default: full
+        options:
+          - full
+          - check
+          - test
+          - build
+          - audit
+          - run
+          - fmt-diff
+          - lockfile-diff
+      target_ref:
+        description: "Optional git ref, SHA, or PR ref (e.g. refs/pull/6/head) to inspect"
+        required: false
+        type: string
+        default: ""
+      package:
+        description: "Optional crate name (-p <package>, e.g. cleanup-formats)"
+        required: false
+        type: string
+        default: ""
+      args:
+        description: "Optional extra arguments (test filter, aiclean CLI args, or cargo update flags)"
+        required: false
+        type: string
+        default: ""
+      os:
+        description: "Runner OS for build mode (or 'all' for Linux + macOS + Windows)"
+        required: false
+        type: choice
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - all
+          - macos-latest
+          - windows-latest
+  push:
+    branches:
+      - "arena/**"
+      - "feat/**"
+      - "fix/**"
+      - "ci/**"
+      - "chore/**"
+      - "dev/**"
+
+concurrency:
+  group: workspace-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Parse workflow_dispatch inputs or `[ws:...]` commit-message directives.
+  # Example commit directive on a branch push:
+  #   [ws:mode=check,ref=refs/pull/6/head]
+  #   [ws:mode=lockfile-diff,args=-p zip]
+  #   [ws:mode=build,os=all]
+  #   [ws:skip]
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve workspace request
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.parse.outputs.mode }}
+      target_ref: ${{ steps.parse.outputs.target_ref }}
+      package: ${{ steps.parse.outputs.package }}
+      args: ${{ steps.parse.outputs.args }}
+      os: ${{ steps.parse.outputs.os }}
+      run_linux_workspace: ${{ steps.parse.outputs.run_linux_workspace }}
+      run_build_matrix: ${{ steps.parse.outputs.run_build_matrix }}
+      build_matrix_json: ${{ steps.parse.outputs.build_matrix_json }}
+    steps:
+      - id: parse
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_REF: ${{ inputs.target_ref }}
+          IN_PKG: ${{ inputs.package }}
+          IN_ARGS: ${{ inputs.args }}
+          IN_OS: ${{ inputs.os }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+
+          event = os.environ.get("EVENT_NAME", "")
+          mode = "full"
+          target_ref = ""
+          package = ""
+          args = ""
+          os_choice = "ubuntu-latest"
+
+          if event == "workflow_dispatch":
+              mode = os.environ.get("IN_MODE") or "full"
+              target_ref = (os.environ.get("IN_REF") or "").strip()
+              package = (os.environ.get("IN_PKG") or "").strip()
+              args = (os.environ.get("IN_ARGS") or "").strip()
+              os_choice = (os.environ.get("IN_OS") or "ubuntu-latest").strip()
+          else:
+              msg = os.environ.get("COMMIT_MSG", "")
+              m = re.search(r"\[ws:([^\]]+)\]", msg)
+              if m:
+                  spec = m.group(1).strip()
+                  if spec == "skip":
+                      mode = "skip"
+                  else:
+                      for item in re.split(r"[,;]", spec):
+                          if "=" not in item:
+                              continue
+                          k, v = item.split("=", 1)
+                          k, v = k.strip(), v.strip()
+                          if k == "mode":
+                              mode = v
+                          elif k in ("ref", "target_ref"):
+                              target_ref = v
+                          elif k in ("pkg", "package"):
+                              package = v
+                          elif k == "args":
+                              args = v
+                          elif k == "os":
+                              os_choice = v
+
+          valid_modes = {
+              "full", "check", "test", "build", "audit",
+              "run", "fmt-diff", "lockfile-diff", "skip"
+          }
+          if mode not in valid_modes:
+              raise SystemExit(f"Unsupported workspace mode: {mode!r}")
+
+          run_linux = mode not in ("skip", "build")
+          run_matrix = (mode == "build") or (mode == "full" and os_choice == "all")
+
+          if os_choice == "all":
+              matrix = ["ubuntu-latest", "macos-latest", "windows-latest"]
+          elif os_choice in ("ubuntu-latest", "macos-latest", "windows-latest"):
+              matrix = [os_choice]
+          else:
+              raise SystemExit(f"Unsupported os selection: {os_choice!r}")
+
+          # When `full` already builds Linux in the workspace job, avoid duplicating ubuntu-latest.
+          if mode == "full" and os_choice == "all":
+              matrix = ["macos-latest", "windows-latest"]
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as fh:
+              for key, val in [
+                  ("mode", mode),
+                  ("target_ref", target_ref),
+                  ("package", package),
+                  ("args", args),
+                  ("os", os_choice),
+                  ("run_linux_workspace", "true" if run_linux else "false"),
+                  ("run_build_matrix", "true" if run_matrix else "false"),
+                  ("build_matrix_json", json.dumps(matrix)),
+              ]:
+                  fh.write(f"{key}={val}\n")
+          print(f"Resolved: mode={mode} target_ref={target_ref!r} package={package!r} os={os_choice} args={args!r}")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Primary Linux Rust Workspace: check, test, audit, run, fmt-diff, lockfile-diff, full
+  # ---------------------------------------------------------------------------
+  workspace:
+    name: Workspace (${{ needs.resolve.outputs.mode }})
+    needs: resolve
+    if: needs.resolve.outputs.run_linux_workspace == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout workflow branch
+        uses: actions/checkout@v7
+
+      - name: Stage Check Run reporter outside worktree
+        run: cp .github/scripts/publish_check_report.py /tmp/publish_check_report.py
+
+      - name: Checkout target_ref (when inspecting another ref/PR)
+        if: needs.resolve.outputs.target_ref != ''
+        env:
+          TARGET_REF: ${{ needs.resolve.outputs.target_ref }}
+        run: |
+          echo "Fetching and checking out target_ref: $TARGET_REF"
+          git fetch --no-tags --depth=1 origin "$TARGET_REF"
+          git checkout --detach FETCH_HEAD
+          git log -n 1 --oneline
+
+      - name: Install Linux GUI build dependencies
+        if: needs.resolve.outputs.mode != 'audit'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libfontconfig1-dev
+
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        if: needs.resolve.outputs.mode != 'audit'
+
+      - name: Install cargo-audit
+        if: contains(',full,audit,lockfile-diff,', format(',{0},', needs.resolve.outputs.mode))
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Execute workspace mode
+        id: exec
+        env:
+          WS_MODE: ${{ needs.resolve.outputs.mode }}
+          WS_REF: ${{ needs.resolve.outputs.target_ref }}
+          WS_PKG: ${{ needs.resolve.outputs.package }}
+          WS_ARGS: ${{ needs.resolve.outputs.args }}
+        run: |
+          set -uo pipefail
+          LOG="/tmp/workspace.log"
+          SUMMARY="/tmp/workspace-summary.md"
+          PATCH="/tmp/workspace.patch"
+          : > "$LOG"
+          : > "$PATCH"
+
+          checked_sha="$(git rev-parse --short=12 HEAD)"
+          pinned="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          actual="$(rustc --version | cut -d' ' -f2)"
+
+          {
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| **Mode** | \`$WS_MODE\` |"
+            echo "| **Checked-out commit** | \`$checked_sha\` ${WS_REF:+(from \`$WS_REF\`)} |"
+            echo "| **Rust toolchain** | \`$actual\` (pinned: \`$pinned\`) |"
+            [ -n "$WS_PKG" ] && echo "| **Package** | \`$WS_PKG\` |"
+            [ -n "$WS_ARGS" ] && echo "| **Args** | \`$WS_ARGS\` |"
+            echo ""
+            echo "### Step Results"
+            echo ""
+            echo "| Step | Status |"
+            echo "| --- | --- |"
+          } > "$SUMMARY"
+
+           OVERALL_RC=0
+
+          run_step() {
+            local label="$1"
+            shift
+            echo "================================================================================" | tee -a "$LOG"
+            echo ">>> [$label] $*" | tee -a "$LOG"
+            echo "================================================================================" | tee -a "$LOG"
+            "$@" 2>&1 | tee -a "$LOG"
+            local rc=${PIPESTATUS[0]}
+            if [ "$rc" -eq 0 ]; then
+              echo "| $label | PASS |" >> "$SUMMARY"
+            else
+              echo "| $label | **FAIL (exit $rc)** |" >> "$SUMMARY"
+              OVERALL_RC="$rc"
+            fi
+            echo "" >> "$LOG"
+            return "$rc"
+          }
+
+          verify_pin() {
+            echo "pinned=$pinned actual=$actual"
+            [ "$pinned" = "$actual" ]
+          }
+
+          PKG_FLAGS=()
+          if [ -n "$WS_PKG" ]; then
+            PKG_FLAGS=(-p "$WS_PKG")
+          else
+            PKG_FLAGS=(--workspace)
+          fi
+
+          run_step "Verify toolchain pin" verify_pin || true
+
+          case "$WS_MODE" in
+            check)
+              run_step "cargo fmt --check" cargo fmt --all --check || true
+              run_step "cargo clippy" cargo clippy "${PKG_FLAGS[@]}" --all-targets --locked -- -D warnings || true
+              if [ -z "$WS_PKG" ]; then
+                run_step "cargo check (--no-default-features)" cargo check --workspace --locked --no-default-features || true
+              fi
+              ;;
+
+            test)
+              # shellcheck disable=SC2086
+              run_step "cargo test" cargo test "${PKG_FLAGS[@]}" --locked $WS_ARGS || true
+              ;;
+
+            audit)
+              run_step "scripts/audit.sh" ./scripts/audit.sh || true
+              run_step "cargo audit --deny unsound" cargo audit --deny unsound || true
+              ;;
+
+            run)
+              if run_step "Build aiclean CLI" cargo build --release --locked -p cleanup-cli; then
+                if [ -n "$WS_ARGS" ]; then
+                  # shellcheck disable=SC2086
+                  run_step "aiclean $WS_ARGS" ./target/release/aiclean $WS_ARGS || true
+                else
+                  run_step "aiclean --version" ./target/release/aiclean --version || true
+                  run_step "aiclean coverage" ./target/release/aiclean coverage || true
+                  run_step "aiclean rules --level aggressive" ./target/release/aiclean rules --level aggressive || true
+                  run_step "aiclean diff samples/markdown/article.md" ./target/release/aiclean diff samples/markdown/article.md || true
+                  run_step "aiclean diff samples/txt/hidden_chars.txt" ./target/release/aiclean diff samples/txt/hidden_chars.txt || true
+                  run_step "aiclean diff samples/docx/report.docx" ./target/release/aiclean diff samples/docx/report.docx || true
+                fi
+              fi
+              ;;
+
+            fmt-diff)
+              run_step "cargo fmt --all" cargo fmt --all || true
+              git diff > "$PATCH"
+              if [ -s "$PATCH" ]; then
+                echo "" >> "$SUMMARY"
+                echo "Formatting changes generated (\`$(wc -c < "$PATCH" | tr -d ' ')\` bytes). Apply locally with \`scripts/gh-workspace.sh extract-patch --apply\`." >> "$SUMMARY"
+              else
+                echo "" >> "$SUMMARY"
+                echo "Workspace formatting is already clean (empty diff)." >> "$SUMMARY"
+              fi
+              ;;
+
+            lockfile-diff)
+              if [ -n "$WS_ARGS" ]; then
+                # shellcheck disable=SC2086
+                run_step "cargo update $WS_ARGS" cargo update $WS_ARGS || true
+              fi
+              run_step "Resolve lockfile & check" cargo check --workspace --all-targets || true
+              run_step "cargo clippy (unlocked)" cargo clippy --workspace --all-targets -- -D warnings || true
+              run_step "cargo test (unlocked)" cargo test --workspace || true
+              run_step "cargo audit --deny unsound" cargo audit --deny unsound || true
+              git diff > "$PATCH"
+              if [ -s "$PATCH" ]; then
+                echo "" >> "$SUMMARY"
+                echo "Lockfile/workspace diff generated (\`$(wc -c < "$PATCH" | tr -d ' ')\` bytes). Apply locally with \`scripts/gh-workspace.sh extract-patch --apply\`." >> "$SUMMARY"
+              else
+                echo "" >> "$SUMMARY"
+                echo "\`Cargo.lock\` is already in sync (empty diff)." >> "$SUMMARY"
+              fi
+              ;;
+
+            full)
+              run_step "cargo fmt --check" cargo fmt --all --check || true
+              run_step "cargo clippy" cargo clippy --workspace --all-targets --locked -- -D warnings || true
+              run_step "cargo test" cargo test --workspace --locked || true
+              run_step "cargo check (--no-default-features)" cargo check --workspace --locked --no-default-features || true
+              run_step "cargo audit --deny unsound" cargo audit --deny unsound || true
+              if run_step "cargo build --release (CLI + GUI)" cargo build --workspace --release --locked; then
+                run_step "aiclean coverage" ./target/release/aiclean coverage || true
+                run_step "aiclean smoke clean (.md/.txt/.docx)" bash -c '
+                  set -euo pipefail
+                  tmp="$(mktemp -d)"
+                  ./target/release/aiclean clean samples/markdown/article.md -o "$tmp/article.md"
+                  ./target/release/aiclean clean samples/txt/hidden_chars.txt -o "$tmp/hidden.txt"
+                  ./target/release/aiclean clean samples/docx/report.docx -o "$tmp/report.docx"
+                  ./target/release/aiclean convert "$tmp/report.docx" -o "$tmp/report.md"
+                  ls -lh "$tmp"
+                ' || true
+              fi
+              ;;
+          esac
+
+          if [ "$OVERALL_RC" -eq 0 ]; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$OVERALL_RC"
+
+      - name: Upload workspace logs & patch artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-${{ needs.resolve.outputs.mode }}-logs
+          path: |
+            /tmp/workspace.log
+            /tmp/workspace-summary.md
+            /tmp/workspace.patch
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Publish Check Run report (API-accessible)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WS_MODE: ${{ needs.resolve.outputs.mode }}
+          CONCLUSION: ${{ steps.exec.outputs.conclusion || 'failure' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 /tmp/publish_check_report.py \
+            --name "Workspace Report ($WS_MODE)" \
+            --title "$WS_MODE: $CONCLUSION" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --summary-file /tmp/workspace-summary.md \
+            --log-file /tmp/workspace.log \
+            --patch-file /tmp/workspace.patch
+
+  # ---------------------------------------------------------------------------
+  # Cross-Platform Release Build & Packaging Matrix (Linux / macOS / Windows)
+  # ---------------------------------------------------------------------------
+  cross-build:
+    name: Workspace Build (${{ matrix.os }})
+    needs: resolve
+    if: needs.resolve.outputs.run_build_matrix == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(needs.resolve.outputs.build_matrix_json) }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout workflow branch
+        uses: actions/checkout@v7
+
+      - name: Stage Check Run reporter
+        shell: bash
+        run: cp .github/scripts/publish_check_report.py "$RUNNER_TEMP/publish_check_report.py"
+
+      - name: Checkout target_ref
+        if: needs.resolve.outputs.target_ref != ''
+        shell: bash
+        env:
+          TARGET_REF: ${{ needs.resolve.outputs.target_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$TARGET_REF"
+          git checkout --detach FETCH_HEAD
+
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libfontconfig1-dev
+
+      - name: Install Rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build & verify platform packaging
+        id: build_exec
+        shell: bash
+        env:
+          WS_PKG: ${{ needs.resolve.outputs.package }}
+          MATRIX_OS: ${{ matrix.os }}
+        run: |
+          set -uo pipefail
+          LOG="$RUNNER_TEMP/build.log"
+          SUMMARY="$RUNNER_TEMP/build-summary.md"
+          : > "$LOG"
+          RC=0
+
+          if [ -n "$WS_PKG" ]; then
+            cargo build -p "$WS_PKG" --release --locked 2>&1 | tee -a "$LOG"
+            RC=${PIPESTATUS[0]}
+          else
+            cargo build --workspace --release --locked 2>&1 | tee -a "$LOG"
+            RC=${PIPESTATUS[0]}
+          fi
+
+          if [ "$RC" -eq 0 ] && [ -z "$WS_PKG" ]; then
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              bash ./scripts/bundle-macos.sh release 2>&1 | tee -a "$LOG"
+              RC=${PIPESTATUS[0]}
+            elif [ "$RUNNER_OS" = "Windows" ]; then
+              pwsh -NoProfile -Command "./scripts/package-windows.ps1 -StageDir stage -Verify" 2>&1 | tee -a "$LOG"
+              RC=${PIPESTATUS[0]}
+            fi
+          fi
+
+          STATUS="success"
+          [ "$RC" -ne 0 ] && STATUS="failure"
+          {
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| **Runner OS** | \`$MATRIX_OS\` (\`$RUNNER_OS\`) |"
+            echo "| **Target** | \`${WS_PKG:---workspace}\` (\`--release --locked\`) |"
+            echo "| **Result** | \`$STATUS\` |"
+          } > "$SUMMARY"
+
+          echo "conclusion=$STATUS" >> "$GITHUB_OUTPUT"
+          exit "$RC"
+
+      - name: Publish Check Run report (API-accessible)
+        if: always()
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MATRIX_OS: ${{ matrix.os }}
+          CONCLUSION: ${{ steps.build_exec.outputs.conclusion || 'failure' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 "$RUNNER_TEMP/publish_check_report.py" \
+            --name "Workspace Build ($MATRIX_OS)" \
+            --title "build ($MATRIX_OS): $CONCLUSION" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --summary-file "$RUNNER_TEMP/build-summary.md" \
+            --log-file "$RUNNER_TEMP/build.log"
