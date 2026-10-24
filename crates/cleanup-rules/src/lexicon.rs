@@ -18,7 +18,10 @@ impl LexiconFlagRule {
         // so accented upper-case words (ÉLÉMENT, PANORAMA, etc.) can be matched without
         // corrupting reported byte ranges. Lowercasing may expand a character, so normalized
         // offsets must never be used directly against the source.
-        let terms: Vec<String> = terms.iter().map(|term| term.chars().flat_map(char::to_lowercase).collect()).collect();
+        let terms: Vec<String> = terms
+            .iter()
+            .map(|term| term.chars().flat_map(char::to_lowercase).collect())
+            .collect();
         // LeftmostLongest so an inflected or phrasal term ("delves", "deep dive") wins over
         // a shorter nested term ("delve", "dive") starting at the same offset.
         let matcher = AhoCorasick::builder()
@@ -54,11 +57,13 @@ fn lowercase_with_source_map(text: &str) -> (String, Vec<usize>) {
             for byte_offset in 1..=folded_char.len_utf8() {
                 let is_last_byte_of_folded_char = byte_offset == folded_char.len_utf8();
                 let is_last_char_of_source_char = folded_end == folded.len();
-                source_boundaries.push(if is_last_byte_of_folded_char && is_last_char_of_source_char {
-                    source_end
-                } else {
-                    source_start
-                });
+                source_boundaries.push(
+                    if is_last_byte_of_folded_char && is_last_char_of_source_char {
+                        source_end
+                    } else {
+                        source_start
+                    },
+                );
             }
         }
     }
@@ -155,9 +160,6 @@ mod tests {
         let text = "ÉLÉMENT — IL EST IMPORTANT DE NOTER ceci.";
         let found = detect(&rule, text);
         assert_eq!(found.len(), 1, "got {found:?}");
-        assert_eq!(
-            &text[found[0].range.clone()],
-            "IL EST IMPORTANT DE NOTER"
-        );
+        assert_eq!(&text[found[0].range.clone()], "IL EST IMPORTANT DE NOTER");
     }
 }

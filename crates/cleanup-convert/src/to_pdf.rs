@@ -13,8 +13,9 @@ const LINE_WIDTH: usize = 92;
 
 pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
     let (text, _) = crate::to_text::convert(from, src)?;
-    let text = std::str::from_utf8(&text)
-        .map_err(|e| ConvertError::Failed(format!("text conversion produced invalid UTF-8: {e}")))?;
+    let text = std::str::from_utf8(&text).map_err(|e| {
+        ConvertError::Failed(format!("text conversion produced invalid UTF-8: {e}"))
+    })?;
     let font = TrueType::new(FONT)?;
     let lines = wrap_lines(text);
     let pages: Vec<&[String]> = if lines.is_empty() {
@@ -49,7 +50,8 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
 
     let pdf = write_pdf(&font, &encoded_pages, &unicode_by_gid)?;
     let mut warnings = vec![
-        "PDF output is text-only: document formatting, images, tables and links are not preserved".to_string(),
+        "PDF output is text-only: document formatting, images, tables and links are not preserved"
+            .to_string(),
     ];
     if missing {
         warnings.push("the embedded font does not contain every input glyph; unsupported characters may render as replacement glyphs".to_string());
@@ -117,7 +119,10 @@ impl<'a> TrueType<'a> {
                     return read_u32(data, entry + 8).map(|v| v as usize);
                 }
             }
-            Err(ConvertError::Failed(format!("embedded font is missing the {:?} table", tag)))
+            Err(ConvertError::Failed(format!(
+                "embedded font is missing the {:?} table",
+                tag
+            )))
         };
         let head = table(b"head")?;
         let hhea = table(b"hhea")?;
@@ -129,7 +134,9 @@ impl<'a> TrueType<'a> {
         let glyph_count = read_u16(data, maxp + 4)?;
         let horizontal_metrics = read_u16(data, hhea + 34)?;
         if units_per_em == 0 || glyph_count == 0 || horizontal_metrics == 0 {
-            return Err(ConvertError::Failed("invalid embedded TrueType metrics".into()));
+            return Err(ConvertError::Failed(
+                "invalid embedded TrueType metrics".into(),
+            ));
         }
         let bbox = [
             read_i16(data, head + 36)?,
@@ -165,8 +172,10 @@ impl<'a> TrueType<'a> {
     fn width(&self, glyph: u16) -> Result<u16> {
         let index = usize::from(glyph.min(self.horizontal_metrics - 1));
         let advance = read_u16(self.data, self.hmtx_offset + index * 4)?;
-        Ok(((u32::from(advance) * 1000 + u32::from(self.units_per_em) / 2)
-            / u32::from(self.units_per_em)) as u16)
+        Ok(
+            ((u32::from(advance) * 1000 + u32::from(self.units_per_em) / 2)
+                / u32::from(self.units_per_em)) as u16,
+        )
     }
 
     fn scaled(&self, units: i16) -> i32 {
@@ -201,7 +210,9 @@ impl Cmap {
         format12
             .map(Cmap::Format12)
             .or_else(|| format4.map(Cmap::Format4))
-            .ok_or_else(|| ConvertError::Failed("embedded font has no supported Unicode cmap".into()))
+            .ok_or_else(|| {
+                ConvertError::Failed("embedded font has no supported Unicode cmap".into())
+            })
     }
 
     fn glyph_index(&self, data: &[u8], codepoint: u32) -> Option<u16> {
@@ -243,9 +254,14 @@ impl Cmap {
                     if range == 0 {
                         return Some(code.wrapping_add(delta as u16));
                     }
-                    let glyph_offset = range_offsets + i * 2 + range + usize::from(code - start) * 2;
+                    let glyph_offset =
+                        range_offsets + i * 2 + range + usize::from(code - start) * 2;
                     let glyph = read_u16(data, glyph_offset).ok()?;
-                    return Some(if glyph == 0 { 0 } else { glyph.wrapping_add(delta as u16) });
+                    return Some(if glyph == 0 {
+                        0
+                    } else {
+                        glyph.wrapping_add(delta as u16)
+                    });
                 }
                 None
             }
@@ -253,10 +269,18 @@ impl Cmap {
     }
 }
 
-fn write_pdf(font: &TrueType<'_>, pages: &[Vec<String>], unicode_by_gid: &BTreeMap<u16, u32>) -> Result<Vec<u8>> {
+fn write_pdf(
+    font: &TrueType<'_>,
+    pages: &[Vec<String>],
+    unicode_by_gid: &BTreeMap<u16, u32>,
+) -> Result<Vec<u8>> {
     let mut objects = vec![Vec::<u8>::new(); 8 + pages.len() * 2];
     let page_ids: Vec<usize> = (0..pages.len()).map(|index| 8 + index * 2).collect();
-    let kids = page_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
+    let kids = page_ids
+        .iter()
+        .map(|id| format!("{id} 0 R"))
+        .collect::<Vec<_>>()
+        .join(" ");
     objects[1] = b"<< /Type /Catalog /Pages 2 0 R >>".to_vec();
     objects[2] = format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", pages.len()).into_bytes();
     objects[3] = b"<< /Type /Font /Subtype /Type0 /BaseFont /Inter-Regular /Encoding /Identity-H /DescendantFonts [4 0 R] /ToUnicode 7 0 R >>".to_vec();
@@ -295,7 +319,8 @@ fn write_pdf(font: &TrueType<'_>, pages: &[Vec<String>], unicode_by_gid: &BTreeM
             content.push_str("> Tj\nT*\n");
         }
         content.push_str("ET\n");
-        objects[content_id] = stream_object(&format!("/Length {}", content.len()), content.as_bytes());
+        objects[content_id] =
+            stream_object(&format!("/Length {}", content.len()), content.as_bytes());
     }
 
     let mut output = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
@@ -336,7 +361,10 @@ fn to_unicode_cmap(mappings: &BTreeMap<u16, u32>) -> Vec<u8> {
     for chunk in mappings.iter().collect::<Vec<_>>().chunks(100) {
         cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
         for (glyph, codepoint) in chunk {
-            let utf16: Vec<u16> = char::from_u32(**codepoint).unwrap_or('\u{FFFD}').encode_utf16(&mut [0; 2]).to_vec();
+            let utf16: Vec<u16> = char::from_u32(**codepoint)
+                .unwrap_or('\u{FFFD}')
+                .encode_utf16(&mut [0; 2])
+                .to_vec();
             cmap.push_str(&format!("<{:04X}> <", glyph));
             for unit in utf16 {
                 cmap.push_str(&format!("{unit:04X}"));
@@ -387,7 +415,12 @@ mod tests {
         assert!(pdf.contains("/ToUnicode"));
         assert!(pdf.contains("beginbfchar"));
         assert!(report.lossy);
-        assert!(report.warnings.iter().any(|warning| warning.contains("text-only")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("text-only"))
+        );
     }
 
     #[test]

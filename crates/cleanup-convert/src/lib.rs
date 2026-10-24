@@ -119,8 +119,14 @@ mod tests {
     #[test]
     fn every_supported_input_converts_to_every_output_target() {
         let sources = [
-            (FormatId::PlainText, "Bonjour, français ! ¡Hola, español!".as_bytes().to_vec()),
-            (FormatId::Markdown, "# Bonjour\n\n¡Hola, mundo!".as_bytes().to_vec()),
+            (
+                FormatId::PlainText,
+                "Bonjour, français ! ¡Hola, español!".as_bytes().to_vec(),
+            ),
+            (
+                FormatId::Markdown,
+                "# Bonjour\n\n¡Hola, mundo!".as_bytes().to_vec(),
+            ),
         ];
         let docx = to_docx::convert(FormatId::PlainText, b"DOCX source fixture")
             .expect("DOCX fixture")
@@ -132,7 +138,10 @@ mod tests {
             for to in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {
                 let (converted, report) = convert(from, &bytes, to)
                     .unwrap_or_else(|error| panic!("{from:?} to {to:?}: {error}"));
-                assert!(!converted.is_empty(), "{from:?} to {to:?} returned empty output");
+                assert!(
+                    !converted.is_empty(),
+                    "{from:?} to {to:?} returned empty output"
+                );
                 match to {
                     Target::Docx => assert!(converted.starts_with(b"PK")),
                     Target::Pdf => assert!(converted.starts_with(b"%PDF-1.7")),

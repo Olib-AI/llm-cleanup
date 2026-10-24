@@ -176,7 +176,10 @@ mod tests {
         let rules = builtin_rules();
         let ids: Vec<String> = rules
             .iter()
-            .filter(|rule| rule.id() == "phrasal.fr.assistant-formulas" || rule.id() == "phrasal.es.assistant-formulas")
+            .filter(|rule| {
+                rule.id() == "phrasal.fr.assistant-formulas"
+                    || rule.id() == "phrasal.es.assistant-formulas"
+            })
             .flat_map(|rule| rule.detect(0, &span, &cx))
             .map(|finding| finding.rule_id)
             .collect();
