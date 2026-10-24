@@ -7,6 +7,7 @@
 
 pub mod to_docx;
 pub mod to_markdown;
+pub mod to_pdf;
 pub mod to_text;
 
 mod xml_text;
@@ -95,10 +96,7 @@ pub fn convert(from: FormatId, src: &[u8], to: Target) -> Result<(Vec<u8>, Conve
         Target::Text => to_text::convert(from, src),
         Target::Markdown => to_markdown::convert(from, src),
         Target::Docx => to_docx::convert(from, src),
-        Target::Pdf => Err(ConvertError::Unsupported {
-            from: from.as_str(),
-            to: "pdf",
-        }),
+        Target::Pdf => to_pdf::convert(from, src),
     }
 }
 
@@ -112,4 +110,49 @@ pub(crate) fn md_options() -> pulldown_cmark::Options {
     o.insert(Options::ENABLE_FOOTNOTES);
     o.insert(Options::ENABLE_TASKLISTS);
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_supported_input_converts_to_every_output_target() {
+        let sources = [
+            (
+                FormatId::PlainText,
+                "Bonjour, français ! ¡Hola, español!".as_bytes().to_vec(),
+            ),
+            (
+                FormatId::Markdown,
+                "# Bonjour\n\n¡Hola, mundo!".as_bytes().to_vec(),
+            ),
+        ];
+        let docx = to_docx::convert(FormatId::PlainText, b"DOCX source fixture")
+            .expect("DOCX fixture")
+            .0;
+        let mut sources = sources.to_vec();
+        sources.push((FormatId::Docx, docx));
+
+        for (from, bytes) in sources {
+            for to in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {
+                let (converted, report) = convert(from, &bytes, to)
+                    .unwrap_or_else(|error| panic!("{from:?} to {to:?}: {error}"));
+                assert!(
+                    !converted.is_empty(),
+                    "{from:?} to {to:?} returned empty output"
+                );
+                match to {
+                    Target::Docx => assert!(converted.starts_with(b"PK")),
+                    Target::Pdf => assert!(converted.starts_with(b"%PDF-1.7")),
+                    Target::Text | Target::Markdown => {
+                        std::str::from_utf8(&converted).expect("text target is UTF-8");
+                    }
+                }
+                if to != Target::Pdf && to.is_same_as(from) {
+                    assert!(!report.lossy, "identity conversion should remain lossless");
+                }
+            }
+        }
+    }
 }

@@ -166,6 +166,29 @@ mod tests {
     }
 
     #[test]
+    fn mixed_french_and_spanish_prose_uses_both_language_packs() {
+        use cleanup_core::ir::{ProseSpan, SpanAnchor};
+        use cleanup_core::{CleanupLevel, Ctx};
+
+        let text = "Il est important de noter ceci. Es importante señalar esto.";
+        let span = ProseSpan::new(SpanAnchor::Bytes(0..text.len()), text);
+        let cx = Ctx::new(CleanupLevel::Standard);
+        let rules = builtin_rules();
+        let ids: Vec<String> = rules
+            .iter()
+            .filter(|rule| {
+                rule.id() == "phrasal.fr.assistant-formulas"
+                    || rule.id() == "phrasal.es.assistant-formulas"
+            })
+            .flat_map(|rule| rule.detect(0, &span, &cx))
+            .map(|finding| finding.rule_id)
+            .collect();
+        assert_eq!(ids.len(), 2, "both language-specific cues should be found");
+        assert!(ids.iter().any(|id| id == "phrasal.fr.assistant-formulas"));
+        assert!(ids.iter().any(|id| id == "phrasal.es.assistant-formulas"));
+    }
+
+    #[test]
     fn every_level_has_rules() {
         let rules = builtin_rules();
         for level in [

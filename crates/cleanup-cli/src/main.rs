@@ -51,7 +51,7 @@ enum Command {
         #[arg(long)]
         to: Option<String>,
     },
-    /// Convert a file to another format without cleaning (md|txt|docx; pdf coming soon).
+    /// Convert a file to another format without cleaning (md|txt|docx|pdf output).
     Convert {
         /// Input file(s).
         inputs: Vec<PathBuf>,
