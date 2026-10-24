@@ -55,16 +55,24 @@ jobs:
           [ "$pinned" = "$actual" ]
 
       - name: Check formatting
-        run: cargo fmt --all --check 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
+        run: |
+          set -o pipefail
+          cargo fmt --all --check 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Run tests
-        run: cargo test --workspace --locked 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Check the workspace builds without default features
-        run: cargo check --workspace --locked --no-default-features 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
+        run: |
+          set -o pipefail
+          cargo check --workspace --locked --no-default-features 2>&1 | tee -a "$RUNNER_TEMP/ci-lint.log"
 
       - name: Publish API-accessible lint & test report
         if: always() && hashFiles('.github/scripts/publish_check_report.py') != ''

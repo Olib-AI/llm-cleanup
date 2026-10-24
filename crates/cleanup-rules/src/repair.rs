@@ -387,10 +387,8 @@ fn entity_char(body: &str) -> Option<char> {
     let (digits, radix) =
         if let Some(hex) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X")) {
             (hex, 16)
-        } else if let Some(decimal) = body.strip_prefix('#') {
-            (decimal, 10)
         } else {
-            return None;
+            (body.strip_prefix('#')?, 10)
         };
     if digits.is_empty() || digits.len() > 8 {
         return None;
