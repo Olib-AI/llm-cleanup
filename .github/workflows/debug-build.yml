@@ -45,6 +45,17 @@ jobs:
           echo "test exit=$?" >> /tmp/out.txt
           exit 0
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: cargo audit
+        run: |
+          set +e
+          cargo audit --deny unsound > /tmp/audit.txt 2>&1
+          echo "audit exit=$?" >> /tmp/audit.txt
+          cargo audit --json > /tmp/audit.json 2>&1
+          exit 0
+
       - name: Post output as a PR comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,6 +64,11 @@ jobs:
           python3 - <<'PY'
           import json, os, subprocess
           text = open('/tmp/out.txt', encoding='utf-8', errors='replace').read()
+          for extra in ('/tmp/audit.txt', '/tmp/audit.json'):
+              try:
+                  text += '\n\n=== %s ===\n' % extra + open(extra, encoding='utf-8', errors='replace').read()[:40000]
+              except OSError:
+                  pass
           # Keep the interesting part: drop the progress lines.
           lines = [l for l in text.splitlines() if not l.startswith('   Compiling') and not l.startswith('    Checking') and not l.startswith('    Blocking')]
           text = '\n'.join(lines)
