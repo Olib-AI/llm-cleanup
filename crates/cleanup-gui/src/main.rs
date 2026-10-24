@@ -120,6 +120,14 @@ fn friendly_rule_name(rule_id: &str) -> String {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Slint 1.16 asks winit for a transparent window on every platform. On macOS that
+    // also makes the native title bar transparent, leaving the traffic lights over the
+    // desktop. This app is fully opaque, so keep both its content and native frame opaque.
+    #[cfg(target_os = "macos")]
+    slint::BackendSelector::new()
+        .with_winit_window_attributes_hook(|attributes| attributes.with_transparent(false))
+        .select()?;
+
     let ui = AppWindow::new()?;
     register_fonts();
     let state = Rc::new(RefCell::new(State::default()));

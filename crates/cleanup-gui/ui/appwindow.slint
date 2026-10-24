@@ -1,7 +1,7 @@
 import { ScrollView, ComboBox } from "std-widgets.slint";
 
 // A quiet, document-first interface: warm neutrals, crisp borders and one restrained
-// forest-green accent. No gradients, glow effects or decorative dashboard chrome.
+// forest-green accent. Explicit panel bounds keep every control inside the window.
 
 component LevelOption inherits Rectangle {
     in property <string> title;
@@ -9,19 +9,19 @@ component LevelOption inherits Rectangle {
     in property <bool> selected;
     callback clicked;
 
-    height: 64px;
+    height: max(68px, content.preferred-height + 24px);
     border-radius: 10px;
     border-width: 1px;
-    border-color: selected ? #9eb3a7 : (touch.has-hover ? #d2d9d2 : transparent);
-    background: selected ? #eaf0eb : (touch.has-hover ? #f7f8f4 : transparent);
+    border-color: selected ? #91aa9b : (touch.has-hover ? #bdc9c0 : #dde2db);
+    background: selected ? #eaf0eb : (touch.has-hover ? #f7f9f5 : #ffffff);
     animate background { duration: 120ms; }
     animate border-color { duration: 120ms; }
 
     Rectangle {
         x: 14px;
-        y: 15px;
-        width: 17px;
-        height: 17px;
+        y: 17px;
+        width: 18px;
+        height: 18px;
         border-radius: 9px;
         border-width: 1.5px;
         border-color: selected ? #265c4a : #aab2ab;
@@ -29,24 +29,25 @@ component LevelOption inherits Rectangle {
         Rectangle {
             x: 4px;
             y: 4px;
-            width: 9px;
-            height: 9px;
-            border-radius: 5px;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
             background: #265c4a;
             visible: selected;
         }
     }
 
-    VerticalLayout {
-        x: 43px;
-        y: 11px;
-        width: parent.width - 56px;
-        spacing: 3px;
+    content := VerticalLayout {
+        x: 44px;
+        y: 12px;
+        width: parent.width - 58px;
+        spacing: 4px;
         Text {
             text: root.title;
             color: #202722;
             font-size: 13px;
             font-weight: 600;
+            overflow: elide;
         }
         Text {
             text: root.description;
@@ -67,27 +68,27 @@ component Metric inherits Rectangle {
     in property <string> label;
     in property <brush> value-color;
 
-    height: 64px;
+    height: 72px;
     border-radius: 10px;
+    border-width: 1px;
+    border-color: #e5e9e2;
     background: #f6f7f3;
-    HorizontalLayout {
-        padding-left: 15px;
-        padding-right: 15px;
-        spacing: 12px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 3px;
+        alignment: center;
         Text {
             text: root.value;
             color: root.value-color;
-            font-size: 25px;
+            font-size: 23px;
             font-weight: 700;
-            vertical-alignment: center;
+            overflow: elide;
         }
         Text {
             text: root.label;
             color: #68716b;
-            font-size: 12px;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            wrap: word-wrap;
+            font-size: 11px;
+            overflow: elide;
         }
     }
 }
@@ -97,18 +98,19 @@ component PrimaryButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked;
 
-    width: 176px;
-    height: 44px;
+    width: 184px;
+    height: 46px;
     border-radius: 9px;
-    background: !enabled ? #cbd2cc : (touch.has-hover ? #1d493b : #265c4a);
+    background: !enabled ? #dce1dc : (touch.pressed ? #173d31 : (touch.has-hover ? #1d493b : #265c4a));
     animate background { duration: 100ms; }
     Text {
         text: root.label;
-        color: #ffffff;
+        color: enabled ? #ffffff : #7c867e;
         font-size: 13px;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
+        overflow: elide;
     }
     touch := TouchArea {
         enabled: root.enabled;
@@ -119,12 +121,13 @@ component PrimaryButton inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "llm-cleanup";
+    icon: @image-url("icons/app-icon.svg");
     default-font-family: "Inter";
     default-font-size: 14px;
-    preferred-width: 920px;
-    preferred-height: 720px;
+    preferred-width: 960px;
+    preferred-height: 740px;
     min-width: 820px;
-    min-height: 680px;
+    min-height: 700px;
     background: #f3f4ef;
 
     in property <string> file-name;
@@ -145,32 +148,36 @@ export component AppWindow inherits Window {
     callback clean-and-save();
 
     VerticalLayout {
-        padding: 28px;
-        spacing: 22px;
+        width: 100%;
+        height: 100%;
+        padding: 26px;
+        spacing: 20px;
 
         // Product header: identity on the left, one meaningful trust cue on the right.
         HorizontalLayout {
-            height: 42px;
+            height: 44px;
             spacing: 12px;
             Image {
                 source: @image-url("icons/logo-mark.svg");
-                width: 38px;
-                height: 38px;
+                width: 40px;
+                height: 40px;
                 vertical-alignment: center;
             }
             VerticalLayout {
-                spacing: 1px;
+                spacing: 2px;
                 alignment: center;
                 Text {
                     text: "llm-cleanup";
                     color: #1e2521;
                     font-size: 20px;
                     font-weight: 700;
+                    overflow: elide;
                 }
                 Text {
                     text: "Document hygiene, without the guesswork";
                     color: #788079;
                     font-size: 11px;
+                    overflow: elide;
                 }
             }
             Rectangle { horizontal-stretch: 1; }
@@ -186,20 +193,25 @@ export component AppWindow inherits Window {
                 font-size: 12px;
                 font-weight: 600;
                 vertical-alignment: center;
+                overflow: elide;
             }
         }
 
         Rectangle { height: 1px; background: #dde1da; }
 
-        HorizontalLayout {
+        // Bind both columns to the available rectangle instead of letting their
+        // intrinsic content widths push the report beyond the window edge.
+        Rectangle {
             vertical-stretch: 1;
-            spacing: 26px;
+            min-height: 462px;
 
-            // Configuration column. Section labels and explanatory copy make the three
-            // cleanup modes understandable without opening the documentation.
+            // Configuration column.
             VerticalLayout {
-                width: 294px;
-                spacing: 20px;
+                x: 0;
+                y: 0;
+                width: 300px;
+                height: parent.height;
+                spacing: 18px;
                 alignment: start;
 
                 VerticalLayout {
@@ -272,7 +284,7 @@ export component AppWindow inherits Window {
                 }
 
                 VerticalLayout {
-                    spacing: 9px;
+                    spacing: 8px;
                     Text {
                         text: "Cleanup strength";
                         color: #3d4740;
@@ -309,7 +321,7 @@ export component AppWindow inherits Window {
                     }
                     ComboBox {
                         width: 100%;
-                        height: 40px;
+                        height: 42px;
                         model: ["Same as input", "Markdown (.md)", "Text (.txt)", "Word (.docx)", "PDF (.pdf)"];
                         current-index <=> root.target;
                         selected(value) => { root.set-target(self.current-index); }
@@ -317,10 +329,12 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // Report surface. Metrics stay stable between states; only their values change.
+            // Report surface. Its right edge always tracks the main content's right edge.
             Rectangle {
-                vertical-stretch: 1;
-                horizontal-stretch: 1;
+                x: 322px;
+                y: 0;
+                width: parent.width - 322px;
+                height: parent.height;
                 border-radius: 13px;
                 border-width: 1px;
                 border-color: #dde1da;
@@ -328,8 +342,10 @@ export component AppWindow inherits Window {
                 clip: true;
 
                 VerticalLayout {
-                    padding: 23px;
-                    spacing: 17px;
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 22px;
+                    spacing: 16px;
 
                     VerticalLayout {
                         spacing: 5px;
@@ -338,6 +354,7 @@ export component AppWindow inherits Window {
                             color: #202722;
                             font-size: 19px;
                             font-weight: 700;
+                            overflow: elide;
                         }
                         Text {
                             text: root.has-error ? "The original file has not been changed." : (root.did-run ? "Review the changes before saving your copy." : "Choose a file to see a precise, itemized report.");
@@ -367,6 +384,8 @@ export component AppWindow inherits Window {
 
                     Rectangle {
                         vertical-stretch: 1;
+                        min-height: 0px;
+                        clip: true;
 
                         VerticalLayout {
                             x: 0;
@@ -376,6 +395,8 @@ export component AppWindow inherits Window {
                             visible: root.preview-text == "";
                             alignment: center;
                             spacing: 10px;
+                            padding-left: 12px;
+                            padding-right: 12px;
                             HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
@@ -398,6 +419,7 @@ export component AppWindow inherits Window {
                                 font-size: 14px;
                                 font-weight: 600;
                                 horizontal-alignment: center;
+                                overflow: elide;
                             }
                             Text {
                                 text: "Your document is analyzed locally. Formatting and structure stay intact.";
@@ -416,7 +438,7 @@ export component AppWindow inherits Window {
                             visible: root.preview-text != "";
                             VerticalLayout {
                                 width: results-scroll.visible-width;
-                                padding-right: 5px;
+                                padding-right: 8px;
                                 alignment: start;
                                 Text {
                                     text: root.preview-text;
@@ -432,7 +454,7 @@ export component AppWindow inherits Window {
         }
 
         HorizontalLayout {
-            height: 44px;
+            height: 46px;
             spacing: 14px;
             Image {
                 source: @image-url("icons/shield-check.svg");
