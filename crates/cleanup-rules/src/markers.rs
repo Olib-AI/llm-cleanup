@@ -492,6 +492,16 @@ pub struct ReasoningBlockRule;
 impl ReasoningBlockRule {
     const OPENERS: &[&str] = &["<think", "<thinking>", "```thinking", "```think"];
     const CLOSERS: &[&str] = &["</think", "</thinking>", "```"];
+
+    /// The earliest needle at or after `from`, preferring the *longest* needle when two match
+    /// at the same offset. Without the length tie-break `</think` would win over `</thinking>`
+    /// and the block range would stop one character short of the closing `>`.
+    fn earliest<'a>(haystack: &str, needles: &[&'a str], from: usize) -> Option<(usize, &'a str)> {
+        needles
+            .iter()
+            .filter_map(|n| haystack[from..].find(*n).map(|p| (from + p, *n)))
+            .min_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.len().cmp(&a.1.len())))
+    }
 }
 
 impl Rule for ReasoningBlockRule {
@@ -506,16 +516,9 @@ impl Rule for ReasoningBlockRule {
         let lower = text.to_ascii_lowercase();
         let mut out = Vec::new();
         let mut search_from = 0usize;
-        while let Some((open_at, opener)) = Self::OPENERS
-            .iter()
-            .filter_map(|o| lower[search_from..].find(*o).map(|p| (search_from + p, *o)))
-            .min_by_key(|(p, _)| *p)
-        {
+        while let Some((open_at, opener)) = Self::earliest(&lower, Self::OPENERS, search_from) {
             let body_start = open_at + opener.len();
-            let close = Self::CLOSERS
-                .iter()
-                .filter_map(|c| lower[body_start..].find(*c).map(|p| (body_start + p, *c)))
-                .min_by_key(|(p, _)| *p);
+            let close = Self::earliest(&lower, Self::CLOSERS, body_start);
             let (end, next) = match close {
                 Some((at, closer)) => (at + closer.len(), at + closer.len()),
                 None => (text.len(), text.len()),
