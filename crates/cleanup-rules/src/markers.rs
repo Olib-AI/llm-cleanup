@@ -97,7 +97,8 @@ impl Rule for MarkerRule {
 /// * OpenAI / gpt-oss harmony: `<|im_start|>`, `<|im_end|>`, `<|start|>`, `<|channel|>`,
 ///   `<|message|>`, `<|constrain|>`, `<|call|>`, `<|endofprompt|>`, `<|python_tag|>`
 /// * Llama 3/4: `<|begin_of_text|>`, `<|start_header_id|>`, `<|end_header_id|>`,
-///   `<|eot_id|>`, `<|python_tag|>`, `<|finetune_right_pad_id|>`
+///   `<|eot_id|>`, `<|python_tag|>`, `<|finetune_right_pad_id|>`; Llama 4 also uses
+///   `<|header_start|>`, `<|header_end|>`, `<|eot|>` and reasoning-thinking delimiters
 /// * Google Gemma 2/3: `<start_of_turn>`, `<end_of_turn>`; Gemma 4 (2026): `<|turn>`,
 ///   `<turn|>`, `<|channel>`, `<channel|>`, `<|think|>`
 /// * Microsoft Phi 3/4, Zephyr, GLM-4, OLMo role tokens: `<|system|>`, `<|user|>`,
@@ -128,8 +129,25 @@ const CHAT_TOKENS: &[&str] = &[
     "<|eom|>",
     "<|end|>",
     "<|begin_of_text|>",
+    "<|end_of_text|>",
     "<|start_header_id|>",
     "<|end_header_id|>",
+    // Llama 4's renamed headers and end-of-turn token, plus its reasoning, Python and
+    // multimodal serialization tokens (Meta's models/llama4/tokenizer.py).
+    "<|header_start|>",
+    "<|header_end|>",
+    "<|eot|>",
+    "<|step|>",
+    "<|python_start|>",
+    "<|python_end|>",
+    "<|finetune_right_pad|>",
+    "<|image_start|>",
+    "<|image_end|>",
+    "<|tile_x_separator|>",
+    "<|tile_y_separator|>",
+    "<|patch|>",
+    "<|reasoning_thinking_start|>",
+    "<|reasoning_thinking_end|>",
     "<|start|>",
     "<|channel|>",
     "<|message|>",
@@ -239,8 +257,28 @@ const CHAT_TOKENS_STRIPPABLE: &[&str] = &[
     "<|eot_id|>",
     "<|eom|>",
     "<|begin_of_text|>",
+    "<|end_of_text|>",
     "<|start_header_id|>",
     "<|end_header_id|>",
+    "<|header_start|>",
+    "<|header_end|>",
+    "<|eot|>",
+    "<|step|>",
+    "<|python_start|>",
+    "<|python_end|>",
+    "<|finetune_right_pad|>",
+    "<|image_start|>",
+    "<|image_end|>",
+    "<|tile_x_separator|>",
+    "<|tile_y_separator|>",
+    "<|patch|>",
+    "<|reasoning_thinking_start|>",
+    "<|reasoning_thinking_end|>",
+    "<|start|>",
+    "<|return|>",
+    "<|recipient|>",
+    "<|content|>",
+    "<|end|>",
     "<|fim_prefix|>",
     "<|fim_middle|>",
     "<|fim_suffix|>",
@@ -319,9 +357,9 @@ pub fn chat_tokens_strip() -> MarkerRule {
 /// Flag anything with the *shape* of a special token — `<|…|>` (and the fullwidth-pipe
 /// `｜…▁…｜` form) — that the literal lists do not already know. Model families ship new
 /// token vocabularies faster than any catalogue can be re-reviewed; the delimiters are the
-/// durable fingerprint even when the token name is not. Flag-only even at aggressive: an
-/// unrecognized token might be quoted deliberately, and the enumerated strippable subset
-/// already covers the tokens we are sure about.
+/// durable fingerprint even when the token name is not. Unknown shapes remain report-only at
+/// every level: angle-bracket text can be intentional, and only reviewed token names are
+/// safe to delete automatically.
 pub struct SpecialTokenPatternRule;
 
 impl SpecialTokenPatternRule {
@@ -465,6 +503,55 @@ pub fn citation_artifacts() -> MarkerRule {
     )
 }
 
+/// Report AI-provider attribution parameters in visible HTTP(S) URLs at every level.
+pub struct AiTrackingUrlFlagRule;
+impl Rule for AiTrackingUrlFlagRule {
+    fn id(&self) -> &str {
+        "markers.ai-tracking-urls"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Light
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        cleanup_core::url::find_ai_tracking_urls(&span.text)
+            .into_iter()
+            .map(|url| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: "AI-provider attribution parameter in cited URL".to_string(),
+                range: url.range,
+                replacement: None,
+            })
+            .collect()
+    }
+}
+
+/// Remove AI-provider attribution parameters from visible HTTP(S) URLs while preserving the
+/// cited page, unrelated analytics parameters, and fragments. Structural destinations are
+/// handled by the Markdown and DOCX adapters through the same core implementation.
+pub struct AiTrackingUrlStripRule;
+
+impl Rule for AiTrackingUrlStripRule {
+    fn id(&self) -> &str {
+        "markers.ai-tracking-urls.strip"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        cleanup_core::url::find_ai_tracking_urls(&span.text)
+            .into_iter()
+            .map(|url| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: "removed AI-provider attribution parameter from cited URL".to_string(),
+                range: url.range,
+                replacement: Some(url.replacement),
+            })
+            .collect()
+    }
+}
+
 /// Bracket citation markers such as `【45†L75-L83】` where the enclosing CJK brackets and an
 /// inner dagger/`source`/`web` word identify a ChatGPT research citation. Kept separate from
 /// [`MarkerRule`] because the content between the brackets varies per citation.
@@ -473,7 +560,7 @@ pub struct CitationBracketRule;
 impl CitationBracketRule {
     /// Longest bracket group we are willing to inspect. Real markers are short
     /// (`【4:0†source】`); anything longer is prose that happens to use CJK brackets.
-    const MAX_INNER: usize = 48;
+    const MAX_INNER: usize = 512;
 }
 
 impl Rule for CitationBracketRule {
@@ -521,6 +608,102 @@ impl Rule for CitationBracketRule {
     }
 }
 
+fn is_line_locator(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix('l') else {
+        return false;
+    };
+    if let Some((start, end)) = rest.split_once("-l") {
+        !start.is_empty()
+            && !end.is_empty()
+            && start.bytes().all(|b| b.is_ascii_digit())
+            && end.bytes().all(|b| b.is_ascii_digit())
+    } else {
+        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+    }
+}
+
+fn is_turn_source_id(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    TurnCitationRule::parse_groups(&lower, 0) == Some(value.len())
+}
+
+/// Strict subset of bracket markers that is unambiguously machine-generated and can be
+/// deleted at aggressive. The broader flag rule intentionally remains more permissive.
+fn is_structured_citation_bracket(inner: &str) -> bool {
+    // Dagger/line citations can carry a meaningful source reference after copy/paste. Keep
+    // those report-only; only the explicitly machine-labelled pipe envelopes are disposable.
+    if inner.contains('\u{2020}') {
+        return false;
+    }
+
+    let lower = inner.to_ascii_lowercase();
+    if !lower.contains('|') {
+        return is_turn_source_id(&lower);
+    }
+    let parts: Vec<&str> = lower.split('|').collect();
+    if !parts
+        .first()
+        .is_some_and(|family| matches!(*family, "cite" | "filecite"))
+    {
+        return false;
+    }
+    let mut source_ids = 0usize;
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        if is_turn_source_id(part) {
+            source_ids += 1;
+        } else if index + 1 == parts.len() && is_line_locator(part) {
+            // A single optional locator may follow the source IDs.
+        } else {
+            return false;
+        }
+    }
+    source_ids > 0
+}
+
+/// Remove modern visible `【cite|…】` / `【filecite|…】` envelopes and bare turn IDs.
+/// Unlike a literal replacement, this covers arbitrary turn/source numbers and line locators
+/// while leaving meaningful dagger citations, ordinary CJK brackets, and `【url|anchor|…】`
+/// content intact.
+pub struct CitationBracketStripRule;
+
+impl Rule for CitationBracketStripRule {
+    fn id(&self) -> &str {
+        "markers.citation-brackets.strip"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(relative) = text[from..].find('\u{3010}') {
+            let start = from + relative;
+            let inner_start = start + '\u{3010}'.len_utf8();
+            let Some(close_relative) = text[inner_start..].find('\u{3011}') else {
+                break;
+            };
+            let close = inner_start + close_relative;
+            let end = close + '\u{3011}'.len_utf8();
+            let inner = &text[inner_start..close];
+            if inner.chars().count() <= CitationBracketRule::MAX_INNER
+                && is_structured_citation_bracket(inner)
+            {
+                out.push(Finding {
+                    rule_id: self.id().to_string(),
+                    span_index: idx,
+                    range: start..end,
+                    message: format!("removed ChatGPT citation marker {inner:?}"),
+                    replacement: Some(String::new()),
+                });
+            }
+            from = end;
+        }
+        out
+    }
+}
+
 /// ChatGPT citations in the form the interface actually stores them: wrapped in Unicode
 /// Private Use Area characters — `U+E200` opens, `U+E202` separates, `U+E201` closes —
 /// around a payload like `cite`, `filecite`, `entity` or `url` plus opaque source ids
@@ -541,6 +724,39 @@ impl PrivateUseCitationRule {
     /// Longest wrapped payload we are willing to treat as one citation. Real markers list
     /// a handful of source ids; anything longer is two markers (or not a marker at all).
     const MAX_SPAN_BYTES: usize = 512;
+
+    /// Validate the envelope before deleting it. Other applications may use the same Private
+    /// Use code points, and non-citation families such as `entity` / `url` can contain visible
+    /// anchor content that must not be discarded with the wrapper.
+    fn is_strippable_marker(marker: &str) -> bool {
+        if !marker.starts_with('\u{E200}') || !marker.ends_with('\u{E201}') {
+            return false;
+        }
+        let inner_start = '\u{E200}'.len_utf8();
+        let inner_end = marker.len() - '\u{E201}'.len_utf8();
+        let parts: Vec<&str> = marker[inner_start..inner_end].split('\u{E202}').collect();
+        if !parts
+            .first()
+            .is_some_and(|family| matches!(*family, "cite" | "filecite"))
+        {
+            return false;
+        }
+        let mut source_ids = 0usize;
+        for (index, part) in parts.iter().enumerate().skip(1) {
+            let valid_source = !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+            if !valid_source {
+                return false;
+            }
+            if index + 1 == parts.len() && source_ids > 0 && is_line_locator(part) {
+                continue;
+            }
+            source_ids += 1;
+        }
+        source_ids > 0
+    }
 }
 
 impl Rule for PrivateUseCitationRule {
@@ -582,6 +798,11 @@ impl Rule for PrivateUseCitationRule {
                 }
                 None => after_open,
             };
+            let complete = end > after_open;
+            if self.strip && (!complete || !Self::is_strippable_marker(&text[start..end])) {
+                from = end;
+                continue;
+            }
             out.push(Finding {
                 rule_id: self.id().to_string(),
                 span_index: idx,
@@ -631,11 +852,14 @@ pub struct TurnCitationRule {
 }
 
 impl TurnCitationRule {
-    const KINDS: &[&str] = &["search", "file", "news", "image", "view", "video", "audio"];
-
     /// Parse one or more `turn<digits><kind><digits>` groups (with an optional
     /// `L<digits>-L<digits>` line range after a group) starting at `pos` in the
     /// ASCII-lowercased text. Returns the end offset of the last complete group.
+    ///
+    /// OpenAI's citation grammar is `turn\d+\w+\d+`, not a closed list. In particular,
+    /// current file/block/URL citations use `turn0file1`, `turn0block1`, and `turn0url1`.
+    /// Restricting the kind to ASCII letters keeps that forward-compatible without accepting
+    /// arbitrary punctuation or prose.
     fn parse_groups(lower: &str, mut cursor: usize) -> Option<usize> {
         let bytes = lower.as_bytes();
         let mut end: Option<usize> = None;
@@ -648,13 +872,14 @@ impl TurnCitationRule {
             if i == digits_start {
                 break;
             }
-            let Some(mut j) = Self::KINDS
-                .iter()
-                .find(|k| lower[i..].starts_with(*k))
-                .map(|k| i + k.len())
-            else {
+            let kind_start = i;
+            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if i == kind_start || i - kind_start > 32 {
                 break;
-            };
+            }
+            let mut j = i;
             let digits2_start = j;
             while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
@@ -688,7 +913,22 @@ impl TurnCitationRule {
             end = Some(j);
             cursor = j;
         }
+        if let Some(end) = end
+            && end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+        {
+            // Do not cut a citation-shaped prefix out of a longer ordinary identifier.
+            return None;
+        }
         end
+    }
+
+    fn enclosed(text: &str, start: usize, end: usize, open: char, close: char) -> bool {
+        text[..start].rfind(open).is_some_and(|open_at| {
+            text[open_at..]
+                .find(close)
+                .is_some_and(|relative| open_at + relative >= end)
+        })
     }
 
     fn scan(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -723,6 +963,15 @@ impl TurnCitationRule {
             }
             match Self::parse_groups(&lower, pos) {
                 Some(end) => {
+                    // Whole-envelope rules own complete PUA and CJK citation markers. In
+                    // particular, do not nibble a turn ID out of an unknown `entity` / `url`
+                    // payload that the validating envelope rule deliberately preserved.
+                    if Self::enclosed(text, start, end, '\u{E200}', '\u{E201}')
+                        || Self::enclosed(text, start, end, '\u{3010}', '\u{3011}')
+                    {
+                        from = end;
+                        continue;
+                    }
                     out.push(start..end);
                     from = end;
                 }
@@ -779,6 +1028,83 @@ pub fn turn_citations() -> TurnCitationRule {
 /// Remove bare `citeturn…` citation ids outright.
 pub fn turn_citations_strip() -> TurnCitationRule {
     TurnCitationRule { strip: true }
+}
+
+/// Remove the complete legacy browsing citation envelope, not just the word `oaicite`.
+/// Handles `::contentReference[oaicite:0]{index=0}`, the same form without the leading
+/// `::` / `contentReference`, and the `(oaicite:0){index=0}` copy variant.
+pub struct LegacyCitationStripRule;
+
+impl Rule for LegacyCitationStripRule {
+    fn id(&self) -> &str {
+        "markers.legacy-citations.strip"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let lower = text.to_ascii_lowercase();
+        let bytes = lower.as_bytes();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(relative) = lower[from..].find("oaicite:") {
+            let name_start = from + relative;
+            let digits_start = name_start + "oaicite:".len();
+            let mut cursor = digits_start;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                cursor += 1;
+            }
+            if cursor == digits_start || name_start == 0 {
+                from = digits_start;
+                continue;
+            }
+            let (open, close) = match bytes[name_start - 1] {
+                b'[' => (name_start - 1, b']'),
+                b'(' => (name_start - 1, b')'),
+                _ => {
+                    from = digits_start;
+                    continue;
+                }
+            };
+            if bytes.get(cursor) != Some(&close) {
+                from = digits_start;
+                continue;
+            }
+            cursor += 1;
+            let mut start = open;
+            if open >= "contentReference".len() && lower[..open].ends_with("contentreference") {
+                start = open - "contentReference".len();
+                if start >= 2 && &lower[start - 2..start] == "::" {
+                    start -= 2;
+                }
+            }
+            if lower[cursor..].starts_with("{index=") {
+                let index_digits = cursor + "{index=".len();
+                let mut end = index_digits;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if end > index_digits && bytes.get(end) == Some(&b'}') {
+                    cursor = end + 1;
+                } else {
+                    // A malformed suffix is not a complete legacy envelope. Leave the whole
+                    // construct untouched rather than creating a new orphaned `{index=…`.
+                    from = cursor;
+                    continue;
+                }
+            }
+            out.push(Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                range: start..cursor,
+                message: "removed legacy ChatGPT browsing citation envelope".to_string(),
+                replacement: Some(String::new()),
+            });
+            from = cursor;
+        }
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1446,5 +1772,85 @@ mod tests {
         let text = "before <tool_call>{\"x\":1}</tool_call> and <system-reminder>hi";
         let found = detect(&tool_calls(), text);
         assert_eq!(found.len(), 3, "got {found:?}");
+    }
+
+    #[test]
+    fn turn_citations_cover_current_block_and_url_sources() {
+        for text in [
+            "Source turn0block1 here.",
+            "Source turn12url4 here.",
+            "Source fileciteturn3file2L8-L13 here.",
+        ] {
+            let found = detect(&turn_citations(), text);
+            assert_eq!(found.len(), 1, "{text:?}: {found:?}");
+            assert_eq!(found[0].range.start, 7);
+        }
+        assert!(detect(&turn_citations(), "A turn0search0suffix stays text.").is_empty());
+    }
+
+    #[test]
+    fn visible_citation_envelopes_strip_only_machine_labelled_forms() {
+        let modern = "Claim【cite|turn0search1|turn2url0】 and【filecite|turn0file1|L8-L13】.";
+        let found = detect(&CitationBracketStripRule, modern);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.iter().all(|f| f.replacement.as_deref() == Some("")));
+
+        let preserved = "Keep【12†L20-L24】 and【url|anchor|turn0url1】 and【note|turn0url1】.";
+        assert!(detect(&CitationBracketStripRule, preserved).is_empty());
+        assert_eq!(detect(&CitationBracketRule, "【12†L20-L24】").len(), 1);
+    }
+
+    #[test]
+    fn pua_strip_validates_family_and_payload() {
+        let unknown = "\u{E200}entity\u{E202}turn0search0\u{E201}";
+        assert_eq!(detect(&private_use_citations(), unknown).len(), 1);
+        assert!(detect(&private_use_citations_strip(), unknown).is_empty());
+        let malformed = "\u{E200}cite\u{E202}not a source\u{E201}";
+        assert!(detect(&private_use_citations_strip(), malformed).is_empty());
+        let locator = "\u{E200}filecite\u{E202}turn0file1\u{E202}L8-L13\u{E201}";
+        assert_eq!(detect(&private_use_citations_strip(), locator).len(), 1);
+    }
+
+    #[test]
+    fn legacy_citation_envelopes_are_removed_whole() {
+        for text in [
+            "before ::contentReference[oaicite:12]{index=12} after",
+            "before (oaicite:3){index=3} after",
+            "before contentReference[oaicite:0] after",
+        ] {
+            let found = detect(&LegacyCitationStripRule, text);
+            assert_eq!(found.len(), 1, "{text:?}: {found:?}");
+            assert!(text[found[0].range.clone()].contains("oaicite:"));
+            assert!(!text[found[0].range.clone()].contains(" after"));
+        }
+        assert!(detect(&LegacyCitationStripRule, "ordinary oaicite: text").is_empty());
+        assert!(detect(&LegacyCitationStripRule, "(oaicite:1){index=broken}").is_empty());
+        assert!(detect(&LegacyCitationStripRule, "(oaicite:1){index=1").is_empty());
+    }
+
+    #[test]
+    fn unknown_special_tokens_stay_report_only_at_aggressive() {
+        let text = "a<|future_token_9|>b";
+        let found = detect(&SpecialTokenPatternRule, text);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].replacement.is_none());
+    }
+
+    #[test]
+    fn ai_url_rule_preserves_unrelated_query_parameters() {
+        let text = "See https://example.test/?a=1&utm_source=chatgpt.com&b=2#part.";
+        let found = detect(&AiTrackingUrlStripRule, text);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].replacement.as_deref(),
+            Some("https://example.test/?a=1&b=2#part")
+        );
+        assert!(
+            detect(
+                &AiTrackingUrlStripRule,
+                "https://example.test/?utm_source=newsletter"
+            )
+            .is_empty()
+        );
     }
 }

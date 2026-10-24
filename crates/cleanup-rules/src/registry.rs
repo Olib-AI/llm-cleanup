@@ -1,6 +1,7 @@
 use crate::lexicon::LexiconFlagRule;
 use crate::markers::{
-    AgentTrailerLineRule, CitationBracketRule, ReasoningBlockRule, ReasoningTraceRule,
+    AgentTrailerLineRule, AiTrackingUrlFlagRule, AiTrackingUrlStripRule, CitationBracketRule,
+    CitationBracketStripRule, LegacyCitationStripRule, ReasoningBlockRule, ReasoningTraceRule,
     SpecialTokenPatternRule, agent_trailers, chat_tokens, chat_tokens_strip, citation_artifacts,
     model_identifiers, private_use_citations, private_use_citations_strip, tool_calls,
     turn_citations, turn_citations_strip,
@@ -16,8 +17,8 @@ use crate::typographic::{
 };
 use crate::unicode_hidden::{
     FlagBidiControls, FlagCombiningRuns, FlagConfusables, FlagPrivateUse, FlagZeroWidthJoiners,
-    NormalizeExoticSpaces, StripBidiOverrides, StripControlChars, StripFillers,
-    StripPrivateUseMarkers, StripSmuggledChars,
+    NormalizeExoticSpaces, StripAnsiEscapes, StripBidiOverrides, StripControlChars, StripFillers,
+    StripPrivateUseMarkers, StripSmuggledChars, StripZeroWidthJoiners,
 };
 use cleanup_core::Rule;
 
@@ -47,6 +48,7 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
         // Invisible-character hygiene + typographic normalization (built-in code rules).
         Box::new(StripInvisibles),
+        Box::new(StripAnsiEscapes),
         Box::new(StripControlChars),
         Box::new(StripSmuggledChars),
         Box::new(StripFillers),
@@ -57,6 +59,7 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(StripPrivateUseMarkers),
         Box::new(FlagCombiningRuns),
         Box::new(FlagZeroWidthJoiners),
+        Box::new(StripZeroWidthJoiners),
         Box::new(FlagConfusables),
         Box::new(NormalizeQuotes),
         Box::new(NormalizeEllipsis),
@@ -73,8 +76,12 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(CitationBracketRule),
         Box::new(private_use_citations()),
         Box::new(turn_citations()),
+        Box::new(AiTrackingUrlFlagRule),
+        Box::new(AiTrackingUrlStripRule),
         Box::new(private_use_citations_strip()),
         Box::new(turn_citations_strip()),
+        Box::new(CitationBracketStripRule),
+        Box::new(LegacyCitationStripRule),
         Box::new(agent_trailers()),
         Box::new(AgentTrailerLineRule),
         Box::new(tool_calls()),

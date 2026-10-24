@@ -12,9 +12,10 @@ pub mod level;
 pub mod pipeline;
 pub mod splice;
 pub mod traits;
+pub mod url;
 
 pub use error::{CoreError, Result};
-pub use ir::{DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor};
+pub use ir::{DecodedSegment, DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor};
 pub use level::CleanupLevel;
 pub use pipeline::{CleanReport, clean};
 pub use splice::{render_byte_spliced, splice};

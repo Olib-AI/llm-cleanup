@@ -24,8 +24,12 @@
 use cleanup_core::ir::ProseSpan;
 use cleanup_core::{CleanupLevel, Ctx, Finding, Rule};
 
-fn is_tag_char(c: char) -> bool {
-    ('\u{E0000}'..='\u{E007F}').contains(&c)
+fn is_tag_or_reserved_ignorable(c: char) -> bool {
+    // Unicode's plane-14 default-ignorable ranges, excluding the variation-selector
+    // supplement handled separately below. Reserved members are included deliberately:
+    // Unicode assigns them Default_Ignorable_Code_Point so new format controls can be added
+    // without older implementations rendering visible boxes or carrying an invisible payload.
+    ('\u{E0000}'..='\u{E00FF}').contains(&c) || ('\u{E01F0}'..='\u{E0FFF}').contains(&c)
 }
 fn is_variation_selector(c: char) -> bool {
     ('\u{FE00}'..='\u{FE0F}').contains(&c) || ('\u{E0100}'..='\u{E01EF}').contains(&c)
@@ -56,13 +60,14 @@ impl Rule for StripSmuggledChars {
         let mut out = Vec::new();
         for k in 0..chars.len() {
             let (i, ch) = chars[k];
-            if is_tag_char(ch) {
+            if is_tag_or_reserved_ignorable(ch) {
                 out.push(strip_finding(
                     self.id(),
                     idx,
                     i,
                     ch,
-                    "removed invisible Unicode tag character (data/instruction smuggling vector)",
+                    "removed invisible Unicode tag/reserved format character \
+                     (default-ignorable data-smuggling vector)",
                 ));
             } else if is_variation_selector(ch) {
                 let prev = if k > 0 { Some(chars[k - 1].1) } else { None };
@@ -160,6 +165,85 @@ impl Rule for NormalizeExoticSpaces {
                     message: format!("normalized exotic space U+{:04X}", ch as u32),
                     replacement: Some(" ".to_string()),
                 });
+            }
+        }
+        out
+    }
+}
+
+/// Return the end of a complete ECMA-48 escape sequence, or `None` for a truncated/malformed
+/// one. Incomplete OSC/DCS strings deliberately do not consume the rest of the document.
+fn ansi_sequence_end(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.get(start) != Some(&0x1B) || start + 1 >= bytes.len() {
+        return None;
+    }
+    let introducer = bytes[start + 1];
+    if introducer == b'[' {
+        // CSI: parameter and intermediate bytes followed by one final byte.
+        let mut cursor = start + 2;
+        while cursor < bytes.len() && (0x20..=0x3F).contains(&bytes[cursor]) {
+            cursor += 1;
+        }
+        return (cursor < bytes.len() && (0x40..=0x7E).contains(&bytes[cursor]))
+            .then_some(cursor + 1);
+    }
+    if matches!(introducer, b']' | b'P' | b'X' | b'^' | b'_') {
+        // OSC, DCS, SOS, PM and APC strings end at BEL or ST (ESC \\). Never cross a line
+        // boundary or swallow more than 4 KiB while looking for a missing terminator.
+        let mut cursor = start + 2;
+        let limit = bytes.len().min(start + 4096);
+        while cursor < limit {
+            match bytes[cursor] {
+                0x07 => return Some(cursor + 1),
+                b'\n' | b'\r' => return None,
+                0x1B if bytes.get(cursor + 1) == Some(&b'\\') => return Some(cursor + 2),
+                0x1B => return None,
+                _ => cursor += 1,
+            }
+        }
+        return None;
+    }
+
+    // Other ESC sequences have zero or more intermediate bytes and one final byte.
+    let mut cursor = start + 1;
+    while cursor < bytes.len() && (0x20..=0x2F).contains(&bytes[cursor]) {
+        cursor += 1;
+    }
+    (cursor < bytes.len() && (0x30..=0x7E).contains(&bytes[cursor])).then_some(cursor + 1)
+}
+
+/// Strip complete terminal escape sequences copied out of coding-agent and tool output.
+/// Removing only the ESC control would leave visible residue such as `[31m`; handling the
+/// whole CSI/OSC/DCS sequence preserves the prose and discards only terminal instructions.
+pub struct StripAnsiEscapes;
+impl Rule for StripAnsiEscapes {
+    fn id(&self) -> &str {
+        "unicode.ansi.strip"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Light
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        let text = span.text.as_str();
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(relative) = text[from..].find('\u{001B}') {
+            let start = from + relative;
+            if let Some(end) = ansi_sequence_end(text, start) {
+                out.push(strip_finding(
+                    self.id(),
+                    idx,
+                    start,
+                    '\u{001B}',
+                    "removed terminal ANSI/ECMA-48 escape sequence",
+                ));
+                // `strip_finding` covers the introducer; widen it to the complete sequence.
+                out.last_mut().expect("just pushed").range = start..end;
+                from = end;
+            } else {
+                // `unicode.controls.strip` still removes a lone ESC without eating suffix text.
+                from = start + 1;
             }
         }
         out
@@ -302,13 +386,16 @@ impl Rule for StripPrivateUseMarkers {
     fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
         let mut out = Vec::new();
         for (i, ch) in span.text.char_indices() {
-            if is_chat_interface_pua(ch) {
+            if is_chat_interface_pua(ch) && !matches!(ch, '\u{E200}' | '\u{E201}' | '\u{E202}') {
+                // The envelope delimiters belong to PrivateUseCitationRule, which validates
+                // the payload before deleting it. Only sibling span markers are safe to strip
+                // independently; an unknown PUA payload must remain report-only.
                 out.push(strip_finding(
                     self.id(),
                     idx,
                     i,
                     ch,
-                    "removed chat-interface Private Use marker (citation plumbing)",
+                    "removed chat-interface Private Use span marker (citation plumbing)",
                 ));
             }
         }
@@ -396,8 +483,8 @@ impl Rule for FlagCombiningRuns {
 /// Flag zero-width joiners/non-joiners in contexts where they carry no linguistic meaning:
 /// between two ASCII letters, or inside a run of other invisible characters. `U+200C` and
 /// `U+200D` are *load-bearing* in Arabic-script and Indic text and inside emoji sequences,
-/// which is why they are never stripped — but between Latin letters they are the classic
-/// zero-width binary-encoding channel ("sneaky bits": two invisible characters encode
+/// which is why those contexts are never stripped — but between Latin letters they are the
+/// classic zero-width binary-encoding channel ("sneaky bits": two invisible characters encode
 /// arbitrary bytes) and a known fingerprint of encoder tools and some clipboard paths.
 pub struct FlagZeroWidthJoiners;
 impl Rule for FlagZeroWidthJoiners {
@@ -446,6 +533,32 @@ impl Rule for FlagZeroWidthJoiners {
             }
         }
         out
+    }
+}
+
+/// Aggressive removal for the same narrowly-scoped joiner contexts flagged above. Arabic,
+/// Indic, emoji, and other non-ASCII shaping contexts never enter this rule's candidate set.
+pub struct StripZeroWidthJoiners;
+impl Rule for StripZeroWidthJoiners {
+    fn id(&self) -> &str {
+        "unicode.zero-width.strip"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, cx: &Ctx) -> Vec<Finding> {
+        FlagZeroWidthJoiners
+            .detect(idx, span, cx)
+            .into_iter()
+            .map(|mut finding| {
+                finding.rule_id = self.id().to_string();
+                finding.message = "removed zero-width joiner/non-joiner from Latin text or an \
+                                   invisible encoding run"
+                    .to_string();
+                finding.replacement = Some(String::new());
+                finding
+            })
+            .collect()
     }
 }
 
@@ -686,6 +799,35 @@ mod tests {
         // Two marks (circumflex + tone) are ordinary orthography.
         let vietnamese = "Ti\u{0065}\u{0302}\u{0301}ng";
         assert!(detect(&FlagCombiningRuns, vietnamese).is_empty());
+    }
+
+    #[test]
+    fn strips_reserved_default_ignorables_but_preserves_variation_selectors() {
+        let text = "a\u{2065}b\u{FFF0}c\u{E0080}d\u{E01F0}e";
+        let found = detect(&crate::typographic::StripInvisibles, text);
+        assert_eq!(found.len(), 2, "{found:?}");
+        let tags = detect(&StripSmuggledChars, text);
+        assert_eq!(tags.len(), 2, "{tags:?}");
+        assert!(detect(&StripSmuggledChars, "\u{2764}\u{FE0F}").is_empty());
+        assert!(detect(&StripSmuggledChars, "\u{2764}\u{E0100}").is_empty());
+        assert_eq!(detect(&StripSmuggledChars, "\u{1F3F4}\u{E0067}").len(), 1);
+    }
+
+    #[test]
+    fn strips_complete_ansi_sequences_only() {
+        let text = "a\u{1b}[31mb\u{1b}]0;title\u{7}c";
+        let found = detect(&StripAnsiEscapes, text);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(&text[found[0].range.clone()], "\u{1b}[31m");
+        assert!(detect(&StripAnsiEscapes, "a\u{1b}]0;unterminated").is_empty());
+    }
+
+    #[test]
+    fn aggressive_zero_width_strip_uses_the_same_safe_contexts() {
+        assert_eq!(detect(&StripZeroWidthJoiners, "pass\u{200D}word").len(), 1);
+        let emoji = "\u{1F468}\u{200D}\u{1F4BB}";
+        assert!(detect(&StripZeroWidthJoiners, emoji).is_empty());
+        assert!(detect(&StripZeroWidthJoiners, "\u{0645}\u{200C}\u{06CC}").is_empty());
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use cleanup_core::ir::{DocMeta, Document, FormatId, ProseSpan, SpanAnchor, detect_newline};
-use cleanup_core::splice::render_byte_spliced;
-use cleanup_core::{CoreError, EditSet, Format, Result};
+use cleanup_core::splice::{render_byte_spliced, splice};
+use cleanup_core::{ContainerFinding, CoreError, EditSet, Format, Result};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
 
 /// Markdown adapter. Uses `pulldown-cmark`'s offset iterator purely as a *locator*:
 /// it yields `(Event, Range)` where a `Text` event's range is its exact byte span in the
@@ -25,6 +26,81 @@ fn is_protected_start(tag: &Tag) -> bool {
 }
 fn is_protected_end(tag: &TagEnd) -> bool {
     matches!(tag, TagEnd::CodeBlock | TagEnd::Image)
+}
+
+/// Extract the raw destination from a parser-confirmed inline link or autolink. The parser
+/// decides whether the construct is really a link (including its multiline grammar); this
+/// function only locates bytes inside that already-validated range.
+fn destination_in_link(src: &str, link: &Range<usize>) -> Option<Range<usize>> {
+    let raw = src.get(link.clone())?;
+    if raw.starts_with('<') {
+        let start = link.start + 1;
+        let end = start + src.get(start..link.end)?.find('>')?;
+        return Some(start..end);
+    }
+
+    let relative = raw.rfind("](")?;
+    let open_paren = link.start + relative + 1;
+    let mut cursor = open_paren + 1;
+    while cursor < link.end && matches!(src.as_bytes()[cursor], b' ' | b'\t' | b'\r' | b'\n') {
+        cursor += 1;
+    }
+    if src.as_bytes().get(cursor) == Some(&b'<') {
+        let start = cursor + 1;
+        let end = start + src.get(start..link.end)?.find('>')?;
+        return (end <= link.end).then_some(start..end);
+    }
+
+    let start = cursor;
+    while cursor < link.end
+        && !matches!(src.as_bytes()[cursor], b' ' | b'\t' | b'\r' | b'\n' | b')')
+    {
+        cursor += 1;
+    }
+    (start < cursor).then_some(start..cursor)
+}
+
+/// Clean only destinations belonging to actual `Link` events. Images, code, raw HTML, and
+/// malformed `](...)` text never produce such an event, so they cannot be changed by this
+/// structural pass. Reference definitions are intentionally left for a separate grammar.
+fn structural_url_edits(src: &str) -> Vec<(Range<usize>, String)> {
+    let mut edits = Vec::new();
+    for (event, range) in Parser::new_ext(src, options()).into_offset_iter() {
+        let Event::Start(Tag::Link { dest_url, .. }) = event else {
+            continue;
+        };
+        // An empty destination with a title must not have its title mistaken for a URL.
+        if dest_url.is_empty() {
+            continue;
+        }
+        let Some(destination) = destination_in_link(src, &range) else {
+            continue;
+        };
+        let Some(replacement) = cleanup_core::url::clean_ai_tracking_url(&src[destination.clone()])
+        else {
+            continue;
+        };
+        edits.push((destination, replacement));
+    }
+    edits.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)));
+    edits.dedup_by(|a, b| a.0 == b.0);
+    edits
+}
+
+fn canonicalize_structural_urls(text: &str) -> String {
+    let replacements = cleanup_core::url::find_ai_tracking_urls(text);
+    if replacements.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for replacement in replacements {
+        out.push_str(&text[cursor..replacement.range.start]);
+        out.push_str(&replacement.replacement);
+        cursor = replacement.range.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 
 impl Format for Markdown {
@@ -66,6 +142,33 @@ impl Format for Markdown {
         render_byte_spliced(doc, edits)
     }
 
+    fn container_findings(&self, doc: &Document) -> Vec<ContainerFinding> {
+        let Ok(src) = std::str::from_utf8(&doc.source) else {
+            return Vec::new();
+        };
+        structural_url_edits(src)
+            .into_iter()
+            .map(|(range, _)| ContainerFinding {
+                rule_id: "markers.ai-tracking-urls.container".to_string(),
+                message: format!(
+                    "AI-provider attribution in Markdown link destination at bytes {}..{}",
+                    range.start, range.end
+                ),
+                scrubbable: true,
+                applied: false,
+            })
+            .collect()
+    }
+
+    fn scrub_container(&self, _doc: &Document, rendered: &[u8]) -> Option<Vec<u8>> {
+        let src = std::str::from_utf8(rendered).ok()?;
+        let edits = structural_url_edits(src);
+        if edits.is_empty() {
+            return None;
+        }
+        splice(rendered, &edits).ok()
+    }
+
     fn skeleton(&self, bytes: &[u8]) -> Result<String> {
         // Structural fingerprint: every non-prose event is Debug-formatted (which captures
         // link URLs, heading levels, list markers, code/HTML content, etc.), while prose
@@ -77,7 +180,7 @@ impl Format for Markdown {
         for (event, _) in Parser::new_ext(src, options()).into_offset_iter() {
             match event {
                 Event::Text(_) => out.push('\u{00B7}'), // prose excluded from the fingerprint
-                other => out.push_str(&format!("{other:?}")),
+                other => out.push_str(&canonicalize_structural_urls(&format!("{other:?}"))),
             }
         }
         Ok(out)

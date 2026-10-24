@@ -83,6 +83,36 @@ pub fn resolve_byte_edits(doc: &Document, edits: &EditSet) -> Result<Vec<(Range<
                     out.push((byte_lo..byte_hi, replacement));
                 }
             }
+            SpanAnchor::DecodedSegments(segs) => {
+                let mut logical = 0usize;
+                let mut first = true;
+                for seg in segs {
+                    let (seg_lo, seg_hi) = (logical, logical + seg.decoded_len());
+                    logical = seg_hi;
+                    let ov_lo = e.range.start.max(seg_lo);
+                    let ov_hi = e.range.end.min(seg_hi);
+                    if ov_lo >= ov_hi {
+                        continue;
+                    }
+                    let local_lo = ov_lo - seg_lo;
+                    let local_hi = ov_hi - seg_lo;
+                    let byte_lo = seg.source.start
+                        + *seg.boundaries.get(local_lo).ok_or_else(|| {
+                            CoreError::SelfCheck("decoded edit start outside segment".to_string())
+                        })?;
+                    let byte_hi = seg.source.start
+                        + *seg.boundaries.get(local_hi).ok_or_else(|| {
+                            CoreError::SelfCheck("decoded edit end outside segment".to_string())
+                        })?;
+                    let replacement = if first {
+                        e.replacement.clone()
+                    } else {
+                        String::new()
+                    };
+                    first = false;
+                    out.push((byte_lo..byte_hi, replacement));
+                }
+            }
         }
     }
     Ok(out)
@@ -117,5 +147,44 @@ mod tests {
         let src = b"abcdef";
         let edits = vec![(1..3, "x".to_string()), (2..4, "y".to_string())];
         assert!(splice(src, &edits).is_err());
+    }
+
+    #[test]
+    fn decoded_segments_map_edits_onto_xml_entities() {
+        use crate::ir::{DecodedSegment, DocMeta, FormatId, Newline, ProseSpan};
+        use crate::traits::Edit;
+
+        let source = b"&lt;|im_end|&gt;".to_vec();
+        let decoded = "<|im_end|>";
+        let segment = DecodedSegment {
+            source: 0..source.len(),
+            // `<` is `&lt;`, `>` is `&gt;`; every intervening character is one byte.
+            boundaries: vec![0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16],
+        };
+        let doc = Document::new(
+            source,
+            vec![ProseSpan::new(
+                SpanAnchor::DecodedSegments(vec![segment]),
+                decoded,
+            )],
+            DocMeta {
+                format: FormatId::Docx,
+                newline: Newline::Lf,
+                had_bom: false,
+            },
+        );
+        let output = render_byte_spliced(
+            &doc,
+            &EditSet {
+                edits: vec![Edit {
+                    span_index: 0,
+                    range: 0..decoded.len(),
+                    replacement: String::new(),
+                    rule_id: "test".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+        assert!(output.is_empty());
     }
 }
