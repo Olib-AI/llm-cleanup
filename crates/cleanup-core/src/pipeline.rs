@@ -71,11 +71,18 @@ pub fn clean(
     report.findings = findings;
     report.flagged_by_rule = group_by_rule(report.flags.iter().map(|f| f.rule_id.as_str()));
 
-    // Phase 2 — resolve conflicts: sort by (span, start), drop overlaps (first wins).
+    // Phase 2 — resolve conflicts: sort by (span, start, longest first), drop overlaps
+    // (first wins). The longest-first tie-break matters now that whole-artifact deletions
+    // exist alongside single-character normalizations: deleting a leaked citation marker
+    // such as `\u{E200}cite\u{E202}turn0search0\u{E201}` or a fullwidth chat token
+    // (`｜end▁of▁sentence｜`) must win over the one-character edits that would otherwise
+    // merely re-spell its first character and leave the rest of the artifact behind.
+    // Beyond the tie-break the sort is stable, so rule order still decides true ties.
     edits.sort_by(|a, b| {
         a.span_index
             .cmp(&b.span_index)
             .then(a.range.start.cmp(&b.range.start))
+            .then(b.range.end.cmp(&a.range.end))
     });
     let mut resolved: Vec<Edit> = Vec::new();
     for e in edits {
