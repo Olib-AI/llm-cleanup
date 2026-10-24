@@ -629,13 +629,16 @@ fn is_latin_letter(c: char) -> bool {
     c.is_ascii_alphabetic() || ('\u{00C0}'..='\u{024F}').contains(&c)
 }
 
-/// Cyrillic and Greek letters that are visually identical to Latin ones, used to smuggle text
-/// past detectors and to disguise URLs/brand names. Reported per word.
+/// Cyrillic, Greek, Armenian, Cherokee, Mathematical Alphanumeric, and Fullwidth Latin
+/// code points that visually impersonate ordinary ASCII Latin letters inside a word.
 fn is_homoglyph_script(c: char) -> bool {
     ('\u{0370}'..='\u{03FF}').contains(&c) // Greek
         || ('\u{0400}'..='\u{04FF}').contains(&c) // Cyrillic
         || ('\u{0530}'..='\u{058F}').contains(&c) // Armenian
         || ('\u{13A0}'..='\u{13FF}').contains(&c) // Cherokee
+        || ('\u{FF21}'..='\u{FF3A}').contains(&c) // Fullwidth Latin capital
+        || ('\u{FF41}'..='\u{FF5A}').contains(&c) // Fullwidth Latin small
+        || math_alphanumeric_to_ascii(c).is_some()
 }
 
 /// Flag words that mix Latin letters with Cyrillic/Greek letters. Genuine mixed-script text
@@ -707,6 +710,241 @@ impl Rule for FlagConfusables {
             flush(start, text.len(), has_latin, has_homoglyph, &mut out);
         }
         out
+    }
+}
+
+/// Map Unicode Mathematical Alphanumeric Symbols (`U+1D400..=U+1D7FF`) and their BMP
+/// Letterlike-Symbols slots back to plain ASCII letters and digits.
+pub fn math_alphanumeric_to_ascii(c: char) -> Option<char> {
+    let u = c as u32;
+    if (0x1D400..0x1D6A4).contains(&u) {
+        let rem = (u - 0x1D400) % 52;
+        return Some(if rem < 26 {
+            char::from(b'A' + rem as u8)
+        } else {
+            char::from(b'a' + (rem - 26) as u8)
+        });
+    }
+    if (0x1D7CE..=0x1D7FF).contains(&u) {
+        let digit = (u - 0x1D7CE) % 10;
+        return Some(char::from(b'0' + digit as u8));
+    }
+    match c {
+        '\u{2102}' | '\u{212D}' => Some('C'),
+        '\u{210A}' => Some('g'),
+        '\u{210B}' | '\u{210C}' | '\u{210D}' => Some('H'),
+        '\u{210E}' => Some('h'),
+        '\u{2110}' | '\u{2111}' => Some('I'),
+        '\u{2112}' => Some('L'),
+        '\u{2113}' => Some('l'),
+        '\u{2115}' => Some('N'),
+        '\u{2119}' => Some('P'),
+        '\u{211A}' => Some('Q'),
+        '\u{211B}' | '\u{211C}' | '\u{211D}' => Some('R'),
+        '\u{2124}' | '\u{2128}' => Some('Z'),
+        '\u{212C}' => Some('B'),
+        '\u{212F}' => Some('e'),
+        '\u{2130}' => Some('E'),
+        '\u{2131}' => Some('F'),
+        '\u{2133}' => Some('M'),
+        '\u{2134}' => Some('o'),
+        _ => None,
+    }
+}
+
+fn scan_math_styled_words(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut out = Vec::new();
+    let mut run_start: Option<usize> = None;
+    let mut run_end = 0usize;
+    let mut count = 0usize;
+    let mut ascii_buf = String::new();
+
+    let flush = |start: Option<usize>,
+                 end: usize,
+                 n: usize,
+                 ascii: &mut String,
+                 out: &mut Vec<(std::ops::Range<usize>, String)>| {
+        if let Some(s) = start
+            && n >= 2
+        {
+            // Skip mixed-script words (`p𝖺ypal`): `FlagConfusables` handles those, and a
+            // partial normalization inside an IDN/spoofed word should be reviewed, not masked.
+            let left_plain = text[..s].chars().next_back().is_some_and(is_latin_letter);
+            let right_plain = text[end..].chars().next().is_some_and(is_latin_letter);
+            if !left_plain && !right_plain {
+                out.push((s..end, std::mem::take(ascii)));
+                return;
+            }
+        }
+        ascii.clear();
+    };
+
+    for (i, ch) in text.char_indices() {
+        if let Some(mapped) = math_alphanumeric_to_ascii(ch) {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+            run_end = i + ch.len_utf8();
+            count += 1;
+            ascii_buf.push(mapped);
+        } else {
+            flush(run_start.take(), run_end, count, &mut ascii_buf, &mut out);
+            count = 0;
+        }
+    }
+    flush(run_start, run_end, count, &mut ascii_buf, &mut out);
+    out
+}
+
+/// Flag multi-character words rendered in Unicode Mathematical Alphanumeric "fake bold /
+/// sans / italic" (`𝗛𝗲𝗹𝗹𝗼`) — used by social-post generators to fake formatting in plain text
+/// and by bypass tools to evade keyword/detector tokenizers. Single-letter mathematical
+/// variables (`𝑥`, `ℝ`) are intentionally ignored.
+pub struct FlagMathStyledText;
+impl Rule for FlagMathStyledText {
+    fn id(&self) -> &str {
+        "unicode.math-styled.flag"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Standard
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        scan_math_styled_words(&span.text)
+            .into_iter()
+            .map(|(range, normalized)| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: format!(
+                    "Mathematical Alphanumeric styled word {:?} (normalizes to {normalized:?})",
+                    &span.text[range.clone()]
+                ),
+                range,
+                replacement: None,
+            })
+            .collect()
+    }
+}
+
+/// Normalize multi-character Mathematical Alphanumeric styled words back to plain ASCII at
+/// [`CleanupLevel::Aggressive`], leaving single-character math symbols (`𝑥`, `ℝ`) untouched.
+pub struct NormalizeMathStyledText;
+impl Rule for NormalizeMathStyledText {
+    fn id(&self) -> &str {
+        "unicode.math-styled.normalize"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        scan_math_styled_words(&span.text)
+            .into_iter()
+            .map(|(range, normalized)| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: format!(
+                    "normalized Mathematical Alphanumeric word {:?} -> {normalized:?}",
+                    &span.text[range.clone()]
+                ),
+                range,
+                replacement: Some(normalized),
+            })
+            .collect()
+    }
+}
+
+fn scan_whitespace_stego_runs(text: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut line_start = 0usize;
+    let mut i = 0usize;
+
+    let check_line_end = |start: usize, end: usize, out: &mut Vec<std::ops::Range<usize>>| {
+        if end <= start {
+            return;
+        }
+        let mut ws_start = end;
+        while ws_start > start && matches!(bytes[ws_start - 1], b' ' | b'\t') {
+            ws_start -= 1;
+        }
+        // Require non-whitespace content earlier on the line (so indented blank lines are not
+        // treated as steganography) and at least one trailing `\t` (SNOW / tab-space bit
+        // channels), which never participates in CommonMark's two-space hard line break.
+        if ws_start > start && ws_start < end && bytes[ws_start..end].contains(&b'\t') {
+            out.push(ws_start..end);
+        }
+    };
+
+    while i < bytes.len() {
+        if bytes[i] == b'\r' {
+            check_line_end(line_start, i, &mut out);
+            if bytes.get(i + 1) == Some(&b'\n') {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            line_start = i;
+        } else if bytes[i] == b'\n' {
+            check_line_end(line_start, i, &mut out);
+            i += 1;
+            line_start = i;
+        } else {
+            i += 1;
+        }
+    }
+    check_line_end(line_start, bytes.len(), &mut out);
+    out
+}
+
+/// Flag trailing tab-mixed horizontal whitespace at line ends (SNOW-style whitespace
+/// steganography, which encodes bit triplets in trailing tab/space groups).
+pub struct FlagWhitespaceStego;
+impl Rule for FlagWhitespaceStego {
+    fn id(&self) -> &str {
+        "unicode.whitespace-stego.flag"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Standard
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        scan_whitespace_stego_runs(&span.text)
+            .into_iter()
+            .map(|range| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: format!(
+                    "trailing tab-mixed whitespace ({} bytes; SNOW-style steganography channel)",
+                    range.len()
+                ),
+                range,
+                replacement: None,
+            })
+            .collect()
+    }
+}
+
+/// Strip trailing tab-mixed horizontal whitespace at [`CleanupLevel::Aggressive`].
+pub struct StripWhitespaceStego;
+impl Rule for StripWhitespaceStego {
+    fn id(&self) -> &str {
+        "unicode.whitespace-stego.strip"
+    }
+    fn min_level(&self) -> CleanupLevel {
+        CleanupLevel::Aggressive
+    }
+    fn detect(&self, idx: usize, span: &ProseSpan, _cx: &Ctx) -> Vec<Finding> {
+        scan_whitespace_stego_runs(&span.text)
+            .into_iter()
+            .map(|range| Finding {
+                rule_id: self.id().to_string(),
+                span_index: idx,
+                message: format!(
+                    "removed {} bytes of trailing tab-mixed steganographic whitespace",
+                    range.len()
+                ),
+                range,
+                replacement: Some(String::new()),
+            })
+            .collect()
     }
 }
 
@@ -839,5 +1077,36 @@ mod tests {
         // An emoji ZWJ sequence is legitimate.
         let emoji = "\u{1F468}\u{200D}\u{1F4BB} shipped";
         assert!(detect(&FlagZeroWidthJoiners, emoji).is_empty());
+    }
+
+    #[test]
+    fn math_styled_words_normalize_while_single_variables_and_confusables_split_cleanly() {
+        let styled = "Read \u{1D5DB}\u{1D5F2}\u{1D5F9}\u{1D5F9}\u{1D5FC} in \u{1D7D0}\u{1D7CE}\u{1D7D0}\u{1D7D4} for \u{1D465} \u{2208} \u{211D}.";
+        let norm = detect(&NormalizeMathStyledText, styled);
+        assert_eq!(
+            norm.len(),
+            2,
+            "single math symbols x and R must stay untouched: {norm:?}"
+        );
+        assert_eq!(norm[0].replacement.as_deref(), Some("Hello"));
+        assert_eq!(norm[1].replacement.as_deref(), Some("2026"));
+
+        // Single mathematical sans-serif 'a' (U+1D5BA) mixed into a Latin word is flagged as a confusable.
+        let mixed = "p\u{1D5BA}ypal";
+        assert_eq!(detect(&FlagConfusables, mixed).len(), 1);
+        assert!(detect(&NormalizeMathStyledText, mixed).is_empty());
+    }
+
+    #[test]
+    fn strips_snow_tab_stego_without_touching_markdown_two_space_hard_breaks() {
+        let snow = "Line one \t  \t\nLine two  \nLine three\t ";
+        let found = detect(&StripWhitespaceStego, snow);
+        assert_eq!(
+            found.len(),
+            2,
+            "two-space hard break on line 2 must stay untouched: {found:?}"
+        );
+        assert_eq!(&snow[found[0].range.clone()], " \t  \t");
+        assert_eq!(&snow[found[1].range.clone()], "\t ");
     }
 }

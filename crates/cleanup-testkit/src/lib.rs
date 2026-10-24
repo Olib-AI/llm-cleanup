@@ -603,4 +603,243 @@ mod tests {
             report.container
         );
     }
+
+    #[test]
+    fn markdown_coalesces_split_text_for_brackets_gemini_citations_and_entities() {
+        let input = "---\ntitle: Keep Me\nai_generated: true\ngenerator: ChatGPT\n---\n\n\
+                     See [INST] leak and [cite_start]grounded fact[cite_end] [cite: 1, 2].\n\n\
+                     Also wait &mdash; ::contentReference[oaicite:1]{index=1} and [ref][src]. \t  \t\n\n\
+                     [src]: https://example.com/doc?a=1&utm_source=chatgpt.com\n";
+        let (out, report) = analyze(&Markdown, input, CleanupLevel::Aggressive);
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.chat-tokens"),
+            "bracketed [INST] must be detected in Markdown: {:?}",
+            report.flags
+        );
+        assert!(
+            out.contains("title: Keep Me"),
+            "user frontmatter preserved: {out}"
+        );
+        assert!(
+            !out.contains("ai_generated"),
+            "AI frontmatter key scrubbed: {out}"
+        );
+        assert!(
+            !out.contains("ChatGPT"),
+            "AI generator frontmatter scrubbed: {out}"
+        );
+        assert!(
+            !out.contains("[cite_start]"),
+            "Gemini cite_start stripped: {out}"
+        );
+        assert!(
+            !out.contains("[cite: 1, 2]"),
+            "Gemini numeric cite stripped: {out}"
+        );
+        assert!(
+            !out.contains("oaicite"),
+            "legacy oaicite stripped in Markdown: {out}"
+        );
+        assert!(
+            out.contains("wait, "),
+            "&mdash; with flanking spaces becomes ', ': {out}"
+        );
+        assert!(
+            !out.contains("\t"),
+            "SNOW trailing tab stego stripped: {out}"
+        );
+        assert!(
+            out.contains("[src]: https://example.com/doc?a=1\n"),
+            "reference link tracking param scrubbed: {out}"
+        );
+        assert_idempotent(&Markdown, input, CleanupLevel::Aggressive);
+    }
+
+    #[test]
+    fn html_cleans_escaped_tokens_entities_and_c2pa_container_metadata() {
+        use cleanup_formats::Html;
+
+        let input = "<!DOCTYPE html>\n<html>\n<head>\n  <meta name=\"ai-generated\" content=\"true\">\n  <link rel=\"c2pa-manifest\" href=\"/claim.c2pa\">\n  <script>if (1 < 2) { console.log(\"<|im_end|>\"); }</script>\n</head>\n<body>\n  <!-- -----BEGIN C2PA MANIFEST-----\n  https://example.com/manifest.c2pa\n  -----END C2PA MANIFEST----- -->\n  <p>AT&amp;T said &ldquo;hi&rdquo;<span>&lt;|im_</span><span>end|&gt;</span> [cite: 3].</p>\n  <p><a href=\"https://example.com/x?id=7&amp;utm_source=claude.ai\">Read</a></p>\n</body>\n</html>\n";
+        let (out, report) = analyze(&Html, input, CleanupLevel::Aggressive);
+        assert!(report.changed);
+        assert!(!out.contains("c2pa-manifest"), "{out}");
+        assert!(!out.contains("BEGIN C2PA MANIFEST"), "{out}");
+        assert!(!out.contains("ai-generated"), "{out}");
+        assert!(
+            out.contains("console.log(\"<|im_end|>\")"),
+            "<script> contents must never be altered: {out}"
+        );
+        assert!(
+            out.contains("<p>AT&amp;T said \"hi\"<span></span><span></span>.</p>"),
+            "split escaped chat token and Gemini citation cleaned while preserving AT&amp;T: {out}"
+        );
+        assert!(
+            out.contains("href=\"https://example.com/x?id=7\""),
+            "anchor href tracking param scrubbed: {out}"
+        );
+        assert_idempotent(&Html, input, CleanupLevel::Aggressive);
+    }
+
+    #[test]
+    fn docx_scrubs_c2pa_store_embedded_png_c2pa_and_custom_ai_properties() {
+        use std::io::{Cursor, Write};
+
+        // Build a minimal C2PA JUMBF box + signed PNG inside a DOCX package.
+        let mut jumbf = Vec::new();
+        let jumd_payload = [
+            b'c', b'2', b'p', b'a', 0x00, 0x11, 0x00, 0x10, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38,
+            0x9B, 0x71, 0x03, b'c', b'2', b'p', b'a', 0x00,
+        ];
+        let jumd_len = (8 + jumd_payload.len()) as u32;
+        let cbor = b"\x00\x00\x00\x16cborAnthropic Claude";
+        let jumb_len = 8 + jumd_len + cbor.len() as u32;
+        jumbf.extend_from_slice(&jumb_len.to_be_bytes());
+        jumbf.extend_from_slice(b"jumb");
+        jumbf.extend_from_slice(&jumd_len.to_be_bytes());
+        jumbf.extend_from_slice(b"jumd");
+        jumbf.extend_from_slice(&jumd_payload);
+        jumbf.extend_from_slice(cbor);
+
+        let png_chunk = |ty: &[u8; 4], data: &[u8]| -> Vec<u8> {
+            let mut v = Vec::new();
+            v.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            v.extend_from_slice(ty);
+            v.extend_from_slice(data);
+            v.extend_from_slice(&0u32.to_be_bytes());
+            v
+        };
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&png_chunk(
+            b"IHDR",
+            &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0],
+        ));
+        png.extend_from_slice(&png_chunk(b"caBX", &jumbf));
+        png.extend_from_slice(&png_chunk(b"IDAT", &[0x78, 0x9C, 0x63, 0x00]));
+        png.extend_from_slice(&png_chunk(b"IEND", &[]));
+
+        let body = wrap("w:document", &pt("Clean body paragraph."));
+        let custom = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name="AIGenerated"><vt:lpwstr>true</vt:lpwstr></property><property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="3" name="Department"><vt:lpwstr>Engineering</vt:lpwstr></property></Properties>"#;
+        let content_types = r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/META-INF/content_credential.c2pa" ContentType="application/x-c2pa-manifest-store"/></Types>"#;
+
+        let mut zip_bytes = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(Cursor::new(&mut zip_bytes));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, bytes) in [
+                ("[Content_Types].xml", content_types.as_bytes()),
+                ("word/document.xml", body.as_bytes()),
+                ("docProps/custom.xml", custom.as_bytes()),
+                ("META-INF/content_credential.c2pa", jumbf.as_slice()),
+                ("word/media/image1.png", png.as_slice()),
+            ] {
+                w.start_file(name, opts).unwrap();
+                w.write_all(bytes).unwrap();
+            }
+            w.finish().unwrap();
+        }
+
+        let (out, report) = analyze_bytes(&Docx, &zip_bytes, CleanupLevel::Aggressive);
+        assert_eq!(
+            report.container.iter().filter(|c| c.applied).count(),
+            3,
+            "{report:?}"
+        );
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(&out)).unwrap();
+        assert!(
+            archive.by_name("META-INF/content_credential.c2pa").is_err(),
+            "C2PA package store must be removed from DOCX zip"
+        );
+        let ct_after = docx_part_text(&out, "[Content_Types].xml");
+        assert!(!ct_after.contains("content_credential.c2pa"), "{ct_after}");
+        let custom_after = docx_part_text(&out, "docProps/custom.xml");
+        assert!(custom_after.contains("pid=\"2\" name=\"AIGenerated\"><vt:lpwstr></vt:lpwstr>"));
+        assert!(
+            custom_after.contains("Engineering"),
+            "business custom prop preserved"
+        );
+
+        let mut media_after = Vec::new();
+        std::io::Read::read_to_end(
+            &mut archive.by_name("word/media/image1.png").unwrap(),
+            &mut media_after,
+        )
+        .unwrap();
+        assert!(
+            !media_after.windows(4).any(|w| w == b"caBX"),
+            "embedded PNG caBX chunk must be scrubbed"
+        );
+
+        let (_, again) = analyze_bytes(&Docx, &out, CleanupLevel::Aggressive);
+        assert!(!again.changed, "{again:?}");
+    }
+
+    #[test]
+    fn plaintext_strips_byte0_c2pa_vs_wrapper_and_multiline_structured_manifest() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"C2PATXT\0");
+        frame.push(1);
+        frame.extend_from_slice(&4u32.to_be_bytes());
+        frame.extend_from_slice(b"jumb");
+        let mut prefix = String::from("\u{FEFF}");
+        for b in frame {
+            let ch = if b < 0x10 {
+                char::from_u32(0xFE00 + u32::from(b)).unwrap()
+            } else {
+                char::from_u32(0xE0100 + u32::from(b - 0x10)).unwrap()
+            };
+            prefix.push(ch);
+        }
+        let input = format!(
+            "{prefix}# -----BEGIN C2PA MANIFEST-----\n# data:application/c2pa;base64,AAAA\n# -----END C2PA MANIFEST-----\nActual prose.\n"
+        );
+        let (out, report) = analyze(&PlainText, &input, CleanupLevel::Aggressive);
+        assert_eq!(out, "Actual prose.\n");
+        assert!(
+            report
+                .applied_by_rule
+                .iter()
+                .any(|(id, _)| id == "markers.c2pa-text-manifest"),
+            "{report:?}"
+        );
+        assert!(report.container.iter().any(|c| c.applied), "{report:?}");
+        assert_idempotent(&PlainText, &input, CleanupLevel::Aggressive);
+    }
+
+    #[test]
+    fn dewatermark_mode_is_opt_in_idempotent_and_breaks_5gram_windows() {
+        let input = "Furthermore, engineering teams frequently utilize numerous tools in order to \
+                     facilitate collaboration prior to release. Note that \"we don't utilize \
+                     shortcuts\" remains verbatim.\n";
+
+        // Default Aggressive run: zero prose word rewrites!
+        let (default_out, _) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(default_out, input);
+
+        // Opt-in `--dewatermark`: breaks 5-gram windows, preserves direct quote, 100% idempotent.
+        let doc = PlainText.parse(input.as_bytes()).unwrap();
+        let rules = builtin_rules();
+        let cx = Ctx::new(CleanupLevel::Aggressive).with_dewatermark(true);
+        let (once_bytes, rep1) = clean(&PlainText, &doc, &rules, &cx).unwrap();
+        let once = String::from_utf8(once_bytes.clone()).unwrap();
+        assert!(rep1.edits_applied >= 5, "{rep1:?}");
+        assert!(
+            once.contains("\"we don't utilize shortcuts\""),
+            "quoted speech protected: {once}"
+        );
+        let metrics = cleanup_rules::measure_disruption(input, &once);
+        assert!(metrics.window_disruption_rate > 0.45, "{metrics:?}");
+
+        let doc2 = PlainText.parse(&once_bytes).unwrap();
+        let (twice_bytes, rep2) = clean(&PlainText, &doc2, &rules, &cx).unwrap();
+        assert_eq!(
+            once_bytes, twice_bytes,
+            "dewatermark must be strictly idempotent"
+        );
+        assert_eq!(rep2.edits_applied, 0);
+    }
 }

@@ -70,7 +70,14 @@ fn friendly_rule_name(rule_id: &str) -> String {
         "unicode.private-use.flag" | "unicode.private-use.strip" => "Private-use characters",
         "unicode.combining.flag" => "Stacked combining marks",
         "unicode.zero-width.flag" | "unicode.zero-width.strip" => "Zero-width joiners",
+        "unicode.whitespace-stego.flag" | "unicode.whitespace-stego.strip" => {
+            "Steganographic trailing whitespace"
+        }
+        "unicode.math-styled.flag" | "unicode.math-styled.normalize" => {
+            "Mathematical styled letters"
+        }
         "unicode.confusables.flag" => "Mixed-script lookalikes",
+        "watermark.ngram-disrupt" => "Statistical watermark windows",
         "typo.quotes.straighten" => "Curly quotes and apostrophes",
         "typo.ligatures.expand" => "Typographic ligatures",
         "typo.ellipsis.expand" => "Ellipsis characters",
@@ -88,6 +95,13 @@ fn friendly_rule_name(rule_id: &str) -> String {
             "Private-use citation markers"
         }
         "markers.turn-citations" | "markers.turn-citations.strip" => "Citation identifiers",
+        "markers.gemini-citations" | "markers.gemini-citations.strip" => {
+            "Gemini grounding citations"
+        }
+        "markers.c2pa-text-manifest" => "Invisible C2PA text manifests",
+        "markers.c2pa-structured-manifest" | "markers.c2pa-structured-manifest.strip" => {
+            "C2PA structured-text manifests"
+        }
         "markers.ai-tracking-urls" | "markers.ai-tracking-urls.strip" => "AI tracking parameters",
         "markers.legacy-citations.strip" => "Legacy citation markers",
         "markers.claude-prompt-fingerprint" => "Claude Code prompt fingerprints",
@@ -137,7 +151,13 @@ fn main() -> Result<(), slint::PlatformError> {
         let state = state.clone();
         ui.on_browse(move || {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("documents", &["md", "markdown", "txt", "docx"])
+                .add_filter(
+                    "documents & media",
+                    &[
+                        "md", "markdown", "txt", "html", "htm", "docx", "png", "jpg", "jpeg",
+                        "webp", "svg",
+                    ],
+                )
                 .pick_file()
             {
                 state.borrow_mut().file = Some(path);

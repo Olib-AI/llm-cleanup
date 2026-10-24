@@ -7,15 +7,18 @@
 //! documentation, published research, or observed output; the review date is
 //! [`CATALOG_REVIEWED`].
 //!
-//! Two things are deliberately **not** in this table, because no character- or phrase-level
-//! tool can touch them:
+//! Three hard cryptographic or physical limits remain in [`OUT_OF_SCOPE`] so users are
+//! never misled about what deterministic local processing can certify:
 //!
-//! * statistical token watermarks (Google **SynthID**; Anthropic's watermark for models
-//!   released on/after 2026-08-02; OpenAI **textGrain**, EU rollout announced 2026-10-05);
-//! * file-level provenance (C2PA / Content Credentials) attached to exported images, audio
-//!   and some office documents.
-//!
-//! Both are named in [`OUT_OF_SCOPE`] so users are not misled about what cleaning does.
+//! * **Keyed statistical watermark certification** (`SynthID-Text`, `textGrain`): opting into
+//!   `--dewatermark` disrupts consecutive 5-gram tournament windows via truth-preserving
+//!   canonicalizations, but without the vendor's secret key no offline tool can verify
+//!   complete watermark removal.
+//! * **Pixel- and audio-domain imperceptible watermarks** (`SynthID-Image`, `SynthID-Audio`,
+//!   `Tree-Ring`): lossless C2PA/XMP chunk stripping preserves bit-exact pixels and therefore
+//!   leaves pixel-embedded signals untouched.
+//! * **External soft-binding registries**: cloud perceptual-hash databases remain able to
+//!   match an asset after embedded C2PA manifests are stripped.
 
 /// When this catalogue was last reviewed against the vendor landscape.
 pub const CATALOG_REVIEWED: &str = "2026-10-24";
@@ -45,23 +48,25 @@ pub struct OutOfScope {
 
 pub const OUT_OF_SCOPE: &[OutOfScope] = &[
     OutOfScope {
-        technique: "SynthID-Text (statistical token watermark)",
-        owner: "Google Gemini (since 2024), and the basis of Anthropic's 2026 watermark",
-        why: "Lives in the probability distribution over word choices, not in characters. \
-              Copying, pasting and re-typing keep it; only a substantial rewrite degrades it.",
+        technique: "Keyed statistical watermark certification (SynthID-Text, textGrain)",
+        owner: "Google Gemini, Anthropic Claude (models from 2026-08-02+), OpenAI ChatGPT / Codex",
+        why: "Opt-in `--dewatermark` deterministically disrupts overlapping 5-gram token \
+              tournament windows, degrading windowed detection scores, but without the \
+              vendor's secret key no offline tool can verify or certify zero residual signal.",
     },
     OutOfScope {
-        technique: "textGrain (statistical token watermark)",
-        owner: "OpenAI ChatGPT / Codex, EU rollout announced 2026-10-05",
-        why: "Same as above: no hidden characters, so a character cleaner cannot remove it.",
+        technique: "Pixel- and audio-domain imperceptible watermarks (SynthID-Image / Audio)",
+        owner: "Google Imagen / Veo / Lyria, Meta AudioSeal, diffusion latent watermarks",
+        why: "Lives in pixel DCT/wavelet coefficients or audio waveforms rather than metadata \
+              chunks. Because `aiclean` strips C2PA/XMP chunks losslessly without re-encoding \
+              pixels, imperceptible media watermarks remain intact.",
     },
     OutOfScope {
-        technique: "C2PA / Content Credentials",
-        owner: "Claude file exports, OpenAI images and audio, Google media",
-        why: "Cryptographically signed provenance manifests. (Distinct from the unsigned \
-              author/program metadata in docProps/core.xml and app.xml, which we DO flag \
-              and, at aggressive, scrub — see the docx-generators family.) Removing \
-              signed claims is neither a prose edit nor something this tool does.",
+        technique: "External C2PA soft-binding / perceptual-hash registries",
+        owner: "Cloud provenance lookup services",
+        why: "Embedded C2PA manifests (`caBX`, `APP11`, `C2PA`, `META-INF/*.c2pa`, text \
+              wrappers) are removed locally, but an external registry that previously indexed \
+              a perceptual hash of the file can still match it out-of-band.",
     },
 ];
 
@@ -110,14 +115,16 @@ const CATALOG: &[SignatureFamily] = &[
     },
     SignatureFamily {
         id: "google",
-        provider: "Google — Gemini, AI Overviews, Workspace",
-        models: "Gemini 3 Pro / 3.1 Pro / Flash",
+        provider: "Google — Gemini, NotebookLM, AI Studio, Workspace",
+        models: "Gemini 3 Pro / 3.1 Pro / Flash, NotebookLM",
         signatures: "Zero-width and non-breaking spaces picked up from the Docs/Keep \
-                     clipboard, footnote-style citation markers, formal transitions \
+                     clipboard; Gemini / AI Studio / NotebookLM grounding citation markers \
+                     ([cite_start], [cite_end], [cite: 1, 2]); formal transitions \
                      (\"furthermore\", \"moreover\"); Gemma chat tokens (<start_of_turn>, \
                      <|turn|>, <|think|>, <|channel|>thought) in self-hosted output; \
-                     SynthID watermark (out of scope)",
-        rules: "typo.invisibles.strip, unicode.spaces.normalize, markers.chat-tokens, \
+                     SynthID-Text watermark (opt-in disruption via --dewatermark)",
+        rules: "typo.invisibles.strip, unicode.spaces.normalize, markers.gemini-citations, \
+                markers.gemini-citations.strip, markers.chat-tokens, \
                 markers.chat-tokens.pattern, phrasal.gemini-affirmations, \
                 phrasal.formal-transitions",
     },
@@ -293,7 +300,9 @@ const CATALOG: &[SignatureFamily] = &[
                 unicode.spaces.normalize, unicode.bidi.strip-overrides, unicode.bidi.flag, \
                 unicode.confusables.flag, unicode.controls.strip, unicode.ansi.strip, \
                 unicode.private-use.flag, unicode.private-use.strip, unicode.combining.flag, \
-                unicode.zero-width.flag, unicode.zero-width.strip",
+                unicode.zero-width.flag, unicode.zero-width.strip, \
+                unicode.whitespace-stego.flag, unicode.whitespace-stego.strip, \
+                unicode.math-styled.flag, unicode.math-styled.normalize",
     },
     SignatureFamily {
         id: "typography",
@@ -349,6 +358,35 @@ const CATALOG: &[SignatureFamily] = &[
         // Implemented by the DOCX adapter's container.findings hook
         // (container.docx-generator-metadata), which is not a prose rule.
         rules: "",
+    },
+    SignatureFamily {
+        id: "c2pa-provenance",
+        provider: "C2PA 2.x / Content Credentials & AI container provenance",
+        models: "OpenAI DALL-E / GPT-Image, Claude file & artifact exports, Adobe Firefly, \
+                 Google Imagen, Microsoft Designer, c2pa-rs / c2patool pipelines",
+        signatures: "ISO/IEC 19566-5 JUMBF Content Credentials manifests (`c2pa` UUID \
+                     63327061-0011-0010-8000-00AA00389B71) and IPTC `trainedAlgorithmicMedia` \
+                     metadata across PNG (`caBX`, `iTXt`/`tEXt` XMP, SD/ComfyUI chunks), \
+                     JPEG (single and multi-segment `APP11` `JP` XTBox and `APP1` XMP), \
+                     WebP (`C2PA` and `XMP ` RIFF chunks), SVG (`<metadata>`), HTML \
+                     (`<link rel=\"c2pa-manifest\">`, `<script type=\"application/c2pa\">`, \
+                     AI `<meta>` tags), Markdown YAML/TOML front matter, DOCX packages \
+                     (`META-INF/*.c2pa`, embedded `word/media/*`, `docProps/custom.xml`), \
+                     C2PA 2.4 Structured Text banners, and C2PA Unstructured Text \
+                     (`U+FEFF` + `C2PATXT\\0` variation-selector binary frames)",
+        rules: "markers.c2pa-text-manifest, markers.c2pa-structured-manifest, \
+                markers.c2pa-structured-manifest.strip",
+    },
+    SignatureFamily {
+        id: "statistical-watermarks",
+        provider: "Statistical token watermarks — opt-in n-gram window disruption",
+        models: "Google SynthID-Text (Gemini, Claude 5.x from Aug 2026), OpenAI textGrain",
+        signatures: "Keyed pseudorandom biases over 5-gram token windows (`H = 4` preceding \
+                     tokens in SynthID-Text). Dormant on standard runs; when `--dewatermark` \
+                     is passed, acyclic truth-preserving phrasal, discourse, and closed-class \
+                     canonicalizations shift token offsets and invalidate consecutive 5-gram \
+                     windows while shielding quotations, URLs, numbers, and identifiers",
+        rules: "watermark.ngram-disrupt",
     },
 ];
 

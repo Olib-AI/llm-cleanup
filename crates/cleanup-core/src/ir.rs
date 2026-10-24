@@ -7,6 +7,8 @@ pub enum FormatId {
     Markdown,
     PlainText,
     Docx,
+    Html,
+    Image,
 }
 
 impl FormatId {
@@ -15,6 +17,8 @@ impl FormatId {
             FormatId::Markdown => "markdown",
             FormatId::PlainText => "text",
             FormatId::Docx => "docx",
+            FormatId::Html => "html",
+            FormatId::Image => "image",
         }
     }
 }

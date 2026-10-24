@@ -1,7 +1,8 @@
 //! Convert to Markdown.
 
+use crate::to_text::html_paragraph_texts;
 use crate::xml_text::docx_paragraph_texts;
-use crate::{ConvertReport, Result};
+use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
 
 pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
@@ -33,5 +34,22 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
                 },
             ))
         }
+        FormatId::Html => {
+            let md = html_paragraph_texts(src)?.join("\n\n") + "\n";
+            Ok((
+                md.into_bytes(),
+                ConvertReport {
+                    engine: "html-extract".into(),
+                    lossy: true,
+                    warnings: vec![
+                        "extracted HTML blocks as paragraphs; inline HTML tags and styles are stripped".to_string(),
+                    ],
+                },
+            ))
+        }
+        FormatId::Image => Err(ConvertError::Unsupported {
+            from: "image",
+            to: "markdown",
+        }),
     }
 }

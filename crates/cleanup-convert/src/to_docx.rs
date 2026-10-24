@@ -22,6 +22,23 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
     let (docx, warnings) = match from {
         FormatId::PlainText => (text_to_docx(src), Vec::new()),
         FormatId::Markdown => markdown_to_docx(src)?,
+        FormatId::Html => {
+            let paras = crate::to_text::html_paragraph_texts(src)?;
+            let mut docx = Docx::new();
+            for p in paras {
+                docx = docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text(&p)));
+            }
+            (
+                docx,
+                vec!["extracted HTML blocks as plain DOCX paragraphs".to_string()],
+            )
+        }
+        FormatId::Image => {
+            return Err(ConvertError::Unsupported {
+                from: "image",
+                to: "docx",
+            });
+        }
         FormatId::Docx => unreachable!(),
     };
 

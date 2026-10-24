@@ -60,12 +60,15 @@ fn destination_in_link(src: &str, link: &Range<usize>) -> Option<Range<usize>> {
     (start < cursor).then_some(start..cursor)
 }
 
-/// Clean only destinations belonging to actual `Link` events. Images, code, raw HTML, and
-/// malformed `](...)` text never produce such an event, so they cannot be changed by this
-/// structural pass. Reference definitions are intentionally left for a separate grammar.
-fn structural_url_edits(src: &str) -> Vec<(Range<usize>, String)> {
+/// Clean destinations belonging to actual `Link` events as well as reference-style link
+/// definitions (`[id]: https://...`) outside fenced code blocks. Images, code, raw HTML, and
+/// malformed `](...)` text never match, so they cannot be changed by this structural pass.
+fn structural_url_edits(src: &str, frontmatter_end: usize) -> Vec<(Range<usize>, String)> {
     let mut edits = Vec::new();
     for (event, range) in Parser::new_ext(src, options()).into_offset_iter() {
+        if range.start < frontmatter_end {
+            continue;
+        }
         let Event::Start(Tag::Link { dest_url, .. }) = event else {
             continue;
         };
@@ -82,9 +85,319 @@ fn structural_url_edits(src: &str) -> Vec<(Range<usize>, String)> {
         };
         edits.push((destination, replacement));
     }
+    edits.extend(reference_definition_url_edits(src, frontmatter_end));
     edits.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)));
     edits.dedup_by(|a, b| a.0 == b.0);
     edits
+}
+
+fn reference_definition_url_edits(
+    src: &str,
+    frontmatter_end: usize,
+) -> Vec<(Range<usize>, String)> {
+    let mut edits = Vec::new();
+    let mut fenced = false;
+    let mut offset = 0usize;
+    for line in src.split('\n') {
+        let trimmed_start = line.trim_start();
+        if trimmed_start.starts_with("```") || trimmed_start.starts_with("~~~") {
+            fenced = !fenced;
+        } else if !fenced && offset >= frontmatter_end {
+            let indent = line.len() - trimmed_start.len();
+            if indent <= 3
+                && trimmed_start.starts_with('[')
+                && !trimmed_start.starts_with("[^")
+                && let Some(close_bracket) = trimmed_start.find("]:")
+            {
+                let after_colon = close_bracket + 2;
+                let rest = &trimmed_start[after_colon..];
+                let ws = rest.len() - rest.trim_start().len();
+                let url_part = rest.trim_start().trim_end_matches('\r');
+                let (url_str, url_start_in_line) = if let Some(inner) = url_part.strip_prefix('<')
+                    && let Some(gt) = inner.find('>')
+                {
+                    (&inner[..gt], indent + after_colon + ws + 1)
+                } else {
+                    let end = url_part
+                        .find(|c: char| c.is_ascii_whitespace())
+                        .unwrap_or(url_part.len());
+                    (&url_part[..end], indent + after_colon + ws)
+                };
+                if (url_str.starts_with("https://") || url_str.starts_with("http://"))
+                    && let Some(cleaned) = cleanup_core::url::clean_ai_tracking_url(url_str)
+                {
+                    let abs_start = offset + url_start_in_line;
+                    edits.push((abs_start..(abs_start + url_str.len()), cleaned));
+                }
+            }
+        }
+        offset += line.len() + 1;
+    }
+    edits
+}
+
+/// Detect YAML (`---`) or TOML (`+++`) front matter at the top of a Markdown file, returning
+/// `(open_end, body_end, full_frontmatter_end)` when well-formed.
+fn locate_frontmatter(src: &str) -> Option<(usize, usize, usize)> {
+    let start = if src.starts_with('\u{FEFF}') { 3 } else { 0 };
+    let rest = &src[start..];
+    let delim = if rest.starts_with("---\n") || rest.starts_with("---\r\n") {
+        "---"
+    } else if rest.starts_with("+++\n") || rest.starts_with("+++\r\n") {
+        "+++"
+    } else {
+        return None;
+    };
+    let first_nl = rest.find('\n')?;
+    let body_start = start + first_nl + 1;
+    let mut cursor = body_start;
+    for line in src[body_start..].split('\n') {
+        let bare = line.trim_end_matches('\r').trim_end();
+        if bare == delim {
+            let close_line_end = (cursor + line.len() + 1).min(src.len());
+            return Some((body_start, cursor, close_line_end));
+        }
+        cursor += line.len() + 1;
+        if cursor - body_start > 65_536 {
+            return None;
+        }
+    }
+    None
+}
+
+const FRONTMATTER_AI_KEYS: &[&str] = &[
+    "ai_generated",
+    "ai-generated",
+    "aigenerated",
+    "ai_assisted",
+    "ai-assisted",
+    "ai_disclosure",
+    "ai-disclosure",
+    "ai_model",
+    "ai-model",
+    "llm_model",
+    "llm-model",
+    "ai_provider",
+    "c2pa",
+    "c2pa_manifest",
+    "content_credentials",
+];
+
+const FRONTMATTER_AI_GENERATORS: &[&str] = &[
+    "chatgpt",
+    "openai",
+    "claude",
+    "anthropic",
+    "gemini",
+    "copilot",
+    "perplexity",
+    "deepseek",
+    "grok",
+    "qwen",
+    "kimi",
+    "cursor",
+    "windsurf",
+    "notebooklm",
+    "manus",
+    "genspark",
+];
+
+fn inspect_frontmatter_and_comments(
+    src: &str,
+) -> (Vec<ContainerFinding>, Vec<(Range<usize>, String)>) {
+    let mut findings = Vec::new();
+    let mut drop_ranges: Vec<Range<usize>> = Vec::new();
+
+    if let Some((body_start, body_end, full_end)) = locate_frontmatter(src) {
+        let fm_body = &src[body_start..body_end];
+        for rel_range in crate::c2pa::find_structured_text_manifests(fm_body) {
+            let abs = (body_start + rel_range.start)..(body_start + rel_range.end);
+            findings.push(ContainerFinding {
+                rule_id: "container.c2pa-manifest".to_string(),
+                message: "Markdown front matter carries a C2PA structured-text manifest"
+                    .to_string(),
+                scrubbable: true,
+                applied: false,
+            });
+            drop_ranges.push(abs);
+        }
+
+        let mut line_offset = body_start;
+        for line in fm_body.split('\n') {
+            let next_offset = (line_offset + line.len() + 1).min(body_end);
+            let overlaps = drop_ranges
+                .iter()
+                .any(|r| r.start < next_offset && line_offset < r.end);
+            if !overlaps && let Some(msg) = classify_frontmatter_line(line) {
+                findings.push(ContainerFinding {
+                    rule_id: "container.markdown-frontmatter".to_string(),
+                    message: msg,
+                    scrubbable: true,
+                    applied: false,
+                });
+                drop_ranges.push(line_offset..next_offset);
+            }
+            line_offset = next_offset;
+        }
+
+        // If every non-blank line inside front matter is being removed, drop the empty
+        // `--- ... ---` wrapper as well instead of leaving an empty metadata block.
+        let mut remaining_nonblank = false;
+        let mut check_off = body_start;
+        for line in fm_body.split('\n') {
+            let next_off = (check_off + line.len() + 1).min(body_end);
+            let dropped = drop_ranges
+                .iter()
+                .any(|r| r.start <= check_off && next_off <= r.end);
+            if !dropped && !line.trim().is_empty() {
+                remaining_nonblank = true;
+                break;
+            }
+            check_off = next_off;
+        }
+        if !remaining_nonblank && !drop_ranges.is_empty() {
+            drop_ranges.retain(|r| r.end <= body_start || r.start >= full_end);
+            let fm_start = if src.starts_with('\u{FEFF}') { 3 } else { 0 };
+            let mut end = full_end;
+            if src.as_bytes().get(end..end + 2) == Some(b"\r\n") {
+                end += 2;
+            } else if src.as_bytes().get(end) == Some(&b'\n') {
+                end += 1;
+            }
+            drop_ranges.push(fm_start..end);
+        }
+    }
+
+    // Outside fenced/indented code blocks, check HTML comments (`Event::Html`) for C2PA
+    // structured-text manifests and AI generator provenance comments, and check non-code
+    // prose lines for SNOW-style trailing tab/space steganography (which CommonMark strips
+    // before emitting `Event::Text` spans).
+    let mut protected_ranges: Vec<Range<usize>> = Vec::new();
+    let prose_start = locate_frontmatter(src).map_or(0, |(_, _, full_end)| full_end);
+    for (event, range) in Parser::new_ext(src, options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) | Event::Code(_) | Event::InlineHtml(_) => {
+                protected_ranges.push(range);
+            }
+            Event::Html(_) => {
+                protected_ranges.push(range.clone());
+                let raw = &src[range.clone()];
+                let c2pa_ranges = crate::c2pa::find_structured_text_manifests(raw);
+                if !c2pa_ranges.is_empty() {
+                    for rel in c2pa_ranges {
+                        let abs = (range.start + rel.start)..(range.start + rel.end);
+                        if !drop_ranges
+                            .iter()
+                            .any(|r| r.start < abs.end && abs.start < r.end)
+                        {
+                            findings.push(ContainerFinding {
+                                rule_id: "container.c2pa-manifest".to_string(),
+                                message:
+                                    "Markdown HTML comment carries a C2PA structured-text manifest"
+                                        .to_string(),
+                                scrubbable: true,
+                                applied: false,
+                            });
+                            drop_ranges.push(abs);
+                        }
+                    }
+                } else if let Some(msg) = crate::html::classify_ai_html_comment(raw.trim())
+                    && !drop_ranges
+                        .iter()
+                        .any(|r| r.start < range.end && range.start < r.end)
+                {
+                    findings.push(ContainerFinding {
+                        rule_id: "container.html-ai-metadata".to_string(),
+                        message: msg,
+                        scrubbable: true,
+                        applied: false,
+                    });
+                    drop_ranges.push(range);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let bytes = src.as_bytes();
+    let mut line_start = prose_start;
+    while line_start < bytes.len() {
+        let rel_nl = bytes[line_start..].iter().position(|&b| b == b'\n');
+        let line_break_end = rel_nl.map_or(bytes.len(), |n| line_start + n + 1);
+        let mut content_end = rel_nl.map_or(bytes.len(), |n| line_start + n);
+        if content_end > line_start && bytes[content_end - 1] == b'\r' {
+            content_end -= 1;
+        }
+        let mut trimmed_end = content_end;
+        while trimmed_end > line_start && matches!(bytes[trimmed_end - 1], b' ' | b'\t') {
+            trimmed_end -= 1;
+        }
+        if trimmed_end < content_end
+            && bytes[line_start..trimmed_end]
+                .iter()
+                .any(|b| !b.is_ascii_whitespace())
+            && bytes[trimmed_end..content_end].contains(&b'\t')
+        {
+            let ws_range = trimmed_end..content_end;
+            let overlaps_protected = protected_ranges
+                .iter()
+                .any(|r| r.start < ws_range.end && ws_range.start < r.end);
+            let overlaps_drop = drop_ranges
+                .iter()
+                .any(|r| r.start < ws_range.end && ws_range.start < r.end);
+            if !overlaps_protected && !overlaps_drop {
+                findings.push(ContainerFinding {
+                    rule_id: "unicode.whitespace-stego".to_string(),
+                    message: "SNOW-style trailing tab/space steganography on Markdown line"
+                        .to_string(),
+                    scrubbable: true,
+                    applied: false,
+                });
+                drop_ranges.push(ws_range);
+            }
+        }
+        line_start = line_break_end;
+    }
+
+    drop_ranges.sort_by_key(|r| (r.start, r.end));
+    let edits = drop_ranges
+        .into_iter()
+        .map(|r| (r, String::new()))
+        .collect();
+    (findings, edits)
+}
+
+fn classify_frontmatter_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let (raw_key, raw_val) = trimmed
+        .split_once(':')
+        .or_else(|| trimmed.split_once('='))?;
+    let key = raw_key
+        .trim()
+        .trim_matches(['"', '\''])
+        .to_ascii_lowercase();
+    let val = raw_val
+        .trim()
+        .trim_matches(['"', '\'', ' '])
+        .to_ascii_lowercase();
+    if FRONTMATTER_AI_KEYS.contains(&key.as_str()) && val != "false" && val != "no" {
+        return Some(format!(
+            "Markdown front matter key {key:?} declares AI provenance"
+        ));
+    }
+    if matches!(
+        key.as_str(),
+        "generator" | "author" | "created_by" | "created-by" | "tool" | "source"
+    ) && let Some(gen_name) = FRONTMATTER_AI_GENERATORS.iter().find(|g| val.contains(**g))
+    {
+        return Some(format!(
+            "Markdown front matter {key:?} names AI tool {gen_name:?}"
+        ));
+    }
+    None
 }
 
 fn canonicalize_structural_urls(text: &str) -> String {
@@ -201,26 +514,49 @@ impl Format for Markdown {
         let src = std::str::from_utf8(bytes)
             .map_err(|e| CoreError::Encoding(format!("markdown is not valid UTF-8: {e}")))?;
 
+        let had_bom = src.starts_with('\u{FEFF}') && !crate::text::starts_with_c2pa_vs_wrapper(src);
         let meta = DocMeta {
             format: FormatId::Markdown,
             newline: detect_newline(src),
-            had_bom: src.starts_with('\u{FEFF}'),
+            had_bom,
         };
 
-        let mut spans = Vec::new();
+        let frontmatter_end = locate_frontmatter(src).map_or(0, |(_, _, end)| end);
+        let mut spans: Vec<ProseSpan> = Vec::new();
         let mut protected_depth = 0u32;
+        let mut can_merge_prev_text = false;
 
         for (event, range) in Parser::new_ext(src, options()).into_offset_iter() {
             match event {
-                Event::Start(tag) if is_protected_start(&tag) => protected_depth += 1,
-                Event::End(tag) if is_protected_end(&tag) => {
-                    protected_depth = protected_depth.saturating_sub(1);
+                Event::Start(tag) => {
+                    if is_protected_start(&tag) {
+                        protected_depth += 1;
+                    }
+                    can_merge_prev_text = false;
                 }
-                Event::Text(_) if protected_depth == 0 => {
-                    let text = src[range.clone()].to_string();
-                    spans.push(ProseSpan::new(SpanAnchor::Bytes(range), text));
+                Event::End(tag) => {
+                    if is_protected_end(&tag) {
+                        protected_depth = protected_depth.saturating_sub(1);
+                    }
+                    can_merge_prev_text = false;
                 }
-                _ => {}
+                Event::Text(_) if protected_depth == 0 && range.start >= frontmatter_end => {
+                    if can_merge_prev_text
+                        && let Some(prev) = spans.last_mut()
+                        && let SpanAnchor::Bytes(prev_range) = &mut prev.anchor
+                        && prev_range.end == range.start
+                    {
+                        prev_range.end = range.end;
+                        prev.text.push_str(&src[range]);
+                    } else {
+                        let text = src[range.clone()].to_string();
+                        spans.push(ProseSpan::new(SpanAnchor::Bytes(range), text));
+                        can_merge_prev_text = true;
+                    }
+                }
+                _ => {
+                    can_merge_prev_text = false;
+                }
             }
         }
 
@@ -235,25 +571,32 @@ impl Format for Markdown {
         let Ok(src) = std::str::from_utf8(&doc.source) else {
             return Vec::new();
         };
-        let mut out: Vec<ContainerFinding> = structural_url_edits(src)
-            .into_iter()
-            .map(|(range, _)| ContainerFinding {
-                rule_id: "markers.ai-tracking-urls.container".to_string(),
-                message: format!(
-                    "AI-provider attribution in Markdown link destination at bytes {}..{}",
-                    range.start, range.end
-                ),
-                scrubbable: true,
-                applied: false,
-            })
-            .collect();
-        out.extend(inline_header_lists(src));
+        let frontmatter_end = locate_frontmatter(src).map_or(0, |(_, _, end)| end);
+        let (mut out, _) = inspect_frontmatter_and_comments(src);
+        out.extend(
+            structural_url_edits(src, frontmatter_end)
+                .into_iter()
+                .map(|(range, _)| ContainerFinding {
+                    rule_id: "markers.ai-tracking-urls.container".to_string(),
+                    message: format!(
+                        "AI-provider attribution in Markdown link destination at bytes {}..{}",
+                        range.start, range.end
+                    ),
+                    scrubbable: true,
+                    applied: false,
+                }),
+        );
+        out.extend(inline_header_lists(&src[frontmatter_end..]));
         out
     }
 
     fn scrub_container(&self, _doc: &Document, rendered: &[u8]) -> Option<Vec<u8>> {
         let src = std::str::from_utf8(rendered).ok()?;
-        let edits = structural_url_edits(src);
+        let frontmatter_end = locate_frontmatter(src).map_or(0, |(_, _, end)| end);
+        let (_, mut edits) = inspect_frontmatter_and_comments(src);
+        edits.extend(structural_url_edits(src, frontmatter_end));
+        edits.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)));
+        edits.dedup_by(|a, b| a.0 == b.0);
         if edits.is_empty() {
             return None;
         }
@@ -262,16 +605,26 @@ impl Format for Markdown {
 
     fn skeleton(&self, bytes: &[u8]) -> Result<String> {
         // Structural fingerprint: every non-prose event is Debug-formatted (which captures
-        // link URLs, heading levels, list markers, code/HTML content, etc.), while prose
-        // Text events collapse to a single placeholder. Any change to structure — including
+        // link URLs, heading levels, list markers, code/HTML content, etc.), while contiguous
+        // prose Text runs collapse to a single placeholder. Any change to structure — including
         // a replacement that accidentally introduces Markdown syntax — changes this string.
         let src = std::str::from_utf8(bytes)
             .map_err(|e| CoreError::Encoding(format!("markdown is not valid UTF-8: {e}")))?;
+        let frontmatter_end = locate_frontmatter(src).map_or(0, |(_, _, end)| end);
         let mut out = String::new();
-        for (event, _) in Parser::new_ext(src, options()).into_offset_iter() {
+        let mut prev_was_text = false;
+        for (event, _) in Parser::new_ext(&src[frontmatter_end..], options()).into_offset_iter() {
             match event {
-                Event::Text(_) => out.push('\u{00B7}'), // prose excluded from the fingerprint
-                other => out.push_str(&canonicalize_structural_urls(&format!("{other:?}"))),
+                Event::Text(_) => {
+                    if !prev_was_text {
+                        out.push('\u{00B7}');
+                        prev_was_text = true;
+                    }
+                }
+                other => {
+                    prev_was_text = false;
+                    out.push_str(&canonicalize_structural_urls(&format!("{other:?}")));
+                }
             }
         }
         Ok(out)

@@ -1,14 +1,16 @@
 use crate::lexicon::LexiconFlagRule;
 use crate::markers::{
-    AgentTrailerLineRule, AiTrackingUrlFlagRule, AiTrackingUrlStripRule, CitationBracketRule,
-    CitationBracketStripRule, ClaudePromptFingerprintRule, LegacyCitationStripRule,
-    ReasoningBlockRule, ReasoningTraceRule, SpecialTokenPatternRule, agent_trailers, chat_tokens,
+    AgentTrailerLineRule, AiTrackingUrlFlagRule, AiTrackingUrlStripRule, C2paTextWrapperRule,
+    CitationBracketRule, CitationBracketStripRule, ClaudePromptFingerprintRule,
+    LegacyCitationStripRule, ReasoningBlockRule, ReasoningTraceRule, SpecialTokenPatternRule,
+    agent_trailers, c2pa_structured_manifest, c2pa_structured_manifest_strip, chat_tokens,
     chat_tokens_strip, chat_ui_disclaimers, chat_ui_disclaimers_strip, chat_ui_residue,
-    citation_artifacts, model_identifiers, private_use_citations, private_use_citations_strip,
-    tool_calls, turn_citations, turn_citations_strip,
+    citation_artifacts, gemini_citations, gemini_citations_strip, model_identifiers,
+    private_use_citations, private_use_citations_strip, tool_calls, turn_citations,
+    turn_citations_strip,
 };
 use crate::repair::{DecodeHtmlEntities, FlagHtmlTags, RepairMojibake};
-use crate::schema::{Action, Pack};
+use crate::schema::Pack;
 use crate::style::{
     DecorativeEmojiOpener, DetokenizedSpacing, EmojiDensity, InlineHeaderList, MarkdownResidue,
     PlaceholderResidue, RepeatedPunctuation, TitleCaseHeading,
@@ -19,39 +21,70 @@ use crate::typographic::{
     StripInvisibles,
 };
 use crate::unicode_hidden::{
-    FlagBidiControls, FlagCombiningRuns, FlagConfusables, FlagPrivateUse, FlagZeroWidthJoiners,
-    NormalizeExoticSpaces, StripAnsiEscapes, StripBidiOverrides, StripControlChars, StripFillers,
-    StripPrivateUseMarkers, StripSmuggledChars, StripZeroWidthJoiners,
+    FlagBidiControls, FlagCombiningRuns, FlagConfusables, FlagMathStyledText, FlagPrivateUse,
+    FlagWhitespaceStego, FlagZeroWidthJoiners, NormalizeExoticSpaces, NormalizeMathStyledText,
+    StripAnsiEscapes, StripBidiOverrides, StripControlChars, StripFillers, StripPrivateUseMarkers,
+    StripSmuggledChars, StripWhitespaceStego, StripZeroWidthJoiners,
 };
+use crate::watermark::WatermarkDisruptRule;
 use cleanup_core::Rule;
 
 /// The built-in default template pack, embedded at compile time for zero-config first runs.
 const CORE_PACK_YAML: &str = include_str!("../../../templates/core.yaml");
 
-/// Parse and validate the embedded built-in pack.
-pub fn load_builtin_pack() -> Result<Pack, String> {
-    let pack: Pack = serde_norway::from_str(CORE_PACK_YAML)
-        .map_err(|e| format!("failed to parse built-in template: {e}"))?;
+/// Parse and validate a YAML or JSON rule pack from text.
+pub fn load_pack_str(content: &str) -> Result<Pack, String> {
+    let trimmed = content.trim_start();
+    let pack: Pack = if trimmed.starts_with('{') {
+        serde_json::from_str(content).map_err(|e| format!("failed to parse JSON pack: {e}"))?
+    } else {
+        serde_norway::from_str(content).map_err(|e| format!("failed to parse YAML pack: {e}"))?
+    };
     pack.validate()?;
     Ok(pack)
 }
 
+/// Parse and validate the embedded built-in pack.
+pub fn load_builtin_pack() -> Result<Pack, String> {
+    load_pack_str(CORE_PACK_YAML)
+}
+
+/// Materialize executable rules from a validated [`Pack`] (`flag`, `replace`, and `delete`).
+pub fn rules_from_pack(pack: &Pack) -> Vec<Box<dyn Rule>> {
+    pack.rules
+        .iter()
+        .cloned()
+        .filter_map(LexiconFlagRule::from_spec)
+        .map(|r| Box::new(r) as Box<dyn Rule>)
+        .collect()
+}
+
+/// Build the active built-in rule set plus any user-supplied packs (`--pack`).
+pub fn rules_with_packs(extra_packs: &[Pack]) -> Vec<Box<dyn Rule>> {
+    let mut rules = builtin_rules();
+    for pack in extra_packs {
+        rules.extend(rules_from_pack(pack));
+    }
+    rules
+}
+
 /// Build the active rule set:
 ///
-/// 1. character-level transformers (invisible hygiene, typography, Unicode smuggling),
-/// 2. exact-string signature detectors (chat tokens, citation artifacts, agent trailers,
-///    reasoning traces),
-/// 3. formatting tells (decorative emoji, raw Markdown, repeated punctuation),
-/// 4. data-driven lexical/phrasal flag rules constructed from the built-in template pack.
-///
-/// Order matters only for conflict resolution: when two rules propose overlapping edits on
-/// the same span, the earlier rule wins (`cleanup_core::pipeline`). Character rules run first
-/// so that deleting an invisible character never blocks a punctuation normalization.
+/// 1. whole-frame C2PA unstructured-text manifest decoding & encoding repairs,
+/// 2. character-level transformers (invisible hygiene, typography, Unicode smuggling,
+///    whitespace steganography, Mathematical Alphanumeric normalization),
+/// 3. exact-string signature detectors (chat tokens, citation artifacts, Gemini grounding,
+///    C2PA structured-text banners, agent trailers, reasoning traces),
+/// 4. formatting tells (decorative emoji, raw Markdown, repeated punctuation),
+/// 5. opt-in statistical watermark disruption (`watermark.ngram-disrupt`, active only when
+///    `Ctx::dewatermark` is enabled),
+/// 6. data-driven lexical/phrasal rules constructed from `templates/core.yaml`.
 pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
-        // Encoding repairs run first: mojibake and HTML entities hide the real characters,
-        // and repairing them before normalizing means the repaired character goes through
-        // the same level-aware mapping as text that arrived intact.
+        // Whole-frame C2PA unstructured-text wrapper runs before single-char BOM/VS rules so
+        // `[U+FEFF]? + VS_run("C2PATXT\0"...)` is reported and stripped as a single artifact.
+        Box::new(C2paTextWrapperRule),
+        // Encoding repairs run next: mojibake and HTML entities hide the real characters.
         Box::new(RepairMojibake),
         Box::new(DecodeHtmlEntities),
         // Invisible-character hygiene + typographic normalization (built-in code rules).
@@ -68,7 +101,15 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(FlagCombiningRuns),
         Box::new(FlagZeroWidthJoiners),
         Box::new(StripZeroWidthJoiners),
+        Box::new(FlagWhitespaceStego),
+        Box::new(StripWhitespaceStego),
+        Box::new(FlagMathStyledText),
+        Box::new(NormalizeMathStyledText),
         Box::new(FlagConfusables),
+        // Opt-in statistical watermark disruption (dormant unless `cx.dewatermark == true`).
+        // Placed ahead of `NormalizeQuotes` so curly-apostrophe contractions (`don’t` -> `do not`)
+        // resolve cleanly in a single pass when opted in.
+        Box::new(WatermarkDisruptRule::new()),
         Box::new(NormalizeQuotes),
         Box::new(ExpandLigatures),
         Box::new(NormalizeEllipsis),
@@ -85,6 +126,10 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
         Box::new(CitationBracketRule),
         Box::new(private_use_citations()),
         Box::new(turn_citations()),
+        Box::new(gemini_citations()),
+        Box::new(gemini_citations_strip()),
+        Box::new(c2pa_structured_manifest()),
+        Box::new(c2pa_structured_manifest_strip()),
         Box::new(AiTrackingUrlFlagRule),
         Box::new(AiTrackingUrlStripRule),
         Box::new(private_use_citations_strip()),
@@ -115,18 +160,7 @@ pub fn builtin_rules() -> Vec<Box<dyn Rule>> {
     ];
 
     if let Ok(pack) = load_builtin_pack() {
-        for spec in pack.rules {
-            // Scaffold scope: the engine materializes flag-only rules from any term list.
-            // Replace/Delete actions and richer match kinds are future work (DESIGN.md §7).
-            if spec.action == Action::Flag && !spec.terms.is_empty() {
-                rules.push(Box::new(LexiconFlagRule::new(
-                    spec.id,
-                    spec.level,
-                    spec.terms,
-                    spec.description,
-                )));
-            }
-        }
+        rules.extend(rules_from_pack(&pack));
     }
 
     rules
