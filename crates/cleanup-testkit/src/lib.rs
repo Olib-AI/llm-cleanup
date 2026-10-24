@@ -7,11 +7,20 @@ use cleanup_rules::builtin_rules;
 /// Clean an in-memory document and return the output plus the full pipeline report, so tests
 /// can assert on *flags* (what was reported) and not only on edits.
 pub fn analyze(fmt: &dyn Format, input: &str, level: CleanupLevel) -> (String, CleanReport) {
-    let doc = fmt.parse(input.as_bytes()).expect("parse");
+    let (out, report) = analyze_bytes(fmt, input.as_bytes(), level);
+    (String::from_utf8(out).expect("utf-8 output"), report)
+}
+
+/// Byte-level [`analyze`], for binary container formats (DOCX).
+pub fn analyze_bytes(
+    fmt: &dyn Format,
+    input: &[u8],
+    level: CleanupLevel,
+) -> (Vec<u8>, CleanReport) {
+    let doc = fmt.parse(input).expect("parse");
     let rules = builtin_rules();
     let cx = Ctx::new(level);
-    let (out, report) = clean(fmt, &doc, &rules, &cx).expect("clean");
-    (String::from_utf8(out).expect("utf-8 output"), report)
+    clean(fmt, &doc, &rules, &cx).expect("clean")
 }
 
 /// Clean an in-memory document and return `(output_string, edits_applied)`.
@@ -239,5 +248,193 @@ mod tests {
             assert_eq!(out, input, "level {level} changed clean text");
             assert_eq!(edits, 0, "level {level} applied edits to clean text");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pattern-tier rules and the refreshed lexical pack
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unknown_tokens_and_future_model_trailers_are_pattern_matched() {
+        // A special token no catalogue lists yet still has the unmistakable shape.
+        let input = "Output follows<|frobnicate_9|> now.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Standard);
+        assert_eq!(
+            out, input,
+            "pattern hits are flagged, not edited, below aggressive"
+        );
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.chat-tokens.pattern"),
+            "expected pattern flag, got {:?}",
+            report.flagged_by_rule
+        );
+
+        // A trailer naming a model that did not exist when the literal list was written;
+        // the same shape with a human name must not fire.
+        let agent = "Fix bug.\n\nCo-Authored-By: GPT-9.9-Hyperion <bot@example.com>\n";
+        let (_, report) = analyze(&PlainText, agent, CleanupLevel::Standard);
+        assert!(
+            report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.agent-trailer-lines"),
+            "expected trailer-pattern flag, got {:?}",
+            report.flagged_by_rule
+        );
+        let human = "Fix bug.\n\nCo-Authored-By: Jacqueline Cody <jacqueline@example.com>\n";
+        let (_, report) = analyze(&PlainText, human, CleanupLevel::Standard);
+        assert!(
+            !report
+                .flags
+                .iter()
+                .any(|f| f.rule_id == "markers.agent-trailer-lines"),
+            "human trailer must not be flagged"
+        );
+    }
+
+    #[test]
+    fn refreshed_lexical_pack_flags_measured_tells_but_never_rewrites() {
+        let input = "The tower serves as a testament to the region's vibrant tapestry, \
+                     nestled in the heart of the valley.\n";
+        let (out, report) = analyze(&PlainText, input, CleanupLevel::Aggressive);
+        assert_eq!(out, input, "lexical findings are flag-only at every level");
+        assert_eq!(report.edits_applied, 0);
+        for expected in ["phrasal.copula-avoidance", "phrasal.promotional-puffery"] {
+            assert!(
+                report.flags.iter().any(|f| f.rule_id == expected),
+                "expected {expected} flag, got {:?}",
+                report.flagged_by_rule
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // DOCX package coverage: prose everywhere + generator metadata
+    // -----------------------------------------------------------------------
+
+    use cleanup_formats::Docx;
+    use std::io::{Cursor, Read, Write};
+
+    fn make_docx_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
+            for (name, xml) in entries {
+                w.start_file(
+                    *name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )
+                .unwrap();
+                w.write_all(xml.as_bytes()).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    fn docx_part_text(zip_bytes: &[u8], part: &str) -> String {
+        let mut archive = zip::ZipArchive::new(Cursor::new(zip_bytes)).unwrap();
+        let mut s = String::new();
+        archive
+            .by_name(part)
+            .unwrap()
+            .read_to_string(&mut s)
+            .unwrap();
+        s
+    }
+
+    fn pt(text: &str) -> String {
+        format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>")
+    }
+
+    fn wrap(root: &str, inner: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><{root} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{inner}</{root}>"#
+        )
+    }
+
+    #[test]
+    fn docx_headers_footnotes_and_comments_are_cleaned() {
+        let body = wrap("w:document", &pt("Body \u{201C}quote\u{201D} here."));
+        let header = wrap("w:hdr", &pt("Head\u{200B}er \u{201C}text\u{201D}."));
+        let footnotes = wrap(
+            "w:footnotes",
+            &format!(
+                "<w:footnote w:id=\"1\">{}</w:footnote>",
+                pt("Note \u{201C}one\u{201D}.")
+            ),
+        );
+        let styles = "<w:styles><w:style w:styleId=\"X\"/></w:styles>";
+        let bytes = make_docx_bytes(&[
+            ("word/document.xml", &body),
+            ("word/header1.xml", &header),
+            ("word/footnotes.xml", &footnotes),
+            ("word/styles.xml", styles),
+        ]);
+
+        let (out, report) = analyze_bytes(&Docx, &bytes, CleanupLevel::Standard);
+        assert!(report.changed && report.edits_applied >= 4, "{report:?}");
+        // Smart quotes straightened and the ZWSP gone in every prose part.
+        for part in [
+            "word/document.xml",
+            "word/header1.xml",
+            "word/footnotes.xml",
+        ] {
+            let xml = docx_part_text(&out, part);
+            assert!(!xml.contains('\u{201C}'), "{part} still has curly quotes");
+            assert!(
+                !xml.contains('\u{200B}'),
+                "{part} still has a zero-width space"
+            );
+        }
+        // A non-prose part passes through byte-for-byte.
+        assert_eq!(docx_part_text(&out, "word/styles.xml"), styles);
+
+        // …and cleaning the cleaned file is a no-op.
+        let (_, again) = analyze_bytes(&Docx, &out, CleanupLevel::Standard);
+        assert!(!again.changed, "second pass should find nothing: {again:?}");
+    }
+
+    #[test]
+    fn docx_generator_metadata_reports_then_scrubs_only_at_aggressive() {
+        let body = wrap("w:document", &pt("A perfectly plain paragraph."));
+        let core = r#"<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"><dc:title>Report</dc:title><dc:creator>python-docx</dc:creator><dc:description>generated by python-docx</dc:description><dcterms:created>2013-12-23T23:15:00Z</dcterms:created></cp:coreProperties>"#;
+        let bytes = make_docx_bytes(&[("word/document.xml", &body), ("docProps/core.xml", core)]);
+
+        // Standard: reported, not touched — and not counted as a change.
+        let (out, report) = analyze_bytes(&Docx, &bytes, CleanupLevel::Standard);
+        assert_eq!(report.container.len(), 3, "{report:?}");
+        assert!(report.container.iter().all(|c| !c.applied));
+        assert!(
+            !report.changed,
+            "metadata flags alone must not mark a change"
+        );
+        assert_eq!(docx_part_text(&out, "docProps/core.xml"), core);
+
+        // Aggressive: fields emptied, flagged as a change with zero prose edits.
+        let (out, report) = analyze_bytes(&Docx, &bytes, CleanupLevel::Aggressive);
+        assert_eq!(report.edits_applied, 0, "body prose was clean");
+        assert!(report.changed, "a scrub is a change: {report:?}");
+        assert_eq!(report.container.iter().filter(|c| c.applied).count(), 2);
+        let core_out = docx_part_text(&out, "docProps/core.xml");
+        assert!(!core_out.contains("python-docx"), "{core_out}");
+        assert!(
+            core_out.contains("<dc:title>Report</dc:title>"),
+            "title kept"
+        );
+        assert!(
+            core_out.contains("2013-12-23T23:15:00Z"),
+            "the template date is report-only, never rewritten"
+        );
+        assert_eq!(docx_part_text(&out, "word/document.xml"), body);
+
+        // Scrubbing is idempotent: only the report-only date still shows up.
+        let (_, again) = analyze_bytes(&Docx, &out, CleanupLevel::Aggressive);
+        assert!(!again.changed, "{again:?}");
+        assert!(again.container.iter().all(|c| !c.scrubbable));
     }
 }

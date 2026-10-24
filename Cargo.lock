@@ -951,6 +951,7 @@ dependencies = [
  "cleanup-core",
  "cleanup-formats",
  "cleanup-rules",
+ "zip 2.4.2",
 ]
 
 [[package]]

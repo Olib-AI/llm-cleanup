@@ -20,36 +20,60 @@ The authoritative machine-readable version of this table is
 | ---- | ------ | ------------------- |
 | 2024 (ongoing) | Google **SynthID-Text** marks Gemini output | Out of scope — statistical |
 | 2025-04 | OpenAI o3/o4-mini emit `U+202F` and stray invisibles; OpenAI calls it a training quirk, not a watermark | Covered at `light` (invisibles) |
+| 2025-02+ | ChatGPT stores citations as Private-Use-Area wrappers (`U+E200 cite U+E202 turn0search0 U+E201`, plus `U+E203`/`U+E204`/`U+E206` span markers); they survive copy-paste into Word, and the bare `turn0search0` IDs show up once the wrappers are lost | Flagged at `light` (the fix is a real citation), removed at `aggressive` (`markers.private-use-citations*`, `markers.turn-citations*`) |
+| 2025 | Kobak et al. (*Science Advances*): excess-vocabulary measurement over 15.1M PubMed abstracts — `delves` r=28, `underscores` r=13.8, `showcasing` r=10.7; WikiProject AI Cleanup maintains the editor-side watch list | Word packs re-weighted to the measured evidence; all of it *flagged*, never auto-rewritten |
 | 2026-08-02 | EU AI Act Article 50 transparency obligations take effect | Providers add provenance — see below |
 | 2026-08-14 | Anthropic announces a text watermark (a SynthID-Text variant) for models released from 2026-08-02 onward, all surfaces including Claude Code and the API | Out of scope — statistical |
 | 2026-09/10 | Graphite "AI Tells" study (10k human vs 90k model articles, nine families): ~13,000 tells, 65% unique to one family. Em-dash use collapses (Claude Opus 5.5 −99%, GPT-6 Astra −88%, Gemini 3.1 Pro nearly zero) while new framing tells appear | Em-dash rules kept (older models, pasted archives) but re-ranked; new phrase packs added for the 2026 tells |
 | 2026-10-05 | OpenAI announces **textGrain**, a statistical watermark, for ChatGPT/Codex in the EU | Out of scope — statistical |
-| 2026-10 (ongoing) | Agentic coding tools (Claude Code, Codex CLI, Cursor, Copilot, Devin, Jules, Aider, Windsurf) append attribution trailers by default | Covered at `light` (flag) |
+| 2026-09/10 | "Sneaky Bits" / ASCII-smuggling techniques mainstreamed (Microsoft Security blog): invisible payloads encoded in Unicode tags, variation selectors, and two-invisible-character binary runs | Tag/VS removal at `light`; zero-width *runs* and stray joiners in Latin text flagged at `aggressive` (`unicode.zero-width.flag`) |
+| 2026-10 (ongoing) | Agentic coding tools (Claude Code, Codex CLI, Cursor, Copilot, Devin, Jules, Aider, Windsurf) append attribution trailers by default | Covered at `light` (flag), including trailer *patterns* naming models released after this catalogue (`markers.agent-trailer-lines`) |
+| 2026-10 (ongoing) | AI-generated `.docx` files carry python-docx / JS-`docx` metadata defaults (creator, description, 2013 template date) that Word never clears; detector write-ups enumerate them | `docProps` fingerprints reported at every level; matched author/program fields scrubbed at `aggressive` (see *DOCX coverage*) |
 
 ## Per-family signatures
 
 | Family | Models reviewed | Characteristic residue | Rules |
 | ------ | --------------- | ---------------------- | ----- |
-| OpenAI | GPT-5.5, GPT-5.6 Sol, GPT-6 Astra, o3/o4-mini | `U+202F`, stray ZWSP/ZWNJ, `【9†source】` / `【45†L75-L83】`, `turn0search`, `oai_citation`, harmony tokens (`<\|start\|>`, `<\|channel\|>`, `<\|message\|>`), corrective framing ("rather than", "not simply") | `typo.invisibles.strip`, `unicode.spaces.normalize`, `markers.citation-*`, `markers.chat-tokens*`, `phrasal.negative-parallelism` |
-| Anthropic | Opus 5/5.5, Sonnet 5, Haiku 4.5, Fable 5.1, Mythos 5.1 | Em/en dashes (older models), `<antThinking>`, `antml:`, superlatives ("the single most", "dependable"), Claude Code trailers, `Claude-Session:` | `typo.em-dash.to-comma`, `typo.en-dash.to-hyphen`, `markers.reasoning-*`, `markers.agent-trailers`, `phrasal.claude-residue`, `phrasal.superlative-framing` |
-| Google | Gemini 3 Pro, 3.1 Pro, Flash, AI Overviews | Clipboard ZWSP/NBSP from Docs/Keep, footnote markers, formal transitions ("furthermore", "moreover") | `typo.invisibles.strip`, `unicode.spaces.normalize`, `phrasal.gemini-affirmations`, `phrasal.formal-transitions` |
+| OpenAI | GPT-5.5, GPT-5.6 Sol, GPT-6 Astra, o3/o4-mini | `U+202F`, stray ZWSP/ZWNJ, `【9†source】` / `【45†L75-L83】`, PUA citation wrappers (`U+E200…U+E201`), bare `turn0search0` IDs (any numbers), `oai_citation`, `utm_source=chatgpt.com` left on links, harmony tokens (`<\|start\|>`, `<\|channel\|>`, `<\|message\|>`), unknown `<\|…\|>` tokens (pattern rule), leaked tool-call scaffolding, corrective framing ("rather than", "not simply") | `typo.invisibles.strip`, `unicode.spaces.normalize`, `markers.citation-*`, `markers.private-use-citations*`, `markers.turn-citations*`, `markers.chat-tokens*`, `markers.tool-calls`, `phrasal.negative-parallelism` |
+| Anthropic | Opus 5/5.5, Sonnet 5, Haiku 4.5, Fable 5.1, Mythos 5.1 | Em/en dashes (older models), `<antThinking>`, `antml:`, leaked `<invoke>`/`<function_calls>` scaffolding, superlatives ("the single most", "dependable"), Claude Code trailers (incl. unlisted future model names, by pattern), `Claude-Session:` | `typo.em-dash.to-comma`, `typo.en-dash.to-hyphen`, `markers.reasoning-*`, `markers.agent-trailers`, `markers.agent-trailer-lines`, `markers.tool-calls`, `phrasal.claude-residue`, `phrasal.superlative-framing` |
+| Google | Gemini 3 Pro, 3.1 Pro, Flash, AI Overviews | Clipboard ZWSP/NBSP from Docs/Keep, footnote markers, formal transitions ("furthermore", "moreover"); Gemma tokens (`<start_of_turn>`, `<\|turn\|>`, `<\|think\|>`) from self-hosted output | `typo.invisibles.strip`, `unicode.spaces.normalize`, `markers.chat-tokens*`, `phrasal.gemini-affirmations`, `phrasal.formal-transitions` |
 | Meta | Llama 4 family, Meta AI | `<\|begin_of_text\|>`, `<\|start_header_id\|>`, `I'm Meta AI`, assistant disclaimers | `markers.chat-tokens*`, `markers.model-identifiers`, `phrasal.model-self-reference` |
-| xAI | Grok 4, Grok 5 | `<grok:render`, self-identification, emoji-heavy bullets | `markers.citation-artifacts`, `markers.model-identifiers`, `style.emoji.*` |
-| Mistral | Mistral Large 3, Le Chat | `[INST]`, `<<SYS>>`, "Le Chat" leakage | `markers.chat-tokens`, `markers.model-identifiers` |
-| DeepSeek | V4 Flash / Pro, V4.1, V3.x, R1 | Fullwidth `，（）：` inside English, visible ` thinking` traces, `<\|begin▁of▁sentence\|>`, `｜end▁of▁sentence｜` | `typo.fullwidth.normalize`, `markers.reasoning-*`, `markers.chat-tokens*` |
-| Alibaba | Qwen3.8-Max, Qwen3.8-27B, Qwen Code | Fullwidth forms, `<\|im_end\|>`, always-on thinking output, "Qwen Code" footers | `typo.fullwidth.normalize`, `markers.chat-tokens`, `markers.agent-trailers` |
-| Moonshot | Kimi K2.5, K2.6, K3 | Fullwidth-pipe sentence tokens, always-on reasoning dumps | `markers.chat-tokens`, `markers.reasoning-block`, `markers.model-identifiers` |
-| Zhipu | GLM-5, GLM-5.1 | Fullwidth punctuation, chat tokens, reasoning traces | `typo.fullwidth.normalize`, `markers.chat-tokens`, `markers.reasoning-trace` |
-| Microsoft | Copilot (Word, Edge, VS Code) | Assistant disclaimers kept in the document, raw Markdown pasted into Word, Office metadata naming the assistant (metadata out of scope → see below) | `phrasal.machine-residue`, `markers.agent-trailers`, `structural.markdown-tells` |
+| xAI | Grok 4, Grok 5 | `<grok:render`, self-identification, emoji-heavy bullets, measured causal/empirical connective overuse | `markers.citation-artifacts`, `markers.model-identifiers`, `style.emoji.*`, `lexical.grok-tics` |
+| Mistral | Mistral Large 3, Le Chat | `[INST]`, `<<SYS>>`, `[SYSTEM_PROMPT]`, `[AVAILABLE_TOOLS]`, `[TOOL_CALLS]`, "Le Chat" leakage | `markers.chat-tokens`, `markers.tool-calls`, `markers.model-identifiers` |
+| DeepSeek | V4 Flash / Pro, V4.1, V3.x, R1 | Fullwidth `，（）：` and CJK `、。：；` inside English, detokenizer `Ġ`/`▁` residue, visible ` thinking` traces, `<\|begin▁of▁sentence\|>`, `｜end▁of▁sentence｜` | `typo.fullwidth.normalize`, `typo.cjk-punctuation.normalize`, `typo.detokenizer.normalize`, `markers.reasoning-*`, `markers.chat-tokens*` |
+| Alibaba | Qwen3.8-Max, Qwen3.8-27B, Qwen Code | Fullwidth forms, CJK punctuation, `<\|im_end\|>`, always-on thinking output, "Qwen Code" footers | `typo.fullwidth.normalize`, `typo.cjk-punctuation.normalize`, `markers.chat-tokens*`, `markers.agent-trailers` |
+| Moonshot | Kimi K2.5, K2.6, K3 | Fullwidth-pipe sentence tokens, always-on reasoning dumps | `markers.chat-tokens*`, `markers.reasoning-block`, `markers.model-identifiers` |
+| Zhipu | GLM-5, GLM-5.1 | Fullwidth/CJK punctuation, `[gMASK]<sop>`, `<\|observation\|>`, reasoning traces | `typo.fullwidth.normalize`, `typo.cjk-punctuation.normalize`, `markers.chat-tokens*`, `markers.reasoning-trace` |
+| Microsoft | Copilot (Word, Edge, VS Code) | Assistant disclaimers kept in the document, `utm_source=copilot.com`, raw Markdown pasted into Word, unfilled `[Your Name]` placeholders, document metadata (→ DOCX generators row) | `phrasal.machine-residue`, `markers.agent-trailers`, `markers.citation-artifacts`, `structural.markdown-tells`, `style.placeholder.residue` |
 | Perplexity | Sonar, Sonar Pro | Dense numbered citations copied without links, answer-engine signposting | `markers.citation-artifacts`, `phrasal.formal-transitions` |
 | Amazon | Nova Pro / Lite / Micro | Self-identification, assistant disclaimers | `markers.model-identifiers`, `phrasal.machine-residue` |
-| Agentic tools | Claude Code, Codex CLI, Cursor, Copilot, Devin, Jules, Aider, Windsurf, Gemini CLI | `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, `🤖 Generated with [Claude Code]`, `Claude-Session:`, decorative emoji, raw Markdown | `markers.agent-trailers`, `style.*` |
+| Agentic tools | Claude Code, Codex CLI, Cursor, Copilot, Devin, Jules, Aider, Windsurf, Gemini CLI | `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, `🤖 Generated with [Claude Code]`, `Claude-Session:` — literal and by trailer pattern (human names never match); leaked tool-call scaffolding; decorative emoji, raw Markdown | `markers.agent-trailers`, `markers.agent-trailer-lines`, `markers.tool-calls`, `style.*` |
+| DOCX generators | python-docx, JS `docx`, Apache POI, docx4j (under ChatGPT code interpreter, Claude/Gemini doc features, custom pipelines) | `docProps` fields: creator `python-docx` / `Un-named`, description `generated by python-docx`, model-name Application stamps, python-docx template creation date `2013-12-23T23:15:00Z` | container finding `container.docx-generator-metadata` (report always; author/program fields scrubbed at `aggressive`) |
+| All (lexical flags) | Any model | Measured post-ChatGPT excess vocabulary and phrasing (Graphite, Kobak et al., WikiProject AI Cleanup): overused verbs/nouns/adjectives, copula avoidance ("serves as"), trailing ‑ing clauses, academic/marketing formulas, promotional puffery, professional disclaimers, rhetorical pivots, throat-clearing, sycophancy, fake authority | `lexical.*`, `phrasal.*` (flag-only, always) |
+
+## DOCX coverage
+
+DOCX is a package, not a single file, and fingerprints hide outside the body. The adapter
+cleans `<w:t>` prose in **all** of `word/document.xml`, `word/header*.xml`,
+`word/footer*.xml`, `word/footnotes.xml`, `word/endnotes.xml` and `word/comments.xml`
+(multi-run paragraphs joined exactly as in the body; untouched parts are copied
+byte-for-byte). Signatures placed in a header or footnote are cleaned the same as body text.
+
+Package metadata is reported separately as a *container finding*: python-docx / JS-`docx` /
+model stamps in `docProps/core.xml` (creator, lastModifiedBy, description) and
+`docProps/app.xml` (Application) are flagged at every level, and the matched fields are
+emptied at `aggressive`. The python-docx default-template creation date is **report-only** —
+the tool never invents a date. Signed provenance (C2PA) is untouched.
 
 ## Character families
 
 | Class | Code points | Level | Action |
 | ----- | ----------- | ----- | ------ |
-| Zero-width / non-rendering | `U+200B`, `U+2060`, `U+00AD`, `U+FEFF`, `U+180E`, `U+034F`, `U+2061`–`U+2064`, `U+206A`–`U+206F`, `U+FFF9`–`U+FFFB`, `U+1BCA0`–`U+1BCA3` | light | removed |
+| Zero-width / non-rendering | `U+200B`, `U+2060`, `U+00AD`, `U+FEFF`, `U+180E`, `U+034F`, `U+2061`–`U+2064`, `U+206A`–`U+206F`, `U+FFF9`–`U+FFFB`, `U+1BCA0`–`U+1BCA3`, Mongolian free variation selectors `U+180B`–`U+180D` + `U+180F`, musical format controls `U+1D173`–`U+1D182` | light | removed |
+| C0/C1 controls & noncharacters | `U+0000`–`U+001F`, `U+007F`–`U+009F` (tab/newline kept), `U+FDD0`–`U+FDEF`, `U+*FFFE`/`U+*FFFF`, `U+FFFC`; `U+FFFD` flagged, never stripped (it marks already-lost data) | light | removed / flagged |
+| Private Use Area | runs of any PUA (flag); ChatGPT's citation block `U+E200`–`U+E2FF` | light (flag) / aggressive (strip residue) | flagged / removed |
+| Combining-mark runs ("Zalgo") | ≥3 combining marks on one base — threshold sits above Vietnamese legitimacy | aggressive | flagged |
+| Zero-width joiner runs | `U+200C`/`U+200D` *inside Latin words* (Sneaky-Bits style encoding); Arabic/Indic/emoji contexts untouched | aggressive | flagged |
 | No-break spaces | `U+00A0`, `U+202F` | light | → `U+0020` |
 | Unicode tag characters | `U+E0000`–`U+E007F` | light | removed |
 | Smuggled variation selectors | `U+FE00`–`U+FE0F`, `U+E0100`–`U+E01EF` (when not styling an emoji) | light | removed |
@@ -57,13 +81,17 @@ The authoritative machine-readable version of this table is
 | Exotic spaces / separators | `U+1680`, `U+2000`–`U+200A`, `U+205F`, `U+3000`, `U+2028`, `U+2029` | standard | → `U+0020` |
 | Bidi overrides (Trojan Source) | `U+202D`, `U+202E` | standard | removed |
 | Bidi controls / marks | `U+202A`–`U+202C`, `U+2066`–`U+2069`, `U+200E`, `U+200F`, `U+061C` | aggressive | flagged |
-| Homoglyph mixing | Latin + Cyrillic/Greek in one word | aggressive | flagged |
-| Curly quotes & guillemets | `U+2018`–`U+201F`, `U+00AB`, `U+00BB`, `U+2039`, `U+203A`, `U+02BC` | standard | → ASCII |
-| Ellipsis | `U+2026`, `U+22EF` | standard | → `...` |
+| Homoglyph mixing | Latin + Cyrillic/Greek/Armenian/Cherokee lookalikes in one word (digits ignored when finding the word edge) | aggressive | flagged |
+| Curly quotes & guillemets | `U+2018`–`U+201F`, `U+00AB`, `U+00BB`, `U+2039`, `U+203A`, `U+02BC`, primes `U+2032`/`U+2033` used as quotes | standard | → ASCII |
+| Ellipsis & leaders | `U+2026`, `U+22EF`, two-dot leader `U+2025` | standard | → `...` / `..` |
 | En dash | `U+2013` | standard | → `, ` / `-` |
 | Hyphen family | `U+2010`, `U+2011`, `U+2012`; minus sign `U+2212` only when digit-adjacent | standard | → `-` |
 | Em dash family | `U+2014`, `U+2015`, `U+2E3A`, `U+2E3B`, `U+FE58` | aggressive | → `, ` / `--` |
 | Fullwidth ASCII | `U+FF01`–`U+FF5E` | aggressive | → ASCII |
+| CJK punctuation in non-CJK prose | `U+3001`, `U+3002`, `U+FF0E`…, i.e. `、。：；？！（）：` etc. (context-guarded; genuine CJK text untouched) | aggressive | → ASCII |
+| Detokenizer space markers | `Ġ` (`U+0120`), `▁` (`U+2581`) standing for spaces in tokenizer dumps — context-guarded so Maltese `Ġ/Ċ` survive | aggressive | → space |
+| Detokenized spacing | space before `.,;:!?` `%,` spaced `.`, tokeniser-style apostrophes — French narrow-space style is exempt | aggressive | flagged |
+| Repeated punctuation | `!!!`, `???`, `!!?` runs (`...` exempt) | aggressive | flagged |
 
 Deliberately preserved: `U+200C`/`U+200D` (ZWNJ/ZWJ — required in Arabic, Indic and emoji
 sequences), emoji base characters, and variation selectors on a genuine emoji base.
@@ -74,8 +102,7 @@ sequences), emoji base characters, and variation selectors on a genuine emoji ba
 | --------- | ----- | ----------------------------- |
 | SynthID-Text | Google Gemini; basis of Anthropic's 2026 watermark | Statistical: lives in token choice, no characters to strip |
 | textGrain | OpenAI (EU ChatGPT/Codex, Oct 2026) | Statistical, same reason |
-| C2PA / Content Credentials | Claude file exports, OpenAI images and audio, Google media | Signed container metadata, not prose — a separate feature |
-| Office/Copilot document metadata | `docProps/core.xml`, `docProps/app.xml` | Container-level fields; a separate feature (tracked, not claimed) |
+| C2PA / Content Credentials | Claude file exports, OpenAI images and audio, Google media | Cryptographically *signed* provenance manifests. (The unsigned `docProps` author/program fields ARE covered — see *DOCX coverage* — but we do not strip signed claims.) |
 
 ## Keeping this current
 
