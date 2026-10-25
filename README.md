@@ -55,6 +55,21 @@ The rule set is reviewed against the model landscape each release. Coverage as o
 
 ## Install
 
+### Homebrew (macOS)
+
+```bash
+brew tap olib-ai/tap
+brew trust olib-ai/tap
+
+# Desktop app
+brew install --cask llm-cleanup
+
+# Command-line tool
+brew install aiclean
+```
+
+### Prebuilt binaries & building from source
+
 Download a prebuilt binary from the [Releases](https://github.com/Olib-AI/llm-cleanup/releases) page, or build from source:
 
 ```bash

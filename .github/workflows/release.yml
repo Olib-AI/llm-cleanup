@@ -237,3 +237,149 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+      - name: Update Homebrew Tap (Cask & Formula)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          CASK_ZIP="artifacts/llm-cleanup-macos.zip"
+          DARWIN_ARM64="artifacts/aiclean-darwin-arm64"
+          DARWIN_AMD64="artifacts/aiclean-darwin-amd64"
+          LINUX_ARM64="artifacts/aiclean-linux-arm64"
+          LINUX_AMD64="artifacts/aiclean-linux-amd64"
+
+          for f in "$CASK_ZIP" "$DARWIN_ARM64" "$DARWIN_AMD64" "$LINUX_ARM64" "$LINUX_AMD64"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::Required artifact $f not found"
+              exit 1
+            fi
+          done
+
+          CASK_SHA="$(sha256sum "$CASK_ZIP" | awk '{print $1}')"
+          DARWIN_ARM64_SHA="$(sha256sum "$DARWIN_ARM64" | awk '{print $1}')"
+          DARWIN_AMD64_SHA="$(sha256sum "$DARWIN_AMD64" | awk '{print $1}')"
+          LINUX_ARM64_SHA="$(sha256sum "$LINUX_ARM64" | awk '{print $1}')"
+          LINUX_AMD64_SHA="$(sha256sum "$LINUX_AMD64" | awk '{print $1}')"
+
+          echo "Updating Homebrew tap to version ${VERSION}..."
+
+          TAP_DIR="$(mktemp -d)"
+          SSH_KEY_FILE=""
+
+          if [[ -n "${HOMEBREW_TAP_DEPLOY_KEY:-}" ]]; then
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            SSH_KEY_FILE="$(mktemp "${RUNNER_TEMP:-/tmp}/tap_key_XXXXXX")"
+            echo "$HOMEBREW_TAP_DEPLOY_KEY" > "$SSH_KEY_FILE"
+            chmod 600 "$SSH_KEY_FILE"
+            ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+            export GIT_SSH_COMMAND="ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            git clone git@github.com:Olib-AI/homebrew-tap.git "$TAP_DIR"
+          elif [[ -n "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Olib-AI/homebrew-tap.git" "$TAP_DIR"
+          else
+            echo "::warning::Neither HOMEBREW_TAP_DEPLOY_KEY nor HOMEBREW_TAP_TOKEN is set; skipping Homebrew tap update."
+            exit 0
+          fi
+
+          VERSION="$VERSION" \
+          CASK_SHA="$CASK_SHA" \
+          DARWIN_ARM64_SHA="$DARWIN_ARM64_SHA" \
+          DARWIN_AMD64_SHA="$DARWIN_AMD64_SHA" \
+          LINUX_ARM64_SHA="$LINUX_ARM64_SHA" \
+          LINUX_AMD64_SHA="$LINUX_AMD64_SHA" \
+          TAP_DIR="$TAP_DIR" \
+          python3 -c "
+          import os
+
+          version = os.environ['VERSION']
+          cask_sha = os.environ['CASK_SHA']
+          darwin_arm64_sha = os.environ['DARWIN_ARM64_SHA']
+          darwin_amd64_sha = os.environ['DARWIN_AMD64_SHA']
+          linux_arm64_sha = os.environ['LINUX_ARM64_SHA']
+          linux_amd64_sha = os.environ['LINUX_AMD64_SHA']
+          tap_dir = os.environ['TAP_DIR']
+
+          cask_path = os.path.join(tap_dir, 'Casks', 'llm-cleanup.rb')
+          os.makedirs(os.path.dirname(cask_path), exist_ok=True)
+          with open(cask_path, 'w', encoding='utf-8') as f:
+              f.write(f'''cask \"llm-cleanup\" do
+            version \"{version}\"
+            sha256 \"{cask_sha}\"
+
+            url \"https://github.com/Olib-AI/llm-cleanup/releases/download/v#{{version}}/llm-cleanup-macos.zip\"
+            name \"llm-cleanup\"
+            desc \"Remove AI-generated fingerprints from documents\"
+            homepage \"https://www.olib.ai/\"
+
+            livecheck do
+              url :url
+              strategy :github_latest
+            end
+
+            depends_on macos: :ventura
+
+            app \"llm-cleanup.app\"
+          end
+          ''')
+
+          formula_path = os.path.join(tap_dir, 'Formula', 'aiclean.rb')
+          os.makedirs(os.path.dirname(formula_path), exist_ok=True)
+          with open(formula_path, 'w', encoding='utf-8') as f:
+              f.write(f'''class Aiclean < Formula
+            desc \"Remove AI-generated fingerprints from documents\"
+            homepage \"https://www.olib.ai/\"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url \"https://github.com/Olib-AI/llm-cleanup/releases/download/v{version}/aiclean-darwin-arm64\"
+                sha256 \"{darwin_arm64_sha}\"
+              else
+                url \"https://github.com/Olib-AI/llm-cleanup/releases/download/v{version}/aiclean-darwin-amd64\"
+                sha256 \"{darwin_amd64_sha}\"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url \"https://github.com/Olib-AI/llm-cleanup/releases/download/v{version}/aiclean-linux-arm64\"
+                sha256 \"{linux_arm64_sha}\"
+              else
+                url \"https://github.com/Olib-AI/llm-cleanup/releases/download/v{version}/aiclean-linux-amd64\"
+                sha256 \"{linux_amd64_sha}\"
+              end
+            end
+
+            def install
+              bin.install Dir[\"aiclean-*\"].first => \"aiclean\"
+            end
+
+            test do
+              assert_match \"aiclean\", shell_output(\"#{{bin}}/aiclean --version\")
+            end
+          end
+          ''')
+          "
+
+          cd "$TAP_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "No changes in tap definitions; skipping commit."
+          else
+            git add Casks/llm-cleanup.rb Formula/aiclean.rb
+            git commit -m "Update llm-cleanup cask and aiclean formula to ${VERSION}"
+            git pull --rebase origin main || true
+            git push origin main
+            echo "Successfully updated and pushed Homebrew tap for llm-cleanup ${VERSION}"
+          fi
+
+          if [[ -n "$SSH_KEY_FILE" ]]; then
+            rm -f "$SSH_KEY_FILE"
+          fi
