@@ -3588,10 +3588,7 @@ mod tests {
             ),
         ];
         let bytes = assemble_pdf(&objects, 1, None);
-        assert_eq!(
-            span_texts(&bytes),
-            ["Body text", "\u{201C}Stamp\u{201D}"]
-        );
+        assert_eq!(span_texts(&bytes), ["Body text", "\u{201C}Stamp\u{201D}"]);
     }
 
     #[test]
