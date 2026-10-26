@@ -9,6 +9,7 @@ pub enum FormatId {
     Docx,
     Html,
     Image,
+    Pdf,
 }
 
 impl FormatId {

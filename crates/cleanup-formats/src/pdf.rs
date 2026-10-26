@@ -48,7 +48,7 @@ const MAX_XREF_OFFSET: usize = 1_000_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Ref {
     num: u32,
-    gen: u16,
+    generation: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -378,7 +378,7 @@ impl<'a> Lexer<'a> {
                 let after_first = self.pos;
                 if let Ok(num) = first.parse::<u32>()
                     && let Some(second) = self.parse_number_token()
-                    && let Ok(gen) = second.parse::<u16>()
+                    && let Ok(generation) = second.parse::<u16>()
                 {
                     self.skip_ws();
                     if self.bytes.get(self.pos) == Some(&b'R')
@@ -388,7 +388,7 @@ impl<'a> Lexer<'a> {
                             .is_none_or(|&next| is_pdf_ws(next) || is_pdf_delimiter(next))
                     {
                         self.pos += 1;
-                        return Ok(Value::Ref(Ref { num, gen }));
+                        return Ok(Value::Ref(Ref { num, generation }));
                     }
                 }
                 self.pos = after_first;
@@ -464,7 +464,7 @@ fn parse_indirect_at(bytes: &[u8], offset: usize) -> Result<(Obj, usize)> {
     let num: u32 = num_token
         .parse()
         .map_err(|_| CoreError::Parse("invalid PDF object number".to_string()))?;
-    let gen: u16 = gen_token
+    let generation: u16 = gen_token
         .parse()
         .map_err(|_| CoreError::Parse("invalid PDF generation number".to_string()))?;
     if !lexer.consume_keyword("obj") {
@@ -510,7 +510,7 @@ fn parse_indirect_at(bytes: &[u8], offset: usize) -> Result<(Obj, usize)> {
     let raw_body = bytes[body_start..endobj].to_vec();
     Ok((
         Obj {
-            reference: Ref { num, gen },
+            reference: Ref { num, generation },
             value,
             stream,
             raw_body,
@@ -521,7 +521,7 @@ fn parse_indirect_at(bytes: &[u8], offset: usize) -> Result<(Obj, usize)> {
 
 #[derive(Debug, Clone, Copy)]
 enum XrefEntry {
-    Normal { offset: usize, gen: u16 },
+    Normal { offset: usize, generation: u16 },
     Compressed { objstm: u32, index: u32 },
     Free,
 }
@@ -570,7 +570,7 @@ fn parse_xref_table_at(
                 .parse_number_token()
                 .and_then(|token| token.parse::<usize>().ok())
                 .ok_or_else(|| CoreError::Parse("malformed PDF xref entry".to_string()))?;
-            let gen = lexer
+            let generation = lexer
                 .parse_number_token()
                 .and_then(|token| token.parse::<u16>().ok())
                 .ok_or_else(|| CoreError::Parse("malformed PDF xref generation".to_string()))?;
@@ -581,7 +581,7 @@ fn parse_xref_table_at(
             entries.entry(num).or_insert(if kind == "n" {
                 XrefEntry::Normal {
                     offset: entry_offset,
-                    gen,
+                    generation,
                 }
             } else {
                 XrefEntry::Free
@@ -646,7 +646,7 @@ fn parse_xref_stream_at(
             let entry = match kind {
                 1 => XrefEntry::Normal {
                     offset: field2 as usize,
-                    gen: field3 as u16,
+                    generation: field3 as u16,
                 },
                 2 => XrefEntry::Compressed {
                     objstm: field2 as u32,
@@ -678,7 +678,7 @@ impl ParsedPdf {
             self.objects
                 .values()
                 .filter(|obj| obj.reference.num == reference.num)
-                .max_by_key(|obj| obj.reference.gen)
+                .max_by_key(|obj| obj.reference.generation)
         })
     }
 
@@ -887,8 +887,8 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
         let Ok(value) = lexer.parse_value() else {
             continue;
         };
-        objects.entry(Ref { num, gen: 0 }).or_insert(Obj {
-            reference: Ref { num, gen: 0 },
+        objects.entry(Ref { num, generation: 0 }).or_insert(Obj {
+            reference: Ref { num, generation: 0 },
             value,
             stream: None,
             raw_body: body.clone(),
@@ -2486,7 +2486,7 @@ fn serialize_value(value: &Value, out: &mut Vec<u8>) {
         }
         Value::Ref(reference) => {
             out.extend_from_slice(
-                format!("{} {} R", reference.num, reference.gen).as_bytes(),
+                format!("{} {} R", reference.num, reference.generation).as_bytes(),
             );
         }
     }
@@ -2627,14 +2627,14 @@ fn repack_pdf(
         }
         let offset = out.len();
         out.extend_from_slice(
-            format!("{} {} obj\n", object.reference.num, object.reference.gen).as_bytes(),
+            format!("{} {} obj\n", object.reference.num, object.reference.generation).as_bytes(),
         );
         match replacements.get(&object.reference) {
             Some(body) => out.extend_from_slice(body),
             None => out.extend_from_slice(trim_body(&object.raw_body)),
         }
         out.extend_from_slice(b"\nendobj\n");
-        offsets.insert(object.reference.num, (offset, object.reference.gen));
+        offsets.insert(object.reference.num, (offset, object.reference.generation));
     }
 
     let xref_offset = out.len();
@@ -2651,8 +2651,8 @@ fn repack_pdf(
         }
         out.extend_from_slice(format!("{first} {count}\n").as_bytes());
         for num in &numbers[index..index + count] {
-            let (offset, gen) = offsets[num];
-            out.extend_from_slice(format!("{offset:010} {gen:05} n \n").as_bytes());
+            let (offset, generation) = offsets[num];
+            out.extend_from_slice(format!("{offset:010} {generation:05} n \n").as_bytes());
         }
         index += count;
     }
@@ -3070,7 +3070,7 @@ impl Format for Pdf {
             if object_is(object, "Type", "XRef") || object_is(object, "Type", "ObjStm") {
                 continue;
             }
-            out.push_str(&format!("{} {} ", object.reference.num, object.reference.gen));
+            out.push_str(&format!("{} {} ", object.reference.num, object.reference.generation));
             if length_refs.contains(&object.reference)
                 && matches!(object.value, Value::Int(_) | Value::Real(_))
             {
@@ -3131,7 +3131,7 @@ impl Format for Pdf {
                 rule_id: "container.pdf-xmp-metadata".to_string(),
                 message: format!(
                     "PDF XMP metadata (object {} {}) {reason}",
-                    reference.num, reference.gen
+                    reference.num, reference.generation
                 ),
                 scrubbable: true,
                 applied: false,
@@ -3148,7 +3148,7 @@ impl Format for Pdf {
             {
                 out.extend(crate::c2pa::inspect_media(
                     raw,
-                    &format!("PDF image (object {} {})", object.reference.num, object.reference.gen),
+                    &format!("PDF image (object {} {})", object.reference.num, object.reference.generation),
                 ));
             }
             if dict_get(dict, "Type").and_then(as_name) == Some("Sig")
@@ -3339,7 +3339,7 @@ mod tests {
         assert!(span_texts(&out)[0].starts_with("\"Hello"));
         assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap());
         let reparsed = parse_pdf(&out).unwrap();
-        let image = reparsed.get(Ref { num: 6, gen: 0 }).unwrap();
+        let image = reparsed.get(Ref { num: 6, generation: 0 }).unwrap();
         assert_eq!(image.stream.as_deref(), Some(&[255u8, 0, 0][..]));
     }
 
@@ -3379,14 +3379,14 @@ mod tests {
         );
         let scrubbed = Pdf.scrub_container(&doc, &bytes).expect("scrub");
         let parsed = parse_pdf(&scrubbed).unwrap();
-        let info = parsed.object_dict(Ref { num: 7, gen: 0 }).unwrap();
+        let info = parsed.object_dict(Ref { num: 7, generation: 0 }).unwrap();
         assert_eq!(dict_get(info, "Producer"), Some(&Value::Str(Vec::new())));
         assert_eq!(
             dict_get(info, "Creator"),
             Some(&Value::Str(b"Jane Doe".to_vec()))
         );
         let xmp = parsed
-            .decoded_stream(Ref { num: 8, gen: 0 })
+            .decoded_stream(Ref { num: 8, generation: 0 })
             .unwrap()
             .unwrap();
         assert!(!String::from_utf8_lossy(&xmp).contains("trainedAlgorithmicMedia"));
