@@ -3522,6 +3522,79 @@ mod tests {
     }
 
     #[test]
+    fn xref_streams_and_object_streams_are_resolved() {
+        // Committed fixture: catalog/pages/page/font/info live in a Flate object
+        // stream and the file is indexed by an xref stream (no trailer keyword).
+        let bytes = include_bytes!("../../../samples/pdf/xref_stream.pdf");
+        assert_eq!(
+            span_texts(bytes),
+            ["\u{201C}Compressed\u{201D} \u{2013} objects\u{2026}"]
+        );
+        let doc = Pdf.parse(bytes).unwrap();
+        let edit = Edit {
+            span_index: 0,
+            range: char_range(&doc.spans[0].text, '\u{201C}'),
+            replacement: "\"".to_string(),
+            rule_id: "test".to_string(),
+        };
+        let out = Pdf.render(&doc, &EditSet { edits: vec![edit] }).unwrap();
+        assert!(span_texts(&out)[0].starts_with("\"Compressed"));
+        assert_eq!(Pdf.skeleton(bytes).unwrap(), Pdf.skeleton(&out).unwrap());
+    }
+
+    #[test]
+    fn incremental_updates_use_the_latest_object_revision() {
+        let original = sample_pdf(false);
+        let startxref_at = find_subslice(&original, 0, b"startxref").unwrap();
+        let mut lexer = Lexer::at(&original, startxref_at + b"startxref".len());
+        let old_xref: usize = lexer.parse_number_token().unwrap().parse().unwrap();
+
+        let mut updated = original.clone();
+        let object_offset = updated.len();
+        updated.extend_from_slice(b"4 0 obj\n");
+        updated.extend_from_slice(&stream_body(
+            "",
+            b"BT /F1 12 Tf 72 720 Td (Updated revision) Tj ET\n",
+            false,
+        ));
+        updated.extend_from_slice(b"\nendobj\n");
+        let xref_offset = updated.len();
+        updated.extend_from_slice(
+            format!(
+                "xref\n4 1\n{object_offset:010} 00000 n \ntrailer\n<< /Size 9 /Root 1 0 R /Info 7 0 R /Prev {old_xref} >>\nstartxref\n{xref_offset}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        assert_eq!(span_texts(&updated), ["Updated revision"]);
+    }
+
+    #[test]
+    fn form_xobject_text_is_cleanable_prose() {
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 6 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            stream_body(
+                "",
+                b"BT /F1 12 Tf 72 720 Td (Body text) Tj ET\nq /Fm1 Do Q\n",
+                false,
+            ),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_vec(),
+            stream_body(
+                " /Type /XObject /Subtype /Form /BBox [0 0 300 40] /Resources << /Font << /F1 5 0 R >> >>",
+                b"BT /F1 10 Tf 72 760 Td (\\223Stamp\\224) Tj ET\n",
+                false,
+            ),
+        ];
+        let bytes = assemble_pdf(&objects, 1, None);
+        assert_eq!(
+            span_texts(&bytes),
+            ["Body text", "\u{201C}Stamp\u{201D}"]
+        );
+    }
+
+    #[test]
     fn rejects_non_pdf_and_encrypted_files() {
         assert!(Pdf.parse(b"not a pdf").is_err());
         // Point the trailer at an encryption dictionary, byte-surgically so
