@@ -1123,7 +1123,9 @@ fn decode_stream_data(dict: &[(String, Value)], raw: &[u8]) -> Result<Vec<u8>> {
                     digits.push(0);
                 }
                 digits
-                    .as_chunks::<2>().0.iter()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| pair[0] * 16 + pair[1])
                     .collect()
             }
@@ -1500,7 +1502,9 @@ fn lex_cmap(data: &[u8]) -> Vec<CmapToken> {
             }
             tokens.push(CmapToken::Hex(
                 digits
-                    .as_chunks::<2>().0.iter()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| pair[0] * 16 + pair[1])
                     .collect(),
             ));
@@ -1538,7 +1542,9 @@ fn hex_bytes_to_u32(bytes: &[u8]) -> u32 {
 
 fn utf16be_to_string(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .as_chunks::<2>().0.iter()
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
         .collect();
     char::decode_utf16(units)
@@ -2847,7 +2853,9 @@ fn decode_pdf_text_string(bytes: &[u8]) -> String {
     }
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let units: Vec<u16> = bytes[2..]
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         return char::decode_utf16(units)
