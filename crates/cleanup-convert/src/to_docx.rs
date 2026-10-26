@@ -33,6 +33,19 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
                 vec!["extracted HTML blocks as plain DOCX paragraphs".to_string()],
             )
         }
+        FormatId::Pdf => {
+            let paras = crate::to_text::pdf_paragraph_texts(src)?;
+            let mut docx = Docx::new();
+            for p in paras {
+                docx = docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text(&p)));
+            }
+            (
+                docx,
+                vec![
+                    "extracted PDF prose as plain DOCX paragraphs; page layout and images are not reconstructed (use same-format PDF output to preserve them)".to_string(),
+                ],
+            )
+        }
         FormatId::Image => {
             return Err(ConvertError::Unsupported {
                 from: "image",

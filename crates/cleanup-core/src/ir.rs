@@ -19,6 +19,7 @@ impl FormatId {
             FormatId::Docx => "docx",
             FormatId::Html => "html",
             FormatId::Image => "image",
+            FormatId::Pdf => "pdf",
         }
     }
 }

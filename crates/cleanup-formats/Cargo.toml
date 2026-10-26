@@ -4,10 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Format adapters (Markdown / plain text / DOCX) for llm-cleanup."
+description = "Format adapters (Markdown / plain text / DOCX / PDF / HTML / images) for llm-cleanup."
 
 [dependencies]
 cleanup-core = { workspace = true }
+flate2 = { workspace = true }
 pulldown-cmark = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }

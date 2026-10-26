@@ -14,7 +14,7 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-APP="dist/llm-cleanup.app"
+APP="dist/LLM Cleanup by Olib AI.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/aiclean-gui"

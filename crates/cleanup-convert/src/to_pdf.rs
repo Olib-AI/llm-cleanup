@@ -12,6 +12,18 @@ const PAGE_LINES: usize = 48;
 const LINE_WIDTH: usize = 92;
 
 pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
+    if from == FormatId::Pdf {
+        // A PDF cleaned natively is already a PDF: never flatten it through the
+        // text-only renderer below, which would destroy its layout and images.
+        return Ok((
+            src.to_vec(),
+            ConvertReport {
+                engine: "passthrough".into(),
+                lossy: false,
+                warnings: vec![],
+            },
+        ));
+    }
     let (text, _) = crate::to_text::convert(from, src)?;
     let text = std::str::from_utf8(&text).map_err(|e| {
         ConvertError::Failed(format!("text conversion produced invalid UTF-8: {e}"))

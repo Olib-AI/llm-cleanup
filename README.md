@@ -11,7 +11,7 @@
 
 ---
 
-llm-cleanup strips the tell-tale residue that large language models and AI export pipelines leave behind (em dashes, curly quotes, the narrow no-break space, invisible "smuggling" characters, SNOW trailing whitespace steganography, Mathematical Alphanumeric fake-bold styling, chat-template tokens, ChatGPT and Gemini/NotebookLM citation plumbing, C2PA / Content Credentials manifests, agent attribution trailers, overused wording) from Markdown, plain text, HTML, Word documents (`.docx`), and standalone images (`.png`, `.jpg`, `.webp`, `.svg`). Language-neutral cleanup works on any script, and review-only French and Spanish phrasing cues are enabled alongside English so mixed-language documents are handled in one pass. It does this without breaking a single byte of your formatting or re-encoding image pixels: headings, bold, italic, lists, tables, links, code blocks, scripts, shapes, and pixel streams are preserved exactly. There is no network call and no LLM at runtime.
+llm-cleanup strips the tell-tale residue that large language models and AI export pipelines leave behind (em dashes, curly quotes, the narrow no-break space, invisible "smuggling" characters, SNOW trailing whitespace steganography, Mathematical Alphanumeric fake-bold styling, chat-template tokens, ChatGPT and Gemini/NotebookLM citation plumbing, C2PA / Content Credentials manifests, agent attribution trailers, overused wording) from Markdown, plain text, HTML, Word documents (`.docx`), PDF documents (`.pdf`), and standalone images (`.png`, `.jpg`, `.webp`, `.svg`). Language-neutral cleanup works on any script, and review-only French and Spanish phrasing cues are enabled alongside English so mixed-language documents are handled in one pass. It does this without breaking a single byte of your formatting or re-encoding image pixels: headings, bold, italic, lists, tables, links, code blocks, scripts, shapes, and pixel streams are preserved exactly. There is no network call and no LLM at runtime.
 
 The rule set is reviewed against the model landscape each release. Coverage as of **October 2026** spans GPT-5.5/5.6/6, Claude Opus 5.x and Fable/Mythos 5.1, Gemini 3.x, Llama 4, Grok 4/5, Mistral Large 3, DeepSeek V4, Qwen3.8, Kimi K2.5–K3, GLM-5, Copilot, Perplexity Sonar and the 2026 crop of coding agents. Run `aiclean coverage` to print it, or read [docs/FINGERPRINTS.md](docs/FINGERPRINTS.md) for the sources.
 
@@ -19,10 +19,10 @@ The rule set is reviewed against the model landscape each release. Coverage as o
 
 - **Formatting-safe by construction.** It never re-serializes your document. It locates the prose, cleans only that text, and splices the result back into the original bytes. If nothing matches, the output is byte-for-byte identical to the input.
 - **Offline and deterministic.** No network, no model, no telemetry. The same input always produces the same output.
-- **Real document & media support.** Markdown, plain text, HTML (`.html`/`.htm`), Word (`.docx`), and standalone media containers (`.png`, `.jpg`/`.jpeg`, `.webp`, `.svg`). DOCX keeps your shapes, tables, and styles intact while cleaning prose runs *and* losslessly scrubbing embedded media (`word/media/*`), `META-INF/*.c2pa` stores, and AI custom properties.
+- **Real document & media support.** Markdown, plain text, HTML (`.html`/`.htm`), Word (`.docx`), PDF (`.pdf`), and standalone media containers (`.png`, `.jpg`/`.jpeg`, `.webp`, `.svg`). DOCX keeps your shapes, tables, and styles intact while cleaning prose runs *and* losslessly scrubbing embedded media (`word/media/*`), `META-INF/*.c2pa` stores, and AI custom properties. PDF is cleaned **natively in place** — prose inside page content streams is spliced in the same font and position, while page geometry, vector art, links, forms, and embedded images are copied byte-for-byte (see [docs/PDF.md](docs/PDF.md)).
 - **Three cleanup levels + opt-in watermark disruption.** Light (invisible-character and C2PA text-wrapper hygiene), Standard (plus visible punctuation and safe phrasing), Aggressive (plus machine-residue stripping and lossless C2PA/container metadata scrubbing), and opt-in `--dewatermark` (deterministic 5-gram tournament window disruption for statistical token watermarks).
-- **Cross-format conversion & custom packs.** Supported document inputs (Markdown, plain text, HTML, or DOCX) can be converted to Markdown, plain text, DOCX, or PDF via the clean-then-convert workflow, and custom YAML/JSON rule packs (`--pack`) support `flag`, `replace`, and `delete` actions.
-- **CLI and desktop app.** A fast command-line tool (`aiclean`) and a native desktop app (`aiclean-gui`) that share the same engine.
+- **Cross-format conversion & custom packs.** Supported document inputs (Markdown, plain text, HTML, DOCX, or PDF) can be converted to Markdown, plain text, DOCX, or PDF via the clean-then-convert workflow, and custom YAML/JSON rule packs (`--pack`) support `flag`, `replace`, and `delete` actions.
+- **CLI and desktop app.** A fast command-line tool (`aiclean`) and the native desktop app **LLM Cleanup by Olib AI** (`aiclean-gui`, version shown in the window) that share the same engine. Saved files always carry the selected output format's extension, even if the typed/chosen name omits or mistypes it.
 
 ## What it cleans
 
@@ -41,6 +41,7 @@ The rule set is reviewed against the model landscape each release. Coverage as o
 **DOCX, HTML, Markdown front matter, and C2PA / Content Credentials.** Word documents are cleaned everywhere prose can hide: body, headers, footers, footnotes, endnotes, and reviewer comments. At the container layer, `llm-cleanup` validates ISO/IEC 19566-5 JUMBF superboxes (`c2pa` UUID `63327061-0011-0010-8000-00AA00389B71`) and AI provenance across formats, reporting them at every level and scrubbing them losslessly at Aggressive:
 - **Images & SVG (`.png`, `.jpg`, `.webp`, `.svg`, and `word/media/*` inside `.docx`)**: PNG `caBX` chunks, AI XMP `iTXt`/`tEXt` packets (IPTC `trainedAlgorithmicMedia`), Stable Diffusion `parameters` and ComfyUI node-graph chunks; JPEG single- and multi-segment `APP11` (`JP` XTBox) JUMBF stores and `APP1` XMP/Extended XMP (leaving camera EXIF and post-`SOS` entropy scan bytes bit-exact); WebP `C2PA` and AI `XMP ` RIFF chunks (updating `RIFF` size and `VP8X` flags); SVG `<metadata>` and `<?xpacket?>` packets.
 - **DOCX packages**: `META-INF/content_credential.c2pa` stores (plus `[Content_Types].xml` overrides), generator stamps in `docProps/{core,app}.xml`, EU AI Act / tool-stamped custom properties in `docProps/custom.xml` (`AIGenerated`, `AIDisclosure`, `ai_model`), and external `.rels` tracking URLs.
+- **PDF documents**: AI/generator stamps in the document information dictionary (`/Producer`, `/Creator`, …), catalogue and image XMP metadata streams (C2PA / `trainedAlgorithmicMedia`), and C2PA/AI XMP inside embedded JPEG (`DCTDecode`) image XObjects. Password-protected files are rejected, scanned/image-only pages and fonts without a Unicode map are reported and left untouched (no OCR), and digital signatures are flagged because any edit invalidates them.
 - **HTML, Markdown & text**: HTML `<link rel="c2pa-manifest">`, `<script type="application/c2pa">`, AI `<meta>` declarations, and `<a href>` tracking parameters; Markdown YAML/TOML AI front matter and reference-link tracking URLs; C2PA 2.4 Structured Text (`-----BEGIN C2PA MANIFEST-----`) blocks; and C2PA Unstructured Text (`U+FEFF` + `C2PATXT\0` variation-selector binary frames, stripped whole at Light).
 
 **Wording and style, flagged for your review.** Overused vocabulary — weighted by the published evidence (Kobak et al.'s 15.1M-abstract excess-word measurement, the WikiProject AI Cleanup watch list, Graphite's "AI Tells" corpus), not vibes — plus copula avoidance ("serves as" for "is"), negative parallelism ("not just X, but Y"), trailing "-ing" clauses, superlative framing ("the single most"), sycophancy ("great question!"), unearned authority ("studies show"), canned notability ("has garnered attention"), source-availability hedges ("based on the information available"), "despite the challenges" endings, social-post hooks, letter formulas, promotional puffery and marketing formulas. French and Spanish packs also flag common assistant formulas and vocabulary (for example, "il est important de noter" and "cabe destacar"). On standard runs these are *reported*, never rewritten: single "AI-sounding" words are ordinary language, and changing them would change what you wrote.
@@ -104,6 +105,7 @@ Clean a file (writes a `.cleaned` copy next to it by default):
 aiclean clean report.docx --level standard
 aiclean clean notes.md --level aggressive
 aiclean clean hero.png --level aggressive          # losslessly strip C2PA caBX & AI XMP chunks
+aiclean clean report.pdf --level aggressive        # native in-place PDF cleanup: layout & images preserved
 aiclean clean draft.md --level aggressive --dewatermark
 aiclean clean draft.md --pack custom-rules.yaml
 ```
@@ -121,6 +123,7 @@ aiclean clean report.docx -o report.md      # clean, then convert to Markdown
 aiclean clean notes.md --to docx            # clean, then convert to Word
 aiclean clean report.docx -o report.pdf     # clean, then create a text-only PDF
 aiclean convert report.docx -o report.txt   # convert only, no cleaning
+aiclean clean report.pdf -o cleaned-report  # missing extension added for you: cleaned-report.pdf
 ```
 
 List the active rules for a level:
@@ -138,7 +141,7 @@ aiclean coverage --provider anthropic
 
 ### Desktop app
 
-Launch `aiclean-gui` (or open `llm-cleanup.app` on macOS). Choose a file, pick a cleanup level and an output format, review exactly what changed, and save.
+Launch **LLM Cleanup by Olib AI** (`aiclean-gui`, or `LLM Cleanup by Olib AI.app` on macOS; the version is shown in the header). Choose a file, pick a cleanup level and an output format, review exactly what changed, and save — the saved name automatically gains the selected format's extension if it is missing (and a stale extension from another format is corrected).
 
 ## Security
 
@@ -156,7 +159,7 @@ Launch `aiclean-gui` (or open `llm-cleanup.app` on macOS). Choose a file, pick a
 
 ## How it works
 
-Each format is parsed only to locate the editable prose. Rules run over that prose, producing edits that are spliced back into the original bytes. After writing, the tool re-parses the output and asserts the structure is unchanged, so a corrupt or reflowed document is never produced. For DOCX, only the text inside the `w:t` runs is touched — in every prose-bearing part of the package (body, headers, footers, footnotes, endnotes, comments) — and every other part, including images and shapes, is copied through byte for byte. Package metadata fingerprints are reported separately from the prose and, at Aggressive, the matched metadata fields are emptied after the structural check has passed.
+Each format is parsed only to locate the editable prose. Rules run over that prose, producing edits that are spliced back into the original bytes. After writing, the tool re-parses the output and asserts the structure is unchanged, so a corrupt or reflowed document is never produced. For DOCX, only the text inside the `w:t` runs is touched — in every prose-bearing part of the package (body, headers, footers, footnotes, endnotes, comments) — and every other part, including images and shapes, is copied through byte for byte. Package metadata fingerprints are reported separately from the prose and, at Aggressive, the matched metadata fields are emptied after the structural check has passed. PDFs follow the same rule one layer down: only the string operands of text-showing operators change, every other object (fonts, images, page boxes, annotations) is copied byte-for-byte, and the cross-reference table is regenerated — see [docs/PDF.md](docs/PDF.md).
 
 ## License
 

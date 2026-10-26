@@ -4,7 +4,10 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use cleanup_convert::Target;
-use cleanup_core::{CleanupLevel, Ctx, Document, clean};
+use cleanup_core::{
+    CleanupLevel, Ctx, Document, FormatId, clean, cleaned_sibling_path,
+    ensure_output_extension,
+};
 use cleanup_formats::{format_for_path, formatter_for_path};
 use cleanup_rules::{Pack, load_pack_str, measure_disruption, rules_with_packs};
 use similar::{ChangeTag, TextDiff};
@@ -16,7 +19,7 @@ use std::path::{Path, PathBuf};
     name = "aiclean",
     version,
     author = "Olib AI <dev@olib.ai>",
-    about = "Strip AI fingerprints and C2PA provenance from Markdown, text, HTML, DOCX, and images.",
+    about = "Strip AI fingerprints and C2PA provenance from Markdown, text, HTML, DOCX, PDF, and images.",
     after_help = "llm-cleanup by Olib AI (https://www.olib.ai)"
 )]
 struct Cli {
@@ -28,7 +31,7 @@ struct Cli {
 enum Command {
     /// Clean one or more files (and optionally convert the result to another format).
     Clean {
-        /// Input files (.md, .txt, .html, .docx, .png, .jpg, .webp, .svg).
+        /// Input files (.md, .txt, .html, .docx, .pdf, .png, .jpg, .webp, .svg).
         inputs: Vec<PathBuf>,
         #[arg(short, long, value_enum, default_value = "standard")]
         level: LevelArg,
@@ -333,7 +336,14 @@ fn run_clean(job: Job) -> Result<()> {
         }
 
         let dest = if let Some(o) = &output {
-            o.clone()
+            // `-o out` (or a stale `-o out.docx` next to `--to pdf`) must not write
+            // extensionless / mislabeled bytes: reconcile the requested path with
+            // the extension of the format we are actually saving.
+            let expected_ext = match &conv {
+                Some((t, _)) => t.ext().to_string(),
+                None => source_ext(input, fmt.id()),
+            };
+            ensure_output_extension(o, &expected_ext)
         } else if in_place {
             input.clone()
         } else if let Some((t, _)) = &conv {
@@ -388,9 +398,10 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
         let bytes = fs::read(input).with_context(|| format!("reading {}", input.display()))?;
         let (out, rep) = cleanup_convert::convert(from, &bytes, target)
             .with_context(|| format!("converting {} to {}", input.display(), target.label()))?;
-        let dest = output
-            .clone()
-            .unwrap_or_else(|| converted_path(input, target.ext()));
+        let dest = match &output {
+            Some(o) => ensure_output_extension(o, target.ext()),
+            None => converted_path(input, target.ext()),
+        };
         atomic_write(&dest, &out).with_context(|| format!("writing {}", dest.display()))?;
         println!(
             "{} → {}  ({} via {})",
@@ -519,27 +530,38 @@ fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// `foo.md` -> `foo.cleaned.md`
+/// The extension a same-format (unconverted) output must carry: the input's own
+/// extension when it has one (so `.markdown` / `.jpeg` survive), else the canonical
+/// extension for the parsed format.
+fn source_ext(input: &Path, format: FormatId) -> String {
+    if let Some(ext) = input.extension().and_then(|e| e.to_str())
+        && !ext.is_empty()
+    {
+        return ext.to_ascii_lowercase();
+    }
+    match format {
+        FormatId::Markdown => "md",
+        FormatId::PlainText => "txt",
+        FormatId::Docx => "docx",
+        FormatId::Html => "html",
+        FormatId::Pdf => "pdf",
+        FormatId::Image => "png",
+    }
+    .to_string()
+}
+
+/// `foo.md` -> `foo.cleaned.md` (extension guaranteed by `cleaned_sibling_path`).
 fn cleaned_path(input: &Path) -> PathBuf {
-    let stem = input
-        .file_stem()
+    let ext = input
+        .extension()
         .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("txt");
-    let mut p = input.to_path_buf();
-    p.set_file_name(format!("{stem}.cleaned.{ext}"));
-    p
+        .unwrap_or("txt");
+    cleaned_sibling_path(input, ext)
 }
 
 /// `foo.docx` + `md` -> `foo.cleaned.md`
 fn converted_path(input: &Path, ext: &str) -> PathBuf {
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let mut p = input.to_path_buf();
-    p.set_file_name(format!("{stem}.cleaned.{ext}"));
-    p
+    cleaned_sibling_path(input, ext)
 }
 
 /// Append an extra extension, e.g. `foo.md` -> `foo.md.bak`.
@@ -554,4 +576,38 @@ fn with_extra_extension(input: &Path, extra: &str) -> PathBuf {
     let mut p = input.to_path_buf();
     p.set_file_name(name);
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_output_paths_gain_the_saved_format_extension() {
+        assert_eq!(
+            ensure_output_extension(Path::new("out"), "pdf"),
+            PathBuf::from("out.pdf")
+        );
+        assert_eq!(
+            ensure_output_extension(Path::new("out.docx"), "pdf"),
+            PathBuf::from("out.pdf")
+        );
+        assert_eq!(
+            ensure_output_extension(Path::new("out.markdown"), "md"),
+            PathBuf::from("out.markdown")
+        );
+    }
+
+    #[test]
+    fn default_sibling_paths_keep_or_change_extensions_truthfully() {
+        assert_eq!(
+            cleaned_path(Path::new("docs/report.pdf")),
+            PathBuf::from("docs/report.cleaned.pdf")
+        );
+        assert_eq!(
+            converted_path(Path::new("docs/report.pdf"), "docx"),
+            PathBuf::from("docs/report.cleaned.docx")
+        );
+        assert_eq!(source_ext(Path::new("a/b"), FormatId::Pdf), "pdf");
+    }
 }

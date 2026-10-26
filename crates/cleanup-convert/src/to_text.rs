@@ -5,6 +5,16 @@ use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::{Format, FormatId};
 use pulldown_cmark::{Event, Parser, TagEnd};
 
+pub(crate) fn pdf_paragraph_texts(src: &[u8]) -> Result<Vec<String>> {
+    let doc = cleanup_formats::Pdf.parse(src)?;
+    Ok(doc
+        .spans
+        .into_iter()
+        .map(|s| s.text.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
 pub(crate) fn html_paragraph_texts(src: &[u8]) -> Result<Vec<String>> {
     let doc = cleanup_formats::Html.parse(src)?;
     Ok(doc
@@ -31,6 +41,11 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
         FormatId::Html => (
             html_paragraph_texts(src)?.join("\n\n").trim().to_string() + "\n",
             "html-extract",
+            true,
+        ),
+        FormatId::Pdf => (
+            pdf_paragraph_texts(src)?.join("\n\n").trim().to_string() + "\n",
+            "pdf-extract",
             true,
         ),
         FormatId::Image => {

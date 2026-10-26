@@ -140,7 +140,7 @@ component PrimaryButton inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "llm-cleanup";
+    title: "LLM Cleanup by Olib AI";
     icon: @image-url("icons/app-icon.svg");
     default-font-family: "Inter";
     default-font-size: 14px;
@@ -150,6 +150,7 @@ export component AppWindow inherits Window {
     min-height: 700px;
     background: #f3f4ef;
 
+    in property <string> app-version: "0.3.1";
     in property <string> file-name;
     in property <bool> has-file;
     in property <int> level: 1;
@@ -188,14 +189,14 @@ export component AppWindow inherits Window {
                 spacing: 2px;
                 alignment: center;
                 Text {
-                    text: "llm-cleanup";
+                    text: "LLM Cleanup";
                     color: #1e2521;
                     font-size: 20px;
                     font-weight: 700;
                     overflow: elide;
                 }
                 Text {
-                    text: "Document hygiene, without the guesswork";
+                    text: "by Olib AI · Document hygiene, without the guesswork";
                     color: #788079;
                     font-size: 11px;
                     overflow: elide;
@@ -210,7 +211,7 @@ export component AppWindow inherits Window {
                 y: (parent.height - self.height) / 2;
             }
             Text {
-                text: "Offline by design";
+                text: "Offline by design · v\{root.app-version}";
                 color: #566159;
                 font-size: 12px;
                 font-weight: 600;
@@ -284,7 +285,7 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                 }
                                 Text {
-                                    text: root.has-file ? "Click to choose another file" : "Markdown, text, HTML, Word, or image";
+                                    text: root.has-file ? "Click to choose another file" : "Markdown, text, HTML, Word, PDF, or image";
                                     color: #858d86;
                                     font-size: 11px;
                                     overflow: elide;

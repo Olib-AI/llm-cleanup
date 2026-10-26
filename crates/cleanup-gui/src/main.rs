@@ -1,4 +1,5 @@
-//! `aiclean-gui` — a polished native desktop app over `cleanup-core`, built with Slint.
+//! LLM Cleanup by Olib AI (`aiclean-gui`) — a polished native desktop app over
+//! `cleanup-core`, built with Slint.
 //! Choose a file, pick a level and an output format, see how many AI fingerprints were cleaned,
 //! save. Thin frontend: all work is done by the same core/rules/convert as the CLI. (Native OS
 //! file-drop is still experimental in Slint 1.16, so the drop card opens a file picker on click.)
@@ -10,11 +11,22 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cleanup_convert::Target;
-use cleanup_core::{CleanupLevel, Ctx, clean};
+use cleanup_core::{CleanupLevel, Ctx, clean, cleaned_sibling_path, ensure_output_extension};
 use cleanup_formats::formatter_for_path;
 use cleanup_rules::builtin_rules;
 
 slint::include_modules!();
+
+/// User-visible application name (window title, bundle display name).
+pub const APP_NAME: &str = "LLM Cleanup by Olib AI";
+
+/// Resolve the path a cleaned file is really written to. The native save dialog does
+/// not guarantee an extension on every platform (and a user can delete or stale-edit
+/// the suggested one), so the chosen path is always reconciled with the extension of
+/// the format being written before any bytes touch disk.
+fn resolve_save_path(chosen: &std::path::Path, out_ext: &str) -> PathBuf {
+    ensure_output_extension(chosen, out_ext)
+}
 
 #[derive(Default)]
 struct State {
@@ -112,6 +124,12 @@ fn friendly_rule_name(rule_id: &str) -> String {
         "markers.chat-ui-disclaimer" | "markers.chat-ui-disclaimer.strip" => "Chat UI disclaimers",
         "markers.chat-ui-residue" => "Chat interface residue",
         "markers.html-tags" => "Raw HTML tags",
+        "container.pdf-info-metadata" => "PDF document information",
+        "container.pdf-xmp-metadata" => "PDF XMP metadata",
+        "container.pdf-embedded-image" => "Embedded image provenance",
+        "container.pdf-undecodable-text" => "Text without a Unicode map",
+        "container.pdf-no-extractable-text" => "Scanned or image-only pages",
+        "container.pdf-signature" => "Digital signature",
         _ => {
             let mut parts: Vec<&str> = rule_id.split('.').skip(1).collect();
             if parts.last().is_some_and(|part| {
@@ -143,6 +161,10 @@ fn main() -> Result<(), slint::PlatformError> {
         .select()?;
 
     let ui = AppWindow::new()?;
+    // Show the workspace version (Cargo.toml) in the header; the Slint default is a
+    // fallback for design-time previews only, so the two can never drift silently.
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    let _ = APP_NAME;
     register_fonts();
     let state = Rc::new(RefCell::new(State::default()));
 
@@ -154,8 +176,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 .add_filter(
                     "documents & media",
                     &[
-                        "md", "markdown", "txt", "html", "htm", "docx", "png", "jpg", "jpeg",
-                        "webp", "svg",
+                        "md", "markdown", "txt", "html", "htm", "docx", "pdf", "png", "jpg",
+                        "jpeg", "webp", "svg",
                     ],
                 )
                 .pick_file()
@@ -188,23 +210,33 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_clean_and_save(move || {
-            let (data, suggested) = {
+            let (data, suggested, out_ext) = {
                 let s = state.borrow();
                 let Some(data) = s.cleaned.clone() else {
                     return;
                 };
-                let stem = s
-                    .file
-                    .as_ref()
-                    .and_then(|p| p.file_stem())
-                    .and_then(|x| x.to_str())
-                    .map(|x| format!("{x}.cleaned"))
-                    .unwrap_or_else(|| "cleaned".to_string());
-                (data, format!("{stem}.{}", s.out_ext))
+                let suggested = match &s.file {
+                    Some(input) => cleaned_sibling_path(input, &s.out_ext)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("cleaned.{}", s.out_ext)),
+                    None => format!("cleaned.{}", s.out_ext),
+                };
+                (data, suggested, s.out_ext.clone())
             };
-            if let Some(path) = rfd::FileDialog::new().set_file_name(suggested).save_file()
-                && let Some(ui) = ui_weak.upgrade()
-            {
+            // Offer the filter as a hint, but never trust the dialog (or the user's
+            // edit of the name) to keep the extension: `resolve_save_path` appends a
+            // missing extension and corrects a stale one before we write.
+            let Some(chosen) = rfd::FileDialog::new()
+                .add_filter("cleaned file", &[out_ext.as_str()])
+                .set_file_name(suggested)
+                .save_file()
+            else {
+                return;
+            };
+            let path = resolve_save_path(&chosen, &out_ext);
+            if let Some(ui) = ui_weak.upgrade() {
                 let msg = match std::fs::write(&path, &data) {
                     Ok(()) => format!("Saved to {}", path.display()),
                     Err(e) => format!("Save failed: {e}"),
@@ -307,7 +339,7 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("txt")
-            .to_string();
+            .to_ascii_lowercase();
         let target = target_from_idx(target_idx).filter(|t| !t.is_same_as(fmt.id()));
         let (final_bytes, out_ext) = if let Some(t) = target {
             let (b, rep) = cleanup_convert::convert(fmt.id(), &out, t)?;
@@ -368,7 +400,8 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::friendly_rule_name;
+    use super::{APP_NAME, friendly_rule_name, resolve_save_path};
+    use std::path::Path;
 
     #[test]
     fn report_labels_hide_internal_rule_ids() {
@@ -383,6 +416,27 @@ mod tests {
         assert_eq!(
             friendly_rule_name("unicode.spaces.normalize"),
             "Unusual spaces"
+        );
+    }
+
+    #[test]
+    fn app_is_named_and_save_paths_always_carry_the_output_extension() {
+        assert_eq!(APP_NAME, "LLM Cleanup by Olib AI");
+        assert_eq!(
+            resolve_save_path(Path::new("report"), "pdf"),
+            Path::new("report.pdf")
+        );
+        assert_eq!(
+            resolve_save_path(Path::new("report.cleaned"), "docx"),
+            Path::new("report.cleaned.docx")
+        );
+        assert_eq!(
+            resolve_save_path(Path::new("report.docx"), "md"),
+            Path::new("report.md")
+        );
+        assert_eq!(
+            resolve_save_path(Path::new("Report.PDF"), "pdf"),
+            Path::new("Report.PDF")
         );
     }
 }

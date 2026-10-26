@@ -9,6 +9,7 @@
 pub mod error;
 pub mod ir;
 pub mod level;
+pub mod output_path;
 pub mod pipeline;
 pub mod splice;
 pub mod traits;

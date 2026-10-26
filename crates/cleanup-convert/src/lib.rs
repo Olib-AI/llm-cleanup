@@ -14,7 +14,8 @@ mod xml_text;
 
 use cleanup_core::FormatId;
 
-/// A conversion target (output format). Unlike [`FormatId`], includes `Pdf` (write-only).
+/// A conversion target (output format). PDF is both a readable input (`FormatId::Pdf`,
+/// cleaned natively in place) and an output target rendered from other formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Markdown,
@@ -42,6 +43,7 @@ impl Target {
             (Target::Markdown, FormatId::Markdown)
                 | (Target::Text, FormatId::PlainText)
                 | (Target::Docx, FormatId::Docx)
+                | (Target::Pdf, FormatId::Pdf)
         )
     }
 
@@ -133,6 +135,10 @@ mod tests {
             .0;
         let mut sources = sources.to_vec();
         sources.push((FormatId::Docx, docx));
+        let pdf = to_pdf::convert(FormatId::PlainText, b"PDF source fixture")
+            .expect("PDF fixture")
+            .0;
+        sources.push((FormatId::Pdf, pdf));
         sources.push((
             FormatId::Html,
             b"<html><body><h1>Bonjour</h1><p>\xc2\xa1Hola, mundo!</p></body></html>".to_vec(),
@@ -153,7 +159,7 @@ mod tests {
                         std::str::from_utf8(&converted).expect("text target is UTF-8");
                     }
                 }
-                if to != Target::Pdf && to.is_same_as(from) {
+                if to.is_same_as(from) {
                     assert!(!report.lossy, "identity conversion should remain lossless");
                 }
             }

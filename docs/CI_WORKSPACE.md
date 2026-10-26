@@ -28,7 +28,7 @@ A multi-mode workflow triggered via `workflow_dispatch` (once on `main`) or auto
 
 | Mode | What it runs |
 | --- | --- |
-| `full` *(default)* | Toolchain pin check (`1.99.1`), `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`, `cargo check --no-default-features`, `cargo audit --deny unsound`, release build (`aiclean` + `aiclean-gui`), and `aiclean` CLI smoke tests on `.md`, `.txt`, and `.docx` samples |
+| `full` *(default)* | Toolchain pin check (`1.99.1`), `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --workspace`, `cargo check --no-default-features`, `cargo audit --deny unsound`, release build (`aiclean` + `aiclean-gui`), and `aiclean` CLI smoke tests on `.md`, `.txt`, `.docx`, and `.pdf` samples (including extensionless `-o` handling) |
 | `check` | Fast `rustfmt` check + `clippy` (`-D warnings`) + `--no-default-features` check (supports optional `-p <package>`) |
 | `test` | `cargo test --locked` across the workspace or `-p <package>` with optional test filter `args` |
 | `build` | Cross-OS release build (`ubuntu-latest`, `macos-latest`, `windows-latest`, or `all`) plus macOS `.app` bundle and Windows MSVC runtime verification |
