@@ -9,6 +9,7 @@ pub enum FormatId {
     Docx,
     Html,
     Image,
+    Pdf,
 }
 
 impl FormatId {
@@ -19,6 +20,7 @@ impl FormatId {
             FormatId::Docx => "docx",
             FormatId::Html => "html",
             FormatId::Image => "image",
+            FormatId::Pdf => "pdf",
         }
     }
 }

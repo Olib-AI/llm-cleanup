@@ -1,4 +1,4 @@
-use crate::{Docx, Html, ImageFormat, Markdown, PlainText};
+use crate::{Docx, Html, ImageFormat, Markdown, Pdf, PlainText};
 use cleanup_core::{CoreError, Format, FormatId, Result};
 use std::path::Path;
 
@@ -9,6 +9,7 @@ pub fn format_for_path(path: &Path) -> Option<FormatId> {
         "md" | "markdown" | "mdown" | "mkd" => FormatId::Markdown,
         "txt" | "text" => FormatId::PlainText,
         "docx" => FormatId::Docx,
+        "pdf" => FormatId::Pdf,
         "html" | "htm" | "xhtml" => FormatId::Html,
         "png" | "jpg" | "jpeg" | "webp" | "svg" => FormatId::Image,
         _ => return None,
@@ -21,6 +22,7 @@ pub fn formatter_for_path(path: &Path) -> Result<Box<dyn Format>> {
         Some(FormatId::Markdown) => Ok(Box::new(Markdown)),
         Some(FormatId::PlainText) => Ok(Box::new(PlainText)),
         Some(FormatId::Docx) => Ok(Box::new(Docx)),
+        Some(FormatId::Pdf) => Ok(Box::new(Pdf)),
         Some(FormatId::Html) => Ok(Box::new(Html)),
         Some(FormatId::Image) => Ok(Box::new(ImageFormat)),
         None => Err(CoreError::UnsupportedFormat(path.display().to_string())),

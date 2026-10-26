@@ -9,6 +9,7 @@
 pub mod error;
 pub mod ir;
 pub mod level;
+pub mod output_path;
 pub mod pipeline;
 pub mod splice;
 pub mod traits;
@@ -17,6 +18,7 @@ pub mod url;
 pub use error::{CoreError, Result};
 pub use ir::{DecodedSegment, DocMeta, Document, FormatId, Newline, ProseSpan, SpanAnchor};
 pub use level::CleanupLevel;
+pub use output_path::{cleaned_sibling_path, ensure_output_extension};
 pub use pipeline::{CleanReport, clean};
 pub use splice::{render_byte_spliced, splice};
 pub use traits::{ContainerFinding, Ctx, Edit, EditSet, Finding, Format, Rule};

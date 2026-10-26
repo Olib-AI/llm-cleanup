@@ -6,6 +6,7 @@ pub mod docx;
 pub mod html;
 pub mod image;
 pub mod markdown;
+pub mod pdf;
 pub mod sniff;
 pub mod text;
 
@@ -13,5 +14,6 @@ pub use docx::Docx;
 pub use html::Html;
 pub use image::ImageFormat;
 pub use markdown::Markdown;
+pub use pdf::Pdf;
 pub use sniff::{format_for_path, formatter_for_path};
 pub use text::PlainText;

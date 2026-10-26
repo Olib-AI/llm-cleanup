@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Native desktop app (aiclean-gui) for llm-cleanup, built with Slint."
+description = "LLM Cleanup by Olib AI - native desktop app (aiclean-gui), built with Slint."
 
 [[bin]]
 name = "aiclean-gui"

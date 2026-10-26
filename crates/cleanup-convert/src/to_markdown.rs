@@ -1,6 +1,6 @@
 //! Convert to Markdown.
 
-use crate::to_text::html_paragraph_texts;
+use crate::to_text::{html_paragraph_texts, pdf_paragraph_texts};
 use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
@@ -43,6 +43,19 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
                     lossy: true,
                     warnings: vec![
                         "extracted HTML blocks as paragraphs; inline HTML tags and styles are stripped".to_string(),
+                    ],
+                },
+            ))
+        }
+        FormatId::Pdf => {
+            let md = pdf_paragraph_texts(src)?.join("\n\n") + "\n";
+            Ok((
+                md.into_bytes(),
+                ConvertReport {
+                    engine: "pdf-extract".into(),
+                    lossy: true,
+                    warnings: vec![
+                        "extracted PDF prose in reading order; page layout, headings, tables, links and images are not reconstructed as Markdown (use same-format PDF output to preserve layout)".to_string(),
                     ],
                 },
             ))

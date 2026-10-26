@@ -389,13 +389,16 @@ jobs:
               run_step "cargo audit --deny unsound" cargo audit --deny unsound || true
               if run_step "cargo build --release (CLI + GUI)" cargo build --workspace --release --locked; then
                 run_step "aiclean coverage" ./target/release/aiclean coverage || true
-                run_step "aiclean smoke clean (.md/.txt/.docx)" bash -c '
+                run_step "aiclean smoke clean (.md/.txt/.docx/.pdf)" bash -c '
                   set -euo pipefail
                   tmp="$(mktemp -d)"
                   ./target/release/aiclean clean samples/markdown/article.md -o "$tmp/article.md"
                   ./target/release/aiclean clean samples/txt/hidden_chars.txt -o "$tmp/hidden.txt"
                   ./target/release/aiclean clean samples/docx/report.docx -o "$tmp/report.docx"
                   ./target/release/aiclean convert "$tmp/report.docx" -o "$tmp/report.md"
+                  ./target/release/aiclean clean samples/pdf/report.pdf --level aggressive -o "$tmp/report-no-ext"
+                  test -f "$tmp/report-no-ext.pdf"
+                  ./target/release/aiclean clean samples/pdf/report.pdf -o "$tmp/report.txt"
                   ls -lh "$tmp"
                 ' || true
               fi

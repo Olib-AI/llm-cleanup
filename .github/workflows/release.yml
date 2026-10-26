@@ -149,7 +149,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          APP="dist/llm-cleanup.app"
+          APP="dist/LLM Cleanup by Olib AI.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp target/release/aiclean-gui "$APP/Contents/MacOS/aiclean-gui"
           cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -313,7 +313,7 @@ jobs:
             sha256 \"{cask_sha}\"
 
             url \"https://github.com/Olib-AI/llm-cleanup/releases/download/v#{{version}}/llm-cleanup-macos.zip\"
-            name \"llm-cleanup\"
+            name \"LLM Cleanup by Olib AI\"
             desc \"Remove AI-generated fingerprints from documents\"
             homepage \"https://www.olib.ai/\"
 
@@ -324,7 +324,7 @@ jobs:
 
             depends_on macos: :ventura
 
-            app \"llm-cleanup.app\"
+            app \"LLM Cleanup by Olib AI.app\"
           end
           ''')
 

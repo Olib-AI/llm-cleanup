@@ -39,7 +39,7 @@ pub fn assert_idempotent(fmt: &dyn Format, input: &str, level: CleanupLevel) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cleanup_formats::{Docx, Markdown, PlainText};
+    use cleanup_formats::{Docx, Markdown, Pdf, PlainText};
 
     #[test]
     fn markdown_preserves_structure_and_cleans_prose() {
@@ -841,5 +841,54 @@ mod tests {
             "dewatermark must be strictly idempotent"
         );
         assert_eq!(rep2.edits_applied, 0);
+    }
+
+    #[test]
+    fn pdf_sample_cleans_in_place_preserving_layout_images_and_metadata_rules() {
+        // The committed sample exercises the whole PDF path at once: Flate content
+        // streams, WinAnsi punctuation, a split TJ run, a leaked chat token, an
+        // embedded image XObject, an AI-stamped Info dictionary, and AI XMP.
+        let sample = include_bytes!("../../../samples/pdf/report.pdf");
+        let (out, report) = analyze_bytes(&Pdf, sample, CleanupLevel::Aggressive);
+        assert!(report.changed, "{report:?}");
+        assert!(report.edits_applied >= 5, "{report:?}");
+        assert!(out.starts_with(b"%PDF-"));
+
+        let reparsed = Pdf.parse(&out).expect("cleaned PDF reparses");
+        let prose = reparsed
+            .spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(prose.contains("\"Quarterly results\""), "{prose}");
+        assert!(!prose.contains('\u{201C}'), "{prose}");
+        assert!(!prose.contains('\u{2014}'), "{prose}");
+        assert!(!prose.contains('\u{2026}'), "{prose}");
+        assert!(!prose.contains('\u{00A0}'), "{prose}");
+        assert!(!prose.contains("<|im_end|>"), "{prose}");
+        assert!(prose.contains("This sentence was split"), "{prose}");
+        assert!(
+            report
+                .container
+                .iter()
+                .filter(|finding| finding.applied)
+                .count()
+                >= 2,
+            "Info + XMP provenance scrubbed at Aggressive: {report:?}"
+        );
+
+        // The image and page structure remain in the repacked file, and cleaning
+        // the cleaned copy is a byte-identical no-op.
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("/Subtype /Image"), "image XObject preserved");
+        assert!(
+            text.contains("/MediaBox [0 0 612 792]"),
+            "page box preserved"
+        );
+        let (twice, second) = analyze_bytes(&Pdf, &out, CleanupLevel::Aggressive);
+        assert_eq!(second.edits_applied, 0, "{second:?}");
+        assert!(!second.changed, "{second:?}");
+        assert_eq!(twice, out);
     }
 }
