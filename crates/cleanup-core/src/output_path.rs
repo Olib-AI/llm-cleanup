@@ -13,22 +13,8 @@ use std::path::{Path, PathBuf};
 /// understood to be a *format claim* (e.g. the `.docx` in `report.docx`); anything else
 /// (`report.v1`, `notes.backup`, `draft.cleaned`) is understood to be part of the stem.
 const KNOWN_EXTENSIONS: &[&str] = &[
-    "md",
-    "markdown",
-    "mdown",
-    "mkd",
-    "txt",
-    "text",
-    "html",
-    "htm",
-    "xhtml",
-    "docx",
-    "pdf",
-    "png",
-    "jpg",
-    "jpeg",
-    "webp",
-    "svg",
+    "md", "markdown", "mdown", "mkd", "txt", "text", "html", "htm", "xhtml", "docx", "pdf", "png",
+    "jpg", "jpeg", "webp", "svg",
 ];
 
 /// Interchangeable spellings of one format. Keeping `report.markdown` when the writer
@@ -45,9 +31,7 @@ fn extension_family(ext: &str) -> &str {
 }
 
 fn normalize_ext(ext: &str) -> String {
-    ext.trim()
-        .trim_start_matches('.')
-        .to_ascii_lowercase()
+    ext.trim().trim_start_matches('.').to_ascii_lowercase()
 }
 
 /// Return `path` guaranteed to carry `expected_ext` (without a leading dot):
@@ -190,18 +174,15 @@ mod tests {
     #[test]
     fn cleaned_sibling_names_the_format_it_writes() {
         assert_eq!(
-            cleaned_sibling_path(Path::new("docs/report.docx"), "docx")
-                .to_string_lossy(),
+            cleaned_sibling_path(Path::new("docs/report.docx"), "docx").to_string_lossy(),
             "docs/report.cleaned.docx"
         );
         assert_eq!(
-            cleaned_sibling_path(Path::new("docs/report.docx"), "pdf")
-                .to_string_lossy(),
+            cleaned_sibling_path(Path::new("docs/report.docx"), "pdf").to_string_lossy(),
             "docs/report.cleaned.pdf"
         );
         assert_eq!(
-            cleaned_sibling_path(Path::new("docs/report.pdf"), "md")
-                .to_string_lossy(),
+            cleaned_sibling_path(Path::new("docs/report.pdf"), "md").to_string_lossy(),
             "docs/report.cleaned.md"
         );
     }

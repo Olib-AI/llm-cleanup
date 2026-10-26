@@ -5,8 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use cleanup_convert::Target;
 use cleanup_core::{
-    CleanupLevel, Ctx, Document, FormatId, clean, cleaned_sibling_path,
-    ensure_output_extension,
+    CleanupLevel, Ctx, Document, FormatId, clean, cleaned_sibling_path, ensure_output_extension,
 };
 use cleanup_formats::{format_for_path, formatter_for_path};
 use cleanup_rules::{Pack, load_pack_str, measure_disruption, rules_with_packs};
@@ -552,10 +551,7 @@ fn source_ext(input: &Path, format: FormatId) -> String {
 
 /// `foo.md` -> `foo.cleaned.md` (extension guaranteed by `cleaned_sibling_path`).
 fn cleaned_path(input: &Path) -> PathBuf {
-    let ext = input
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("txt");
+    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("txt");
     cleaned_sibling_path(input, ext)
 }
 

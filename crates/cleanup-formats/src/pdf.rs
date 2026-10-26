@@ -187,7 +187,9 @@ fn parse_literal_string_bytes(bytes: &[u8], start: usize) -> Result<(Vec<u8>, us
             other => out.push(other),
         }
     }
-    Err(CoreError::Parse("unterminated PDF literal string".to_string()))
+    Err(CoreError::Parse(
+        "unterminated PDF literal string".to_string(),
+    ))
 }
 
 struct Lexer<'a> {
@@ -411,14 +413,22 @@ impl<'a> Lexer<'a> {
 
     fn parse_dict(&mut self) -> Result<Value> {
         self.skip_ws();
-        if !self.bytes.get(self.pos..self.pos + 2).is_some_and(|s| s == b"<<") {
+        if !self
+            .bytes
+            .get(self.pos..self.pos + 2)
+            .is_some_and(|s| s == b"<<")
+        {
             return Err(CoreError::Parse("expected PDF dictionary".to_string()));
         }
         self.pos += 2;
         let mut entries = Vec::new();
         loop {
             self.skip_ws();
-            if self.bytes.get(self.pos..self.pos + 2).is_some_and(|s| s == b">>") {
+            if self
+                .bytes
+                .get(self.pos..self.pos + 2)
+                .is_some_and(|s| s == b">>")
+            {
                 self.pos += 2;
                 break;
             }
@@ -549,7 +559,9 @@ fn parse_xref_table_at(
         if lexer.consume_keyword("trailer") {
             let dict = lexer.parse_value()?;
             let Some(entries_here) = as_dict(&dict).cloned() else {
-                return Err(CoreError::Parse("PDF trailer is not a dictionary".to_string()));
+                return Err(CoreError::Parse(
+                    "PDF trailer is not a dictionary".to_string(),
+                ));
             };
             merge_trailer(trailer, &entries_here);
             return Ok(entries_here);
@@ -563,7 +575,9 @@ fn parse_xref_table_at(
             .and_then(|token| token.parse::<u32>().ok())
             .ok_or_else(|| CoreError::Parse("malformed PDF xref count".to_string()))?;
         if count as usize > MAX_OBJECTS {
-            return Err(CoreError::Parse("PDF xref claims too many objects".to_string()));
+            return Err(CoreError::Parse(
+                "PDF xref claims too many objects".to_string(),
+            ));
         }
         for i in 0..count {
             let entry_offset = lexer
@@ -619,7 +633,9 @@ fn parse_xref_stream_at(
         _ => Vec::new(),
     };
     if widths.len() != 3 {
-        return Err(CoreError::Parse("PDF xref stream has no /W array".to_string()));
+        return Err(CoreError::Parse(
+            "PDF xref stream has no /W array".to_string(),
+        ));
     }
     let size = dict_get(&dict, "Size").and_then(as_usize).unwrap_or(0);
     let mut index: Vec<(u32, u32)> = Vec::new();
@@ -636,7 +652,9 @@ fn parse_xref_stream_at(
     let mut cursor = 0usize;
     for (first, count) in index {
         if count as usize > MAX_OBJECTS {
-            return Err(CoreError::Parse("PDF xref stream claims too many objects".to_string()));
+            return Err(CoreError::Parse(
+                "PDF xref stream claims too many objects".to_string(),
+            ));
         }
         for i in 0..count {
             let field1 = read_be_int(&data, &mut cursor, widths[0]).unwrap_or(0);
@@ -744,7 +762,9 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
         find_subslice(bytes, 0, b"%PDF-").filter(|offset| *offset < 1024)
     };
     if header.is_none() {
-        return Err(CoreError::Parse("not a PDF file (missing %PDF- header)".to_string()));
+        return Err(CoreError::Parse(
+            "not a PDF file (missing %PDF- header)".to_string(),
+        ));
     }
 
     let mut entries: BTreeMap<u32, XrefEntry> = BTreeMap::new();
@@ -755,7 +775,10 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
     let mut search_from = 0usize;
     while let Some(at) = find_subslice(bytes, search_from, b"startxref") {
         let mut lexer = Lexer::at(bytes, at + b"startxref".len());
-        if let Some(value) = lexer.parse_number_token().and_then(|t| t.parse::<usize>().ok()) {
+        if let Some(value) = lexer
+            .parse_number_token()
+            .and_then(|t| t.parse::<usize>().ok())
+        {
             if value <= MAX_XREF_OFFSET {
                 current = Some(value);
             }
@@ -805,7 +828,9 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
             XrefEntry::Free => {}
         }
         if objects.len() > MAX_OBJECTS {
-            return Err(CoreError::Parse("PDF contains too many objects".to_string()));
+            return Err(CoreError::Parse(
+                "PDF contains too many objects".to_string(),
+            ));
         }
     }
 
@@ -847,10 +872,16 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
         let mut lexer = Lexer::new(&decoded[..first]);
         let mut pairs: Vec<(u32, usize)> = Vec::new();
         for _ in 0..count {
-            let Some(num) = lexer.parse_number_token().and_then(|t| t.parse::<u32>().ok()) else {
+            let Some(num) = lexer
+                .parse_number_token()
+                .and_then(|t| t.parse::<u32>().ok())
+            else {
                 break;
             };
-            let Some(at) = lexer.parse_number_token().and_then(|t| t.parse::<usize>().ok()) else {
+            let Some(at) = lexer
+                .parse_number_token()
+                .and_then(|t| t.parse::<usize>().ok())
+            else {
                 break;
             };
             pairs.push((num, at));
@@ -872,7 +903,12 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
             pairs
                 .iter()
                 .enumerate()
-                .map(|(i, _)| (i as u32, extracted.get(i).map(|(_, b)| b.clone()).unwrap_or_default()))
+                .map(|(i, _)| {
+                    (
+                        i as u32,
+                        extracted.get(i).map(|(_, b)| b.clone()).unwrap_or_default(),
+                    )
+                })
                 .collect(),
         );
     }
@@ -952,9 +988,17 @@ fn apply_predictor(data: Vec<u8>, parms: &[(String, Value)]) -> Result<Vec<u8>> 
     if predictor <= 1 {
         return Ok(data);
     }
-    let columns = dict_get(parms, "Columns").and_then(as_usize).unwrap_or(1).max(1);
-    let colors = dict_get(parms, "Colors").and_then(as_usize).unwrap_or(1).max(1);
-    let bits = dict_get(parms, "BitsPerComponent").and_then(as_usize).unwrap_or(8);
+    let columns = dict_get(parms, "Columns")
+        .and_then(as_usize)
+        .unwrap_or(1)
+        .max(1);
+    let colors = dict_get(parms, "Colors")
+        .and_then(as_usize)
+        .unwrap_or(1)
+        .max(1);
+    let bits = dict_get(parms, "BitsPerComponent")
+        .and_then(as_usize)
+        .unwrap_or(8);
     if bits != 8 {
         return Err(CoreError::Parse(
             "unsupported PDF stream predictor (BitsPerComponent is not 8)".to_string(),
@@ -1206,24 +1250,23 @@ impl FontProfile {
 }
 
 const WINANSI_HIGH: [u32; 32] = [
-    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
-    0x2039, 0x0152, 0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
-    0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039,
+    0x0152, 0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
 ];
 
 const MACROMAN_HIGH: [u32; 128] = [
-    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4,
-    0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF,
-    0x00F1, 0x00F3, 0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020,
-    0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4,
-    0x00A8, 0x2260, 0x00C6, 0x00D8, 0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202,
-    0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF, 0x00A1,
-    0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3,
-    0x00D5, 0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA,
-    0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02, 0x2021, 0x00B7, 0x201A,
-    0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC,
-    0x00D3, 0x00D4, 0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF,
-    0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3,
+    0x00E5, 0x00E7, 0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3,
+    0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020, 0x00B0, 0x00A2, 0x00A3,
+    0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+    0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA,
+    0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB,
+    0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D,
+    0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+    0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE,
+    0x00CF, 0x00CC, 0x00D3, 0x00D4, 0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC,
+    0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
 ];
 
 fn winansi_char(code: u8) -> Option<char> {
@@ -1253,7 +1296,9 @@ fn glyph_name_to_string(name: &str) -> Option<String> {
         }
         return Some(out);
     }
-    if let Some(hex) = name.strip_prefix('u').filter(|rest| (4..=6).contains(&rest.len()))
+    if let Some(hex) = name
+        .strip_prefix('u')
+        .filter(|rest| (4..=6).contains(&rest.len()))
         && hex.chars().all(|ch| ch.is_ascii_hexdigit())
     {
         return char::from_u32(u32::from_str_radix(hex, 16).ok()?).map(|ch| ch.to_string());
@@ -1486,7 +1531,9 @@ fn lex_cmap(data: &[u8]) -> Vec<CmapToken> {
 }
 
 fn hex_bytes_to_u32(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0u32, |acc, byte| (acc << 8) | u32::from(*byte))
+    bytes
+        .iter()
+        .fold(0u32, |acc, byte| (acc << 8) | u32::from(*byte))
 }
 
 fn utf16be_to_string(bytes: &[u8]) -> String {
@@ -1576,7 +1623,9 @@ fn parse_tounicode_cmap(data: &[u8]) -> (HashMap<u32, String>, Option<usize>) {
                     }
                 };
                 index += 1;
-                let count = (high.saturating_sub(low) as usize).saturating_add(1).min(65_536);
+                let count = (high.saturating_sub(low) as usize)
+                    .saturating_add(1)
+                    .min(65_536);
                 match tokens.get(index).cloned() {
                     Some(CmapToken::Hex(start)) => {
                         index += 1;
@@ -1613,7 +1662,9 @@ fn parse_tounicode_cmap(data: &[u8]) -> (HashMap<u32, String>, Option<usize>) {
 }
 
 fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
-    let subtype = dict_get(font_dict, "Subtype").and_then(as_name).unwrap_or("");
+    let subtype = dict_get(font_dict, "Subtype")
+        .and_then(as_name)
+        .unwrap_or("");
 
     if let Some(tounicode) = dict_get(font_dict, "ToUnicode")
         && let Some(reference) = as_ref(tounicode)
@@ -1973,7 +2024,9 @@ fn parse_content_literal(bytes: &[u8], start: usize) -> Result<(ContentString, u
             boundaries.push(pos - inner_start);
         }
     }
-    Err(CoreError::Parse("unterminated string in PDF content stream".to_string()))
+    Err(CoreError::Parse(
+        "unterminated string in PDF content stream".to_string(),
+    ))
 }
 
 fn parse_content_hex(bytes: &[u8], start: usize) -> Result<(ContentString, usize)> {
@@ -2012,7 +2065,9 @@ fn parse_content_hex(bytes: &[u8], start: usize) -> Result<(ContentString, usize
             digits.push((value, pos));
         }
     }
-    Err(CoreError::Parse("unterminated hex string in PDF content stream".to_string()))
+    Err(CoreError::Parse(
+        "unterminated hex string in PDF content stream".to_string(),
+    ))
 }
 
 struct ContentLexer<'a> {
@@ -2130,9 +2185,7 @@ impl<'a> ContentLexer<'a> {
             _ => {
                 let start = self.pos;
                 while let Some(&inner) = self.bytes.get(self.pos) {
-                    if is_pdf_ws(inner)
-                        || is_pdf_delimiter(inner)
-                        || matches!(inner, b'\'' | b'"')
+                    if is_pdf_ws(inner) || is_pdf_delimiter(inner) || matches!(inner, b'\'' | b'"')
                     {
                         break;
                     }
@@ -2168,8 +2221,7 @@ impl<'a> ContentLexer<'a> {
                     let data_start = self.pos;
                     let mut search = data_start;
                     while let Some(at) = find_subslice(self.bytes, search, b"EI") {
-                        let before_ok =
-                            at > data_start && is_pdf_ws(self.bytes[at - 1]);
+                        let before_ok = at > data_start && is_pdf_ws(self.bytes[at - 1]);
                         let after_ok = self
                             .bytes
                             .get(at + 2)
@@ -2218,11 +2270,7 @@ fn make_segment(
             .cloned()
             .unwrap_or_else(|| "\u{FFFD}".to_string());
         let source_start = string.boundaries.get(byte_index).copied().unwrap_or(0);
-        let source_end = string
-            .boundaries
-            .get(end)
-            .copied()
-            .unwrap_or(source_start);
+        let source_end = string.boundaries.get(end).copied().unwrap_or(source_start);
         text.push_str(&unicode);
         while boundaries.len() < text.len() {
             boundaries.push(source_start);
@@ -2391,7 +2439,13 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
     let mut seen: BTreeSet<Ref> = BTreeSet::new();
     for page in &pages {
         for &reference in &page.content_refs {
-            push_content_stream(&parsed, &mut streams, &mut seen, reference, page.fonts.clone());
+            push_content_stream(
+                &parsed,
+                &mut streams,
+                &mut seen,
+                reference,
+                page.fonts.clone(),
+            );
         }
     }
     let mut visited_forms: BTreeSet<Ref> = BTreeSet::new();
@@ -2541,11 +2595,7 @@ fn build_stream_body(
     };
     let mut dict = original_dict.to_vec();
     if compress {
-        set_dict_entry(
-            &mut dict,
-            "Filter",
-            Value::Name("FlateDecode".to_string()),
-        );
+        set_dict_entry(&mut dict, "Filter", Value::Name("FlateDecode".to_string()));
     } else {
         remove_dict_entries(&mut dict, &["Filter", "F"]);
     }
@@ -2614,7 +2664,10 @@ fn repack_pdf(
         .map(|at| header_end + at + 1)
         .unwrap_or(header_end);
     let second_line = &original[header_end..second_line_end];
-    if second_line.starts_with(b"%") && !second_line.starts_with(b"%PDF-") && !second_line.starts_with(b"%%EOF") {
+    if second_line.starts_with(b"%")
+        && !second_line.starts_with(b"%PDF-")
+        && !second_line.starts_with(b"%%EOF")
+    {
         out.extend_from_slice(second_line);
     } else {
         out.extend_from_slice(b"%\xe2\xe3\xcf\xd3\n");
@@ -2627,7 +2680,11 @@ fn repack_pdf(
         }
         let offset = out.len();
         out.extend_from_slice(
-            format!("{} {} obj\n", object.reference.num, object.reference.generation).as_bytes(),
+            format!(
+                "{} {} obj\n",
+                object.reference.num, object.reference.generation
+            )
+            .as_bytes(),
         );
         match replacements.get(&object.reference) {
             Some(body) => out.extend_from_slice(body),
@@ -2644,9 +2701,7 @@ fn repack_pdf(
     while index < numbers.len() {
         let first = numbers[index];
         let mut count = 1usize;
-        while index + count < numbers.len()
-            && numbers[index + count] == first + count as u32
-        {
+        while index + count < numbers.len() && numbers[index + count] == first + count as u32 {
             count += 1;
         }
         out.extend_from_slice(format!("{first} {count}\n").as_bytes());
@@ -2838,7 +2893,9 @@ fn container_targets(parsed: &ParsedPdf) -> ContainerTargets {
     if let Some(info) = parsed.info
         && let Some(dict) = parsed.object_dict(info)
     {
-        for field in ["Title", "Author", "Creator", "Producer", "Subject", "Keywords"] {
+        for field in [
+            "Title", "Author", "Creator", "Producer", "Subject", "Keywords",
+        ] {
             if let Some(Value::Str(bytes)) = dict_get(dict, field) {
                 let value = decode_pdf_text_string(bytes);
                 if !value.trim().is_empty() && ai_sign_in(&value).is_some() {
@@ -2873,7 +2930,10 @@ fn container_targets(parsed: &ParsedPdf) -> ContainerTargets {
         if dict_get(dict, "Subtype").and_then(as_name) != Some("Image") {
             continue;
         }
-        if !dict_filters(dict).iter().any(|f| f == "DCTDecode" || f == "DCT") {
+        if !dict_filters(dict)
+            .iter()
+            .any(|f| f == "DCTDecode" || f == "DCT")
+        {
             continue;
         }
         if let Some(raw) = object.stream.as_deref()
@@ -2958,21 +3018,17 @@ impl Format for Pdf {
                             CoreError::SelfCheck("PDF edit start outside segment".to_string())
                         })?;
                 let byte_end = segment.local_range.start
-                    + segment
-                        .boundaries
-                        .get(local_end)
-                        .copied()
-                        .ok_or_else(|| {
-                            CoreError::SelfCheck("PDF edit end outside segment".to_string())
-                        })?;
+                    + segment.boundaries.get(local_end).copied().ok_or_else(|| {
+                        CoreError::SelfCheck("PDF edit end outside segment".to_string())
+                    })?;
                 let replacement = if first {
                     let profile = derived
                         .streams
                         .get(segment.stream_index)
                         .and_then(|stream| stream.fonts.get(&segment.font_name));
-                    match profile
-                        .and_then(|profile| encode_replacement(profile, &edit.replacement, segment.is_hex))
-                    {
+                    match profile.and_then(|profile| {
+                        encode_replacement(profile, &edit.replacement, segment.is_hex)
+                    }) {
                         Some(bytes) => bytes,
                         None => {
                             encodable = false;
@@ -2983,11 +3039,7 @@ impl Format for Pdf {
                     Vec::new()
                 };
                 first = false;
-                projected.push((
-                    segment.stream_index,
-                    byte_start..byte_end,
-                    replacement,
-                ));
+                projected.push((segment.stream_index, byte_start..byte_end, replacement));
             }
             if !encodable {
                 continue;
@@ -3047,8 +3099,8 @@ impl Format for Pdf {
                 .filter(|segment| segment.stream_index == index)
                 .map(|segment| (segment.local_range.clone(), b"TEXT".to_vec()))
                 .collect();
-            let canonical = splice_bytes(&stream.decoded, &edits)
-                .unwrap_or_else(|_| stream.decoded.clone());
+            let canonical =
+                splice_bytes(&stream.decoded, &edits).unwrap_or_else(|_| stream.decoded.clone());
             canonical_content.insert(
                 stream.reference,
                 format!("content:{}:{}", canonical.len(), fnv1a(&canonical)),
@@ -3070,7 +3122,10 @@ impl Format for Pdf {
             if object_is(object, "Type", "XRef") || object_is(object, "Type", "ObjStm") {
                 continue;
             }
-            out.push_str(&format!("{} {} ", object.reference.num, object.reference.generation));
+            out.push_str(&format!(
+                "{} {} ",
+                object.reference.num, object.reference.generation
+            ));
             if length_refs.contains(&object.reference)
                 && matches!(object.value, Value::Int(_) | Value::Real(_))
             {
@@ -3143,12 +3198,17 @@ impl Format for Pdf {
                 continue;
             };
             if dict_get(dict, "Subtype").and_then(as_name) == Some("Image")
-                && dict_filters(dict).iter().any(|f| f == "DCTDecode" || f == "DCT")
+                && dict_filters(dict)
+                    .iter()
+                    .any(|f| f == "DCTDecode" || f == "DCT")
                 && let Some(raw) = object.stream.as_deref()
             {
                 out.extend(crate::c2pa::inspect_media(
                     raw,
-                    &format!("PDF image (object {} {})", object.reference.num, object.reference.generation),
+                    &format!(
+                        "PDF image (object {} {})",
+                        object.reference.num, object.reference.generation
+                    ),
                 ));
             }
             if dict_get(dict, "Type").and_then(as_name) == Some("Sig")
@@ -3245,7 +3305,9 @@ mod tests {
         for offset in offsets {
             out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
         }
-        let info_part = info.map(|num| format!(" /Info {num} 0 R")).unwrap_or_default();
+        let info_part = info
+            .map(|num| format!(" /Info {num} 0 R"))
+            .unwrap_or_default();
         out.extend_from_slice(
             format!(
                 "trailer\n<< /Size {} /Root {root} 0 R{info_part} >>\nstartxref\n{xref}\n%%EOF\n",
@@ -3262,12 +3324,13 @@ mod tests {
         } else {
             data.to_vec()
         };
-        let filter = if compress { " /Filter /FlateDecode" } else { "" };
-        let mut body = format!(
-            "<< /Length {}{filter}{extra} >>\nstream\n",
-            stored.len()
-        )
-        .into_bytes();
+        let filter = if compress {
+            " /Filter /FlateDecode"
+        } else {
+            ""
+        };
+        let mut body =
+            format!("<< /Length {}{filter}{extra} >>\nstream\n", stored.len()).into_bytes();
         body.extend_from_slice(&stored);
         body.extend_from_slice(b"\nendstream");
         body
@@ -3312,7 +3375,10 @@ mod tests {
         let texts = span_texts(&sample_pdf(false));
         assert_eq!(
             texts,
-            ["\u{201C}Hello\u{201D} \u{2013} clean\u{2026}", "World \u{2014} again"]
+            [
+                "\u{201C}Hello\u{201D} \u{2013} clean\u{2026}",
+                "World \u{2014} again"
+            ]
         );
     }
 
@@ -3333,13 +3399,16 @@ mod tests {
             replacement: "\"".to_string(),
             rule_id: "test".to_string(),
         };
-        let out = Pdf
-            .render(&doc, &EditSet { edits: vec![edit] })
-            .unwrap();
+        let out = Pdf.render(&doc, &EditSet { edits: vec![edit] }).unwrap();
         assert!(span_texts(&out)[0].starts_with("\"Hello"));
         assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap());
         let reparsed = parse_pdf(&out).unwrap();
-        let image = reparsed.get(Ref { num: 6, generation: 0 }).unwrap();
+        let image = reparsed
+            .get(Ref {
+                num: 6,
+                generation: 0,
+            })
+            .unwrap();
         assert_eq!(image.stream.as_deref(), Some(&[255u8, 0, 0][..]));
     }
 
@@ -3353,9 +3422,7 @@ mod tests {
             replacement: "...".to_string(),
             rule_id: "test".to_string(),
         };
-        let out = Pdf
-            .render(&doc, &EditSet { edits: vec![edit] })
-            .unwrap();
+        let out = Pdf.render(&doc, &EditSet { edits: vec![edit] }).unwrap();
         assert!(span_texts(&out)[0].ends_with("clean..."));
         assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap());
     }
@@ -3379,14 +3446,22 @@ mod tests {
         );
         let scrubbed = Pdf.scrub_container(&doc, &bytes).expect("scrub");
         let parsed = parse_pdf(&scrubbed).unwrap();
-        let info = parsed.object_dict(Ref { num: 7, generation: 0 }).unwrap();
+        let info = parsed
+            .object_dict(Ref {
+                num: 7,
+                generation: 0,
+            })
+            .unwrap();
         assert_eq!(dict_get(info, "Producer"), Some(&Value::Str(Vec::new())));
         assert_eq!(
             dict_get(info, "Creator"),
             Some(&Value::Str(b"Jane Doe".to_vec()))
         );
         let xmp = parsed
-            .decoded_stream(Ref { num: 8, generation: 0 })
+            .decoded_stream(Ref {
+                num: 8,
+                generation: 0,
+            })
             .unwrap()
             .unwrap();
         assert!(!String::from_utf8_lossy(&xmp).contains("trainedAlgorithmicMedia"));
@@ -3417,9 +3492,7 @@ mod tests {
             replacement: "\"".to_string(),
             rule_id: "test".to_string(),
         };
-        let out = Pdf
-            .render(&doc, &EditSet { edits: vec![edit] })
-            .unwrap();
+        let out = Pdf.render(&doc, &EditSet { edits: vec![edit] }).unwrap();
         assert_eq!(span_texts(&out), ["\"Hi"]);
         assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap());
     }

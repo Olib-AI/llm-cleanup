@@ -882,7 +882,10 @@ mod tests {
         // the cleaned copy is a byte-identical no-op.
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("/Subtype /Image"), "image XObject preserved");
-        assert!(text.contains("/MediaBox [0 0 612 792]"), "page box preserved");
+        assert!(
+            text.contains("/MediaBox [0 0 612 792]"),
+            "page box preserved"
+        );
         let (twice, second) = analyze_bytes(&Pdf, &out, CleanupLevel::Aggressive);
         assert_eq!(second.edits_applied, 0, "{second:?}");
         assert!(!second.changed, "{second:?}");
