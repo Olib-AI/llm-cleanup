@@ -3594,12 +3594,16 @@ mod tests {
     #[test]
     fn malformed_inputs_never_panic() {
         let bytes = sample_pdf(true);
+        let exercise = |input: &[u8]| {
+            let _ = Pdf.skeleton(input);
+            if let Ok(doc) = Pdf.parse(input) {
+                let _ = Pdf.container_findings(&doc);
+                let _ = Pdf.scrub_container(&doc, input);
+                let _ = Pdf.render(&doc, &EditSet { edits: Vec::new() });
+            }
+        };
         for cut in (0..bytes.len()).step_by(7) {
-            let truncated = &bytes[..cut];
-            let _ = Pdf.parse(truncated);
-            let _ = Pdf.skeleton(truncated);
-            let _ = Pdf.inspect_container(truncated, CleanupLevel::Aggressive);
-            let _ = Pdf.scrub_container(truncated, CleanupLevel::Aggressive);
+            exercise(&bytes[..cut]);
         }
 
         // Deterministic pseudo-random corruptions (an LCG keeps the test stable
@@ -3617,10 +3621,7 @@ mod tests {
                 let at = next() % mutated.len();
                 mutated[at] = (next() % 256) as u8;
             }
-            let _ = Pdf.parse(&mutated);
-            let _ = Pdf.skeleton(&mutated);
-            let _ = Pdf.inspect_container(&mutated, CleanupLevel::Aggressive);
-            let _ = Pdf.scrub_container(&mutated, CleanupLevel::Aggressive);
+            exercise(&mutated);
         }
     }
 
