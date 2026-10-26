@@ -836,6 +836,19 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
 
     if objects.is_empty() {
         objects = scan_objects_fallback(bytes);
+        // The xref was unreadable, so recover any plain trailer dictionaries by
+        // scanning: without this, an encrypted file with a damaged xref would
+        // slip past the encryption check below.
+        if trailer.is_empty() {
+            let mut search_from = 0usize;
+            while let Some(at) = find_subslice(bytes, search_from, b"trailer") {
+                let mut lexer = Lexer::at(bytes, at + b"trailer".len());
+                if let Ok(Value::Dict(entries)) = lexer.parse_value() {
+                    merge_trailer(&mut trailer, &entries);
+                }
+                search_from = at + 1;
+            }
+        }
     }
 
     // Materialize objects stored inside object streams. Stream objects cannot
@@ -3511,12 +3524,16 @@ mod tests {
     #[test]
     fn rejects_non_pdf_and_encrypted_files() {
         assert!(Pdf.parse(b"not a pdf").is_err());
-        let bytes = sample_pdf(false);
-        // Point the trailer at an encryption dictionary.
-        let text = String::from_utf8_lossy(&bytes).replace(
-            "/Root 1 0 R /Info 7 0 R",
-            "/Root 1 0 R /Info 7 0 R /Encrypt 7 0 R",
-        );
-        assert!(Pdf.parse(text.as_bytes()).is_err());
+        // Point the trailer at an encryption dictionary, byte-surgically so
+        // every xref offset stays valid (the trailer sits after the xref).
+        let mut encrypted = sample_pdf(false);
+        let anchor = b"/Info 7 0 R";
+        let at = encrypted
+            .windows(anchor.len())
+            .position(|window| window == anchor)
+            .unwrap()
+            + anchor.len();
+        encrypted.splice(at..at, b" /Encrypt 7 0 R".iter().copied());
+        assert!(Pdf.parse(&encrypted).is_err());
     }
 }
