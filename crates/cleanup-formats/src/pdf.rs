@@ -3592,6 +3592,39 @@ mod tests {
     }
 
     #[test]
+    fn malformed_inputs_never_panic() {
+        let bytes = sample_pdf(true);
+        for cut in (0..bytes.len()).step_by(7) {
+            let truncated = &bytes[..cut];
+            let _ = Pdf.parse(truncated);
+            let _ = Pdf.skeleton(truncated);
+            let _ = Pdf.inspect_container(truncated, CleanupLevel::Aggressive);
+            let _ = Pdf.scrub_container(truncated, CleanupLevel::Aggressive);
+        }
+
+        // Deterministic pseudo-random corruptions (an LCG keeps the test stable
+        // across runs and platforms). Every entry point must return, not panic.
+        let mut state = 0x5eed_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as usize
+        };
+        for _ in 0..240 {
+            let mut mutated = bytes.clone();
+            for _ in 0..10 {
+                let at = next() % mutated.len();
+                mutated[at] = (next() % 256) as u8;
+            }
+            let _ = Pdf.parse(&mutated);
+            let _ = Pdf.skeleton(&mutated);
+            let _ = Pdf.inspect_container(&mutated, CleanupLevel::Aggressive);
+            let _ = Pdf.scrub_container(&mutated, CleanupLevel::Aggressive);
+        }
+    }
+
+    #[test]
     fn rejects_non_pdf_and_encrypted_files() {
         assert!(Pdf.parse(b"not a pdf").is_err());
         // Point the trailer at an encryption dictionary, byte-surgically so
