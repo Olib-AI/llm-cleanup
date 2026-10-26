@@ -696,7 +696,7 @@ impl ParsedPdf {
         current
     }
 
-    fn resolve_dict(&self, value: &Value) -> Option<&Vec<(String, Value)>> {
+    fn resolve_dict<'a>(&'a self, value: &'a Value) -> Option<&'a Vec<(String, Value)>> {
         as_dict(self.resolve(value))
     }
 
@@ -1874,7 +1874,7 @@ fn collect_form_streams(
         push_content_stream(pdf, streams, seen, reference, fonts.clone());
         collect_form_streams(
             pdf,
-            own_resources.as_ref().or(resources),
+            own_resources.as_ref().or(Some(resources)),
             &fonts,
             streams,
             seen,
