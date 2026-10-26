@@ -333,7 +333,7 @@ impl<'a> Lexer<'a> {
                         digits.push(0);
                     }
                     let mut out = Vec::with_capacity(digits.len() / 2);
-                    for pair in digits.chunks_exact(2) {
+                    for pair in digits.as_chunks::<2>().0 {
                         out.push(pair[0] * 16 + pair[1]);
                     }
                     Ok(Value::Str(out))
@@ -531,7 +531,7 @@ fn parse_indirect_at(bytes: &[u8], offset: usize) -> Result<(Obj, usize)> {
 
 #[derive(Debug, Clone, Copy)]
 enum XrefEntry {
-    Normal { offset: usize, generation: u16 },
+    Normal { offset: usize },
     Compressed { objstm: u32, index: u32 },
     Free,
 }
@@ -584,7 +584,9 @@ fn parse_xref_table_at(
                 .parse_number_token()
                 .and_then(|token| token.parse::<usize>().ok())
                 .ok_or_else(|| CoreError::Parse("malformed PDF xref entry".to_string()))?;
-            let generation = lexer
+            // Consume (but do not need) the generation: the object header at the
+            // xref offset is authoritative when the object is parsed.
+            lexer
                 .parse_number_token()
                 .and_then(|token| token.parse::<u16>().ok())
                 .ok_or_else(|| CoreError::Parse("malformed PDF xref generation".to_string()))?;
@@ -595,7 +597,6 @@ fn parse_xref_table_at(
             entries.entry(num).or_insert(if kind == "n" {
                 XrefEntry::Normal {
                     offset: entry_offset,
-                    generation,
                 }
             } else {
                 XrefEntry::Free
@@ -641,7 +642,7 @@ fn parse_xref_stream_at(
     let mut index: Vec<(u32, u32)> = Vec::new();
     match dict_get(&dict, "Index") {
         Some(Value::Array(items)) => {
-            for pair in items.chunks_exact(2) {
+            for pair in items.as_chunks::<2>().0 {
                 if let (Some(first), Some(count)) = (as_usize(&pair[0]), as_usize(&pair[1])) {
                     index.push((first as u32, count as u32));
                 }
@@ -664,7 +665,6 @@ fn parse_xref_stream_at(
             let entry = match kind {
                 1 => XrefEntry::Normal {
                     offset: field2 as usize,
-                    generation: field3 as u16,
                 },
                 2 => XrefEntry::Compressed {
                     objstm: field2 as u32,
@@ -742,13 +742,14 @@ fn scan_objects_fallback(bytes: &[u8]) -> BTreeMap<Ref, Obj> {
     let mut pos = 0usize;
     while pos < bytes.len() {
         let at_line_start = pos == 0 || matches!(bytes[pos - 1], b'\n' | b'\r');
-        if at_line_start && bytes[pos].is_ascii_digit() {
-            if let Ok((object, end)) = parse_indirect_at(bytes, pos) {
-                let reference = object.reference;
-                objects.insert(reference, object);
-                pos = end.max(pos + 1);
-                continue;
-            }
+        if at_line_start
+            && bytes[pos].is_ascii_digit()
+            && let Ok((object, end)) = parse_indirect_at(bytes, pos)
+        {
+            let reference = object.reference;
+            objects.insert(reference, object);
+            pos = end.max(pos + 1);
+            continue;
         }
         pos += 1;
     }
@@ -778,10 +779,9 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
         if let Some(value) = lexer
             .parse_number_token()
             .and_then(|t| t.parse::<usize>().ok())
+            && value <= MAX_XREF_OFFSET
         {
-            if value <= MAX_XREF_OFFSET {
-                current = Some(value);
-            }
+            current = Some(value);
         }
         search_from = at + 1;
     }
@@ -815,7 +815,7 @@ fn parse_pdf(bytes: &[u8]) -> Result<ParsedPdf> {
     let mut compressed: Vec<(u32, u32, u32)> = Vec::new(); // (num, objstm, index)
     for (num, entry) in &entries {
         match entry {
-            XrefEntry::Normal { offset, .. } => {
+            XrefEntry::Normal { offset } => {
                 if let Ok((object, _)) = parse_indirect_at(bytes, *offset)
                     && object.reference.num == *num
                 {
@@ -1123,7 +1123,7 @@ fn decode_stream_data(dict: &[(String, Value)], raw: &[u8]) -> Result<Vec<u8>> {
                     digits.push(0);
                 }
                 digits
-                    .chunks_exact(2)
+                    .as_chunks::<2>().0.iter()
                     .map(|pair| pair[0] * 16 + pair[1])
                     .collect()
             }
@@ -1500,7 +1500,7 @@ fn lex_cmap(data: &[u8]) -> Vec<CmapToken> {
             }
             tokens.push(CmapToken::Hex(
                 digits
-                    .chunks_exact(2)
+                    .as_chunks::<2>().0.iter()
                     .map(|pair| pair[0] * 16 + pair[1])
                     .collect(),
             ));
@@ -1538,7 +1538,7 @@ fn hex_bytes_to_u32(bytes: &[u8]) -> u32 {
 
 fn utf16be_to_string(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
         .collect();
     char::decode_utf16(units)
@@ -2357,31 +2357,31 @@ fn tokenize_stream(
                         }
                     }
                     "Tj" | "'" => {
-                        if let Some(Operand::Str(string)) = operands.into_iter().next() {
-                            if let Some(segment) = make_segment(
+                        if let Some(Operand::Str(string)) = operands.into_iter().next()
+                            && let Some(segment) = make_segment(
                                 stream_index,
                                 &fonts,
                                 current_font.as_deref(),
                                 &string,
                                 unsupported,
-                            ) {
-                                segments.push(segment);
-                            }
+                            )
+                        {
+                            segments.push(segment);
                         }
                         operands = Vec::new();
                         continue;
                     }
                     "\"" => {
-                        if let Some(Operand::Str(string)) = operands.into_iter().last() {
-                            if let Some(segment) = make_segment(
+                        if let Some(Operand::Str(string)) = operands.into_iter().last()
+                            && let Some(segment) = make_segment(
                                 stream_index,
                                 &fonts,
                                 current_font.as_deref(),
                                 &string,
                                 unsupported,
-                            ) {
-                                segments.push(segment);
-                            }
+                            )
+                        {
+                            segments.push(segment);
                         }
                         operands = Vec::new();
                         continue;
@@ -2506,7 +2506,7 @@ fn serialize_value(value: &Value, out: &mut Vec<u8>) {
         Value::Name(name) => {
             out.push(b'/');
             for &byte in name.as_bytes() {
-                if is_pdf_ws(byte) || is_pdf_delimiter(byte) || byte < 33 || byte > 126 {
+                if is_pdf_ws(byte) || is_pdf_delimiter(byte) || !(33..=126).contains(&byte) {
                     out.extend_from_slice(format!("#{byte:02X}").as_bytes());
                 } else {
                     out.push(byte);
@@ -2737,6 +2737,9 @@ fn repack_pdf(
 // Rendering edits back into content streams
 // ---------------------------------------------------------------------------
 
+/// Byte-range replacements against one decoded content stream.
+type ByteEdits = Vec<(Range<usize>, Vec<u8>)>;
+
 fn encode_replacement(profile: &FontProfile, replacement: &str, is_hex: bool) -> Option<Vec<u8>> {
     let mut encoded: Vec<u8> = Vec::new();
     for ch in replacement.chars() {
@@ -2844,7 +2847,7 @@ fn decode_pdf_text_string(bytes: &[u8]) -> String {
     }
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         return char::decode_utf16(units)
@@ -2980,7 +2983,7 @@ impl Format for Pdf {
         }
         let derived = derive_pdf(&doc.source)?;
 
-        let mut per_stream: BTreeMap<usize, Vec<(Range<usize>, Vec<u8>)>> = BTreeMap::new();
+        let mut per_stream: BTreeMap<usize, ByteEdits> = BTreeMap::new();
         for edit in &edits.edits {
             let Some(segments) = derived.span_segments.get(edit.span_index) else {
                 return Err(CoreError::SelfCheck(format!(
