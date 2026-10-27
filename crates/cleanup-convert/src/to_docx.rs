@@ -4,13 +4,10 @@
 
 use std::io::Cursor;
 
-use crate::to_text::html_paragraph_texts;
-use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
 use cleanup_formats::{
-    LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout,
-    table_regions,
+    LayoutImage, LayoutLink, LayoutSpan, body_font_size, cluster_lines, table_regions,
 };
 use docx_rs::{Docx, Paragraph, Run};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
@@ -195,8 +192,8 @@ fn pdf_to_docx(src: &[u8]) -> Result<Vec<u8>> {
         &layout
             .pages
             .iter()
-            .flat_map(|page| page.spans.iter())
-            .collect::<Vec<_>>(),
+            .flat_map(|page| page.spans.iter().cloned())
+            .collect::<Vec<LayoutSpan>>(),
     );
     let page_size = layout
         .pages
@@ -382,10 +379,10 @@ fn document_xml(
         for block in page_blocks(page) {
             match block {
                 Block::Lines(line) => {
-                    out.push_str(&paragraph_xml(line, body_size, &page.links));
+                    out.push_str(&paragraph_xml(&line, body_size, &page.links));
                 }
                 Block::Table(rows) => {
-                    out.push_str(&table_xml(rows, content_width_twips));
+                    out.push_str(&table_xml(&rows, content_width_twips));
                 }
                 Block::Image(image) => {
                     out.push_str(&image_xml(image, media_ids, page_width));
@@ -491,7 +488,7 @@ fn table_xml(rows: &[Vec<LayoutSpan>], total_width_twips: i32) -> String {
         }
     }
     centers.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
-    let col_width = total_width_twips.max(1) / centers.len().max(1);
+    let col_width = total_width_twips.max(1) / centers.len().max(1) as i32;
     let mut out = String::from("<w:tbl><w:tblPr><w:tblW w:type=\"dxa\"");
     out.push_str(&format!(" w=\"{total_width_twips}\"/>"));
     out.push_str(
@@ -529,7 +526,7 @@ fn table_xml(rows: &[Vec<LayoutSpan>], total_width_twips: i32) -> String {
 }
 
 fn image_xml(image: &LayoutImage, media_ids: &[&LayoutImage], page_width: f64) -> String {
-    let position = media_ids.iter().position(|p| std::ptr::eq(p, image));
+    let position = media_ids.iter().position(|p| std::ptr::eq(*p, image));
     let Some(position) = position else {
         return String::new();
     };

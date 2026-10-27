@@ -7,7 +7,7 @@
 //! (that is what same-format PDF cleaning is for).
 
 use crate::{ConvertError, ConvertReport, Result};
-use cleanup_core::{Format, FormatId};
+use cleanup_core::FormatId;
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 
@@ -746,10 +746,10 @@ fn to_unicode_cmap(mappings: &BTreeMap<u16, char>) -> Vec<u8> {
     for chunk in mappings.iter().collect::<Vec<_>>().chunks(100) {
         cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
         for (glyph, codepoint) in chunk {
-            let utf16: Vec<u16> = char::from_u32(*codepoint as u32)
+            let utf16: Vec<u16> = char::from_u32(**codepoint as u32)
                 .unwrap_or('\u{FFFD}')
                 .encode_utf16(&mut [0; 2])
-                .into_iter()
+                .copied()
                 .collect();
             cmap.push_str(&format!("<{:04X}> <", glyph));
             for unit in utf16 {
@@ -954,6 +954,7 @@ fn heading_num(l: HeadingLevel) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cleanup_core::Format;
 
     #[test]
     fn unicode_pdf_embeds_font_and_text_mapping() {

@@ -5,7 +5,7 @@ use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
 use cleanup_formats::{
-    LayoutImage, LayoutLink, LayoutSpan, PdfLayout, body_font_size, cluster_lines, pdf_layout,
+    LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout,
     table_regions,
 };
 
