@@ -9,9 +9,14 @@ description = "Pure-Rust cross-format conversion (md / txt / docx / pdf) for llm
 [dependencies]
 cleanup-core = { workspace = true }
 cleanup-formats = { workspace = true }
+cleanup-rules = { workspace = true }
 pulldown-cmark = { workspace = true }
 thiserror = { workspace = true }
 docx-rs = { workspace = true }
+# OpenXML (DOCX) writing and reading, and PNG re-encoding for the PDF exporter.
+flate2 = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
 
 [lints]
 workspace = true

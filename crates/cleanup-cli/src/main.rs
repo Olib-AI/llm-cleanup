@@ -395,13 +395,36 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
             );
         }
         let bytes = fs::read(input).with_context(|| format!("reading {}", input.display()))?;
-        let (out, rep) = cleanup_convert::convert(from, &bytes, target)
-            .with_context(|| format!("converting {} to {}", input.display(), target.label()))?;
+        let converted = cleanup_convert::convert_document(
+            from,
+            &bytes,
+            target,
+            &cleanup_convert::ConvertOptions::default(),
+        )
+        .with_context(|| format!("converting {} to {}", input.display(), target.label()))?;
+        let rep = converted.report;
         let dest = match &output {
             Some(o) => ensure_output_extension(o, target.ext()),
             None => converted_path(input, target.ext()),
         };
-        atomic_write(&dest, &out).with_context(|| format!("writing {}", dest.display()))?;
+        atomic_write(&dest, &converted.bytes)
+            .with_context(|| format!("writing {}", dest.display()))?;
+        // Markdown/HTML targets reference extracted images relatively (`assets/<file>`), so the
+        // side-car files land next to the output document.
+        if !converted.assets.is_empty() {
+            let assets = dest
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("assets");
+            fs::create_dir_all(&assets)
+                .with_context(|| format!("creating {}", assets.display()))?;
+            for (name, data) in &converted.assets {
+                let path = assets.join(name);
+                atomic_write(&path, data)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+            println!("  {} image asset(s) written to {}", converted.assets.len(), assets.display());
+        }
         println!(
             "{} → {}  ({} via {})",
             input.display(),
