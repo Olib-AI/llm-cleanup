@@ -4,10 +4,8 @@ use crate::to_text::html_paragraph_texts;
 use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
-use cleanup_formats::{
-    LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout,
-    table_regions,
-};
+use cleanup_formats::{LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout};
+use crate::table_regions;
 
 /// Convert already-cleaned `src` bytes (in format `from`) into Markdown.
 pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
@@ -103,7 +101,7 @@ fn pdf_to_markdown(src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
         "converted from positioned text and drawings; the exact pixel layout of the source is approximated"
             .to_string(),
     ];
-    if layout.pages.iter().any(PageLayout::has_images) {
+    if layout.pages.iter().any(page_has_images) {
         warnings.push("embedded JPEG images are inlined as base64 data URIs".to_string());
     }
     Ok((
@@ -116,10 +114,9 @@ fn pdf_to_markdown(src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
     ))
 }
 
-impl PageLayout {
-    fn has_images(&self) -> bool {
-        !self.images.is_empty()
-    }
+/// True if a page has embedded images.
+fn page_has_images(page: &PageLayout) -> bool {
+    !page.images.is_empty()
 }
 
 /// The vertical center of a line of text, used to interleave images with text.

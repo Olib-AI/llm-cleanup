@@ -11,8 +11,8 @@ use cleanup_core::FormatId;
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 
-const FONT_REGULAR: &[u8] = include_bytes!("../cleanup-gui/fonts/Inter-Regular.ttf");
-const FONT_BOLD: &[u8] = include_bytes!("../cleanup-gui/fonts/Inter-Bold.ttf");
+const FONT_REGULAR: &[u8] = include_bytes!("../../cleanup-gui/fonts/Inter-Regular.ttf");
+const FONT_BOLD: &[u8] = include_bytes!("../../cleanup-gui/fonts/Inter-Bold.ttf");
 
 const PAGE_WIDTH: f64 = 612.0;
 const PAGE_HEIGHT: f64 = 792.0;
@@ -575,7 +575,8 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             .map(|glyph| font.width(glyph).map(|w| w.to_string()))
             .collect::<Result<Vec<_>>>()?
             .join(" ");
-        let font_dict_id = push_object(
+        let font_dict_id = (objects.len() + 1) as u32;
+        push_object(
             &mut objects,
             format!(
                 "<< /Type /Font /Subtype /Type0 /BaseFont /F{} /Encoding /Identity-H /DescendantFonts [{cid} 0 R] /ToUnicode {tounicode} 0 R >>",
@@ -749,6 +750,7 @@ fn to_unicode_cmap(mappings: &BTreeMap<u16, char>) -> Vec<u8> {
             let utf16: Vec<u16> = char::from_u32(**codepoint as u32)
                 .unwrap_or('\u{FFFD}')
                 .encode_utf16(&mut [0; 2])
+                .into_iter()
                 .copied()
                 .collect();
             cmap.push_str(&format!("<{:04X}> <", glyph));

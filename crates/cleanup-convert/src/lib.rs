@@ -13,6 +13,43 @@ pub mod to_text;
 mod xml_text;
 
 use cleanup_core::FormatId;
+use cleanup_formats::LayoutSpan;
+
+/// A run of consecutive lines that forms a table.
+pub(crate) struct TableRegion {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Detect groups of consecutive lines that look like table rows: each line has
+/// two or more horizontally separated spans spanning a meaningful width.
+pub(crate) fn table_regions(lines: &[Vec<LayoutSpan>]) -> Vec<TableRegion> {
+    let mut regions = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_table_row(&lines[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut j = i + 1;
+        while j < lines.len() && is_table_row(&lines[j]) {
+            j += 1;
+        }
+        regions.push(TableRegion { start, end: j });
+        i = j;
+    }
+    regions
+}
+
+fn is_table_row(line: &[LayoutSpan]) -> bool {
+    if line.len() < 2 {
+        return false;
+    }
+    let max_x = line.iter().map(|s| s.x).fold(f64::NEG_INFINITY, f64::max);
+    let min_x = line.iter().map(|s| s.x).fold(f64::INFINITY, f64::min);
+    (max_x - min_x) > 15.0
+}
 
 /// A conversion target (output format). PDF is both a readable input (`FormatId::Pdf`,
 /// cleaned natively in place) and an output target rendered from other formats.
