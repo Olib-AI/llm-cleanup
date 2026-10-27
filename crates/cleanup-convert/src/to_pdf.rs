@@ -637,11 +637,7 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             let height = if line.spans.is_empty() {
                 12.0
             } else {
-                line.spans
-                    .iter()
-                    .map(|s| s.size)
-                    .fold(0.0f64, f64::max)
-                    * 1.25
+                line.spans.iter().map(|s| s.size).fold(0.0f64, f64::max) * 1.25
             };
             y -= height;
             if line.spans.is_empty() {
