@@ -90,9 +90,12 @@ impl TrueType {
                 break;
             }
             let tag = [data[base], data[base + 1], data[base + 2], data[base + 3]];
-            let offset =
-                u32::from_be_bytes([data[base + 8], data[base + 9], data[base + 10], data[base + 11]])
-                    as usize;
+            let offset = u32::from_be_bytes([
+                data[base + 8],
+                data[base + 9],
+                data[base + 10],
+                data[base + 11],
+            ]) as usize;
             tables.push((tag, offset));
         }
         let find = |tag: &[u8; 4]| -> Option<usize> {
@@ -228,8 +231,7 @@ impl TrueType {
                 break;
             }
             let platform = u16::from_be_bytes([data[base + offset], data[base + offset + 1]]);
-            let encoding =
-                u16::from_be_bytes([data[base + offset + 2], data[base + offset + 3]]);
+            let encoding = u16::from_be_bytes([data[base + offset + 2], data[base + offset + 3]]);
             let sel = u32::from_be_bytes([
                 data[base + offset + 4],
                 data[base + offset + 5],
@@ -446,12 +448,7 @@ fn cell_text_width(cell: &[Run], size: f64, fonts: &[TrueType; 2]) -> f64 {
 }
 
 /// Wrap runs into lines measuring with the real font metrics.
-fn wrapped_lines(
-    runs: &[Run],
-    size: f64,
-    fonts: &[TrueType; 2],
-    x_start: f64,
-) -> Vec<Line> {
+fn wrapped_lines(runs: &[Run], size: f64, fonts: &[TrueType; 2], x_start: f64) -> Vec<Line> {
     let max_units = MAX_WIDTH * 1000.0 / size;
     let space_units = SPACE_WIDTH_PT * 1000.0 / size;
     let mut lines: Vec<Line> = Vec::new();
@@ -539,11 +536,7 @@ fn paginate(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Vec<Vec<Line>> {
         let height = if line.spans.is_empty() {
             12.0
         } else {
-            line.spans
-                .iter()
-                .map(|s| s.size)
-                .fold(0.0f64, f64::max)
-                * 1.25
+            line.spans.iter().map(|s| s.size).fold(0.0f64, f64::max) * 1.25
         };
         if y - height < BOTTOM_MARGIN && !current.is_empty() {
             pages.push(current);
@@ -631,7 +624,7 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
     let mut page_refs: Vec<(u32, u32)> = Vec::new();
     for _ in &pages {
         let content_id = push_object(&mut objects, Vec::new()); // placeholder
-        let page_id = push_object(&mut objects, Vec::new());    // placeholder
+        let page_id = push_object(&mut objects, Vec::new()); // placeholder
         page_refs.push((page_id, content_id));
     }
 
@@ -658,10 +651,7 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
                 let font = &fonts[span.font];
                 let mut encoded = Vec::new();
                 for ch in span.text.chars() {
-                    let glyph = font
-                        .glyph_index(ch as u32)
-                        .filter(|g| *g != 0)
-                        .unwrap_or(0);
+                    let glyph = font.glyph_index(ch as u32).filter(|g| *g != 0).unwrap_or(0);
                     unicode_maps[span.font].entry(glyph).or_insert(ch);
                     for shift in (0..font.code_len).rev() {
                         encoded.push(u8::try_from((glyph >> (shift * 8)) & 0xFF).unwrap_or(0));
@@ -672,7 +662,12 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
                 } else {
                     format!("1 0 0 1 {:.2} {:.2} Tm", span.x, y)
                 };
-                content.push_str(&format!("/F{} {:.2} Tf {} ", span.font + 1, span.size, matrix));
+                content.push_str(&format!(
+                    "/F{} {:.2} Tf {} ",
+                    span.font + 1,
+                    span.size,
+                    matrix
+                ));
                 content.push('<');
                 for byte in &encoded {
                     content.push_str(&format!("{byte:02X}"));
@@ -681,7 +676,8 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             }
         }
         content.push_str("ET\n");
-        let content_bytes = stream_object(&format!("/Length {}", content.len()), content.as_bytes());
+        let content_bytes =
+            stream_object(&format!("/Length {}", content.len()), content.as_bytes());
         objects[content_id as usize] = content_bytes;
     }
 
@@ -707,8 +703,7 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
     for (index, &font_dict_id) in font_ids.iter().enumerate() {
         let tounicode_id = font_dict_id + 4;
         let cmap = to_unicode_cmap(&unicode_maps[index]);
-        objects[tounicode_id as usize] =
-            stream_object(&format!("/Length {}", cmap.len()), &cmap);
+        objects[tounicode_id as usize] = stream_object(&format!("/Length {}", cmap.len()), &cmap);
     }
 
     let catalog_id = push_object(
@@ -802,7 +797,8 @@ fn wrap_lines(text: &str) -> Vec<String> {
 }
 
 fn markdown_flows(src: &[u8]) -> Result<Vec<Flow>> {
-    let s = std::str::from_utf8(src).map_err(|e| ConvertError::Failed(format!("not UTF-8: {e}")))?;
+    let s =
+        std::str::from_utf8(src).map_err(|e| ConvertError::Failed(format!("not UTF-8: {e}")))?;
     let mut flows: Vec<Flow> = Vec::new();
     let mut current: Option<Vec<Run>> = None;
     let mut bold = false;
@@ -981,13 +977,16 @@ mod tests {
 
     #[test]
     fn markdown_headings_lists_and_tables_render() {
-        let source = "# Title\n\n## Section\n\n- first\n- second\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let source =
+            "# Title\n\n## Section\n\n- first\n- second\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
         let (pdf, _) = convert(FormatId::Markdown, source.as_bytes()).expect("PDF generation");
         let pdf = String::from_utf8_lossy(&pdf);
         assert!(pdf.starts_with("%PDF-1.7"));
 
         // Round-trip through our own PDF parser to prove the text survived.
-        let parsed = cleanup_formats::Pdf.parse(pdf.as_bytes()).expect("output parses");
+        let parsed = cleanup_formats::Pdf
+            .parse(pdf.as_bytes())
+            .expect("output parses");
         let texts: Vec<String> = parsed.spans.iter().map(|s| s.text.clone()).collect();
         let joined = texts.join(" ");
         assert!(joined.contains("Title"), "{joined:?}");

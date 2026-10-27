@@ -9,8 +9,8 @@ use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
 use cleanup_formats::{
-    body_font_size, cluster_lines, pdf_layout, table_regions, LayoutImage, LayoutLink,
-    LayoutSpan, PageLayout,
+    LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout,
+    table_regions,
 };
 use docx_rs::{Docx, Paragraph, Run};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
@@ -189,9 +189,8 @@ fn markdown_to_docx(src: &[u8]) -> Result<(Docx, Vec<String>)> {
 /// headings, bold/italic runs, lists, tables and embedded JPEG images, with the
 /// page size taken from the PDF's media box.
 fn pdf_to_docx(src: &[u8]) -> Result<Vec<u8>> {
-    let layout = cleanup_formats::pdf_layout(src).map_err(|e| {
-        ConvertError::Failed(format!("PDF layout extraction failed: {e}"))
-    })?;
+    let layout = cleanup_formats::pdf_layout(src)
+        .map_err(|e| ConvertError::Failed(format!("PDF layout extraction failed: {e}")))?;
     let body_size = body_font_size(
         &layout
             .pages
@@ -277,7 +276,10 @@ fn page_blocks(page: &PageLayout) -> Vec<Block<'_>> {
     let mut images = page.images.iter().peekable();
     let mut region_index = 0usize;
     for (line_index, line) in lines.iter().enumerate() {
-        while images.peek().is_some_and(|image| image.y < line_center_y(line)) {
+        while images
+            .peek()
+            .is_some_and(|image| image.y < line_center_y(line))
+        {
             blocks.push(Block::Image(images.next().unwrap()));
         }
         if region_index < regions.len() && regions[region_index].start == line_index {
@@ -413,7 +415,10 @@ fn paragraph_xml(line: &[LayoutSpan], body_size: f64, links: &[LayoutLink]) -> S
         None => (String::new(), raw),
     };
 
-    let max_size = line.iter().map(|span| span.font_size).fold(0.0f64, f64::max);
+    let max_size = line
+        .iter()
+        .map(|span| span.font_size)
+        .fold(0.0f64, f64::max);
     let any_bold = line.iter().any(|span| span.bold);
     let level = if max_size > body_size * 1.5 {
         1
@@ -431,7 +436,9 @@ fn paragraph_xml(line: &[LayoutSpan], body_size: f64, links: &[LayoutLink]) -> S
     if level > 0 {
         ppr.push_str(&format!("<w:pStyle w:val=\"Heading{level}\"/>"));
     } else if !prefix.is_empty() {
-        ppr.push_str("<w:pStyle w:val=\"ListParagraph\"/><w:ind w:left=\"720\" w:hanging=\"180\"/>");
+        ppr.push_str(
+            "<w:pStyle w:val=\"ListParagraph\"/><w:ind w:left=\"720\" w:hanging=\"180\"/>",
+        );
     }
 
     let mut out = String::from("<w:p>");
@@ -521,11 +528,7 @@ fn table_xml(rows: &[Vec<LayoutSpan>], total_width_twips: i32) -> String {
     out
 }
 
-fn image_xml(
-    image: &LayoutImage,
-    media_ids: &[&LayoutImage],
-    page_width: f64,
-) -> String {
+fn image_xml(image: &LayoutImage, media_ids: &[&LayoutImage], page_width: f64) -> String {
     let position = media_ids.iter().position(|p| std::ptr::eq(p, image));
     let Some(position) = position else {
         return String::new();
@@ -545,10 +548,19 @@ fn image_xml(
         width_pt = content_width_pt;
     }
     let emu = |pt: f64| (pt * 12700.0) as i32;
-    let mut out = String::from("<w:p><w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">");
-    out.push_str(&format!("<wp:extent cx=\"{}\" cy=\"{}\"/>", emu(width_pt), emu(height_pt)));
+    let mut out = String::from(
+        "<w:p><w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">",
+    );
+    out.push_str(&format!(
+        "<wp:extent cx=\"{}\" cy=\"{}\"/>",
+        emu(width_pt),
+        emu(height_pt)
+    ));
     out.push_str("<wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>");
-    out.push_str(&format!("<wp:docPr id=\"{}\" name=\"image\"/>", position + 1));
+    out.push_str(&format!(
+        "<wp:docPr id=\"{}\" name=\"image\"/>",
+        position + 1
+    ));
     out.push_str("<wp:cNvGraphicFramePr/>");
     out.push_str("<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">");
     out.push_str(&format!(
@@ -625,9 +637,10 @@ fn styles_xml() -> &'static str {
 fn link_uri(links: &[LayoutLink], span: &LayoutSpan) -> Option<String> {
     let cx = span.x + (span.text.len() as f64) * span.font_size * 0.5;
     let cy = span.y + span.font_size / 2.0;
-    links.iter().find(|link| {
-        link.x0 <= cx && cx <= link.x1 && link.y0 <= cy && cy <= link.y1
-    }).map(|link| link.uri.clone())
+    links
+        .iter()
+        .find(|link| link.x0 <= cx && cx <= link.x1 && link.y0 <= cy && cy <= link.y1)
+        .map(|link| link.uri.clone())
 }
 
 fn collapse_whitespace(text: &str) -> String {
@@ -651,5 +664,8 @@ fn collapse_whitespace(text: &str) -> String {
 }
 
 fn escape_xml(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

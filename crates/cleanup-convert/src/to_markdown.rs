@@ -5,8 +5,8 @@ use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
 use cleanup_formats::{
-    body_font_size, cluster_lines, pdf_layout, table_regions, LayoutImage, LayoutLink,
-    LayoutSpan, PdfLayout,
+    LayoutImage, LayoutLink, LayoutSpan, PdfLayout, body_font_size, cluster_lines, pdf_layout,
+    table_regions,
 };
 
 /// Convert already-cleaned `src` bytes (in format `from`) into Markdown.
@@ -64,9 +64,8 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
 /// from bullet/number markers, tables from aligned columns, links from link
 /// annotations and embedded JPEG images as base64 data URIs.
 fn pdf_to_markdown(src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
-    let layout = pdf_layout(src).map_err(|e| {
-        ConvertError::Failed(format!("PDF layout extraction failed: {e}"))
-    })?;
+    let layout = pdf_layout(src)
+        .map_err(|e| ConvertError::Failed(format!("PDF layout extraction failed: {e}")))?;
     let mut markdown = String::new();
     for (page_index, page) in layout.pages.iter().enumerate() {
         if page_index > 0 {
@@ -78,7 +77,10 @@ fn pdf_to_markdown(src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
         let mut images = page.images.iter().peekable();
         let mut region_index = 0usize;
         for (line_index, line) in lines.iter().enumerate() {
-            while images.peek().is_some_and(|image| image.y < line_center_y(line)) {
+            while images
+                .peek()
+                .is_some_and(|image| image.y < line_center_y(line))
+            {
                 markdown.push_str(&image_markdown(images.next().unwrap()));
                 markdown.push('\n');
             }
@@ -170,11 +172,7 @@ fn table_to_markdown(rows: &[Vec<LayoutSpan>]) -> String {
 
 /// Render one visual line of text: headings (by font size), bullet or numbered
 /// lists (by marker), links (by link annotations) and inline bold/italic style.
-fn line_to_markdown(
-    line: &[LayoutSpan],
-    body_size: f64,
-    links: &[LayoutLink],
-) -> String {
+fn line_to_markdown(line: &[LayoutSpan], body_size: f64, links: &[LayoutLink]) -> String {
     let raw = line_spans_text(line);
 
     // List marker on the whole line.
@@ -278,9 +276,10 @@ fn list_marker(text: &str) -> Option<(String, String)> {
 fn link_uri(links: &[LayoutLink], span: &LayoutSpan) -> Option<String> {
     let cx = span.x + (span.text.len() as f64) * span.font_size * 0.5;
     let cy = span.y + span.font_size / 2.0;
-    links.iter().find(|link| {
-        link.x0 <= cx && cx <= link.x1 && link.y0 <= cy && cy <= link.y1
-    }).map(|link| link.uri.clone())
+    links
+        .iter()
+        .find(|link| link.x0 <= cx && cx <= link.x1 && link.y0 <= cy && cy <= link.y1)
+        .map(|link| link.uri.clone())
 }
 
 fn image_markdown(image: &LayoutImage) -> String {
@@ -292,8 +291,7 @@ fn image_markdown(image: &LayoutImage) -> String {
 }
 
 fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len() * 4 / 3 + 4);
     for chunk in input.chunks_exact(3) {
         out.push(TABLE[chunk[0] >> 2] as char);

@@ -35,9 +35,8 @@ pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
             true,
         ),
         FormatId::Pdf => {
-            let layout = pdf_layout(src).map_err(|e| {
-                ConvertError::Failed(format!("PDF layout extraction failed: {e}"))
-            })?;
+            let layout = pdf_layout(src)
+                .map_err(|e| ConvertError::Failed(format!("PDF layout extraction failed: {e}")))?;
             let mut parts: Vec<String> = Vec::new();
             for page in layout.pages {
                 let mut previous_bottom: Option<f64> = None;
