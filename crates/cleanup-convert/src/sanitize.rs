@@ -177,7 +177,7 @@ fn sanitize_inlines(
     if cx.level >= CleanupLevel::Standard {
         for (range, rule_id) in boilerplate_sentence_ranges(&text) {
             if on_char_boundary(&text, range.start) && on_char_boundary(&text, range.end) {
-                edits.push((range, String::new(), rule_id));
+                edits.push((range, String::new(), rule_id.to_string()));
             }
         }
     }
