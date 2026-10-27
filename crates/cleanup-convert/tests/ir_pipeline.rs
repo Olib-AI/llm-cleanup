@@ -1,9 +1,9 @@
 //! End-to-end integration tests for the document-IR pipeline.
 //!
 //! These run the real fixtures in `tests/fixtures/` through a real reader (`pdf::extract_layout`
-//! + the layout analyser) and assert that structure survives the trip into each target:
-//! table cells and spans, image extraction, native OpenXML tables, well-formed package XML,
-//! column linearisation, and byte-for-byte Unicode retention.
+//! plus the layout analyser) and assert that structure survives the trip into each target: table
+//! cells and spans, image extraction, native OpenXML tables, well-formed package XML, column
+//! linearisation, and byte-for-byte Unicode retention.
 
 use cleanup_convert::{ConvertOptions, ConvertOutput, Target, convert_document};
 use cleanup_core::FormatId;
