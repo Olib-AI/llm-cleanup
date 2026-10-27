@@ -1710,7 +1710,9 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
     if subtype == "Type0" {
         return FontProfile::unsupported();
     }
-    let base_font_raw = dict_get(font_dict, "BaseFont").and_then(as_name).map(str::to_string);
+    let base_font_raw = dict_get(font_dict, "BaseFont")
+        .and_then(as_name)
+        .map(str::to_string);
     let base_font = base_font_raw.as_deref().unwrap_or("").to_ascii_lowercase();
     if base_font.contains("symbol") || base_font.contains("zapfdingbats") {
         return FontProfile::unsupported();
