@@ -315,7 +315,7 @@ impl<'a> Writer<'a> {
                 next_relationship: self.next_relationship,
                 drawing_id: self.drawing_id,
             };
-            nested.block(block, 0);
+            nested.block(block);
             self.media.extend(nested.media);
             self.media_parts.extend(nested.media_parts);
             self.next_relationship = nested.next_relationship;
