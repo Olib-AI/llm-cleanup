@@ -1711,10 +1711,7 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
         return FontProfile::unsupported();
     }
     let base_font_raw = dict_get(font_dict, "BaseFont").and_then(as_name).cloned();
-    let base_font = base_font_raw
-        .as_deref()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let base_font = base_font_raw.as_deref().unwrap_or("").to_ascii_lowercase();
     if base_font.contains("symbol") || base_font.contains("zapfdingbats") {
         return FontProfile::unsupported();
     }
@@ -1951,10 +1948,7 @@ fn link_uri(pdf: &ParsedPdf, annot: &[(String, Value)]) -> Option<String> {
     })
 }
 
-fn link_annotations(
-    pdf: &ParsedPdf,
-    dict: &[(String, Value)],
-) -> Vec<([f64; 4], String)> {
+fn link_annotations(pdf: &ParsedPdf, dict: &[(String, Value)]) -> Vec<([f64; 4], String)> {
     let mut out = Vec::new();
     let Some(Value::Array(annots)) = dict_get(dict, "Annots") else {
         return out;
@@ -2122,7 +2116,15 @@ fn collect_form_streams(
         for (name, profile) in fonts_for_resources(pdf, own_resources.as_ref()) {
             fonts.insert(name, profile);
         }
-        push_content_stream(pdf, streams, seen, reference, page_index, page_rect, fonts.clone());
+        push_content_stream(
+            pdf,
+            streams,
+            seen,
+            reference,
+            page_index,
+            page_rect,
+            fonts.clone(),
+        );
         collect_form_streams(
             pdf,
             own_resources.as_ref().or(Some(resources)),
@@ -2448,7 +2450,10 @@ impl<'a> ContentLexer<'a> {
 
 fn font_style(base_name: &str) -> (bool, bool) {
     let base = base_name.to_ascii_lowercase();
-    (base.contains("bold"), base.contains("italic") || base.contains("oblique"))
+    (
+        base.contains("bold"),
+        base.contains("italic") || base.contains("oblique"),
+    )
 }
 
 fn make_segment(
@@ -2718,12 +2723,10 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
         && let Some(catalog) = parsed.object_dict(root)
         && let Some(pages_root) = dict_get(catalog, "Pages").cloned()
     {
-        let pages_root_ref = as_ref(&pages_root)
-            .copied()
-            .unwrap_or(Ref {
-                num: 0,
-                generation: 0,
-            });
+        let pages_root_ref = as_ref(&pages_root).copied().unwrap_or(Ref {
+            num: 0,
+            generation: 0,
+        });
         let mut visited = BTreeSet::new();
         walk_pages(
             &parsed,
@@ -3683,10 +3686,7 @@ pub fn cluster_lines(spans: &[LayoutSpan]) -> Vec<Vec<LayoutSpan>> {
         }
     }
     for line in &mut lines {
-        line.sort_by(|a, b| {
-            a.x.partial_cmp(&b.x)
-                .unwrap_or(std::cmp::Ordering::Less)
-        });
+        line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Less));
     }
     lines
 }
@@ -3705,10 +3705,7 @@ pub fn body_font_size(spans: &[LayoutSpan]) -> f64 {
 }
 
 /// The `/XObject` name → object reference map declared in a resources dict.
-fn xobjects_of<'a>(
-    resources: Option<&'a Value>,
-    pdf: &'a ParsedPdf,
-) -> Vec<(String, Ref)> {
+fn xobjects_of<'a>(resources: Option<&'a Value>, pdf: &'a ParsedPdf) -> Vec<(String, Ref)> {
     let mut out = Vec::new();
     let Some(resource_dict) = resources.and_then(|value| pdf.resolve_dict(value)) else {
         return out;
@@ -3745,9 +3742,7 @@ fn xobject_invocations(decoded: &[u8]) -> Vec<(String, usize)> {
     while pos < decoded.len() {
         if decoded[pos] == b'/' {
             let mut end = pos + 1;
-            while end < decoded.len()
-                && !is_pdf_ws(decoded[end])
-                && !is_pdf_delimiter(decoded[end])
+            while end < decoded.len() && !is_pdf_ws(decoded[end]) && !is_pdf_delimiter(decoded[end])
             {
                 end += 1;
             }
@@ -3770,12 +3765,7 @@ fn xobject_invocations(decoded: &[u8]) -> Vec<(String, usize)> {
 /// The placement rect of one image XObject invocation: the most recent
 /// `<six numbers> cm` text/graphics matrix before the `/Name Do` maps the
 /// image's natural `[0, 0]-[width, height]` rectangle into user space.
-fn image_placement(
-    decoded: &[u8],
-    name_pos: usize,
-    width: f64,
-    height: f64,
-) -> Option<[f64; 4]> {
+fn image_placement(decoded: &[u8], name_pos: usize, width: f64, height: f64) -> Option<[f64; 4]> {
     let from = name_pos.saturating_sub(512);
     let cm_at = from + decoded[from..name_pos].rfind(b" cm ")?;
     let tokens: Vec<&str> = decoded[..cm_at].split_ascii_whitespace().collect();
@@ -3790,12 +3780,7 @@ fn image_placement(
         };
     }
     let [a, b, c, d, e, f] = matrix;
-    let corners = [
-        (0.0, 0.0),
-        (width, 0.0),
-        (0.0, height),
-        (width, height),
-    ];
+    let corners = [(0.0, 0.0), (width, 0.0), (0.0, height), (width, height)];
     let mut xs = [0.0; 4];
     let mut ys = [0.0; 4];
     for (i, (x, y)) in corners.iter().enumerate() {
@@ -3812,11 +3797,7 @@ fn image_placement(
 
 /// Image placements on one page: scan that page's content streams for
 /// `/XObjectName Do` invocations and resolve each to an image XObject.
-fn collect_images(
-    derived: &DerivedPdf,
-    page_index: usize,
-    page: &PageInfo,
-) -> Vec<LayoutImage> {
+fn collect_images(derived: &DerivedPdf, page_index: usize, page: &PageInfo) -> Vec<LayoutImage> {
     let mut out = Vec::new();
     let xobjects = xobjects_of(page.resources.as_ref(), &derived.parsed);
     if xobjects.is_empty() {
@@ -3849,8 +3830,7 @@ fn collect_images(
             let Some(raw) = object.stream.as_deref() else {
                 continue;
             };
-            let Some([minx, miny, maxx, maxy]) =
-                image_placement(decoded, name_pos, width, height)
+            let Some([minx, miny, maxx, maxy]) = image_placement(decoded, name_pos, width, height)
             else {
                 continue;
             };
@@ -3897,10 +3877,7 @@ pub fn pdf_layout(bytes: &[u8]) -> Result<PdfLayout> {
         spans.sort_by(|a, b| {
             a.y.partial_cmp(&b.y)
                 .unwrap_or(std::cmp::Ordering::Less)
-                .then_with(|| {
-                    a.x.partial_cmp(&b.x)
-                        .unwrap_or(std::cmp::Ordering::Less)
-                })
+                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Less))
         });
         let images = collect_images(derived, page_index, page);
         let links: Vec<LayoutLink> = page

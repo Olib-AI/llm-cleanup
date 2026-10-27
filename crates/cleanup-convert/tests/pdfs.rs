@@ -30,9 +30,8 @@ fn fixture_names() -> Vec<String> {
 /// Extract readable text from a fixture PDF via our native layout parser.
 fn extract_text(path: &Path) -> String {
     let bytes = std::fs::read(path).expect("fixture readable");
-    let layout = pdf_layout(&bytes).unwrap_or_else(|e| {
-        panic!("{}: pdf_layout failed: {e}", path.display())
-    });
+    let layout =
+        pdf_layout(&bytes).unwrap_or_else(|e| panic!("{}: pdf_layout failed: {e}", path.display()));
     assert!(layout.pages.len() >= 1, "{}: no pages", path.display());
     let mut text = String::new();
     for page in &layout.pages {
@@ -63,10 +62,12 @@ fn every_fixture_pdf_parses_and_converts_to_all_targets() {
             "{name}: layout extraction yielded no text"
         );
         for target in [Target::Text, Target::Markdown, Target::Docx, Target::Pdf] {
-            let (out, _report) =
-                convert(FormatId::PlainText, text.as_bytes(), target)
-                    .unwrap_or_else(|e| panic!("{name} -> {target:?}: {e}"));
-            assert!(!out.is_empty(), "{name} -> {target:?} produced empty output");
+            let (out, _report) = convert(FormatId::PlainText, text.as_bytes(), target)
+                .unwrap_or_else(|e| panic!("{name} -> {target:?}: {e}"));
+            assert!(
+                !out.is_empty(),
+                "{name} -> {target:?} produced empty output"
+            );
             match target {
                 Target::Pdf => assert!(
                     out.starts_with(b"%PDF-1.7"),
@@ -92,7 +93,16 @@ fn converted_markdown_keeps_fixture_headings() {
     let (out, _report) = convert(FormatId::PlainText, text.as_bytes(), Target::Markdown)
         .expect("rich_styles -> markdown");
     let out = std::str::from_utf8(&out).expect("markdown is UTF-8");
-    for token in ["Quarterly Review", "Executive summary", "Française", "Español", "日本語"] {
-        assert!(out.contains(token), "markdown output missing {token:?}:\n{out}");
+    for token in [
+        "Quarterly Review",
+        "Executive summary",
+        "Française",
+        "Español",
+        "日本語",
+    ] {
+        assert!(
+            out.contains(token),
+            "markdown output missing {token:?}:\n{out}"
+        );
     }
 }

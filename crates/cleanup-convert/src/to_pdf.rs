@@ -153,7 +153,7 @@ impl TrueType {
     /// Advance width of a glyph in font units.
     fn width(&self, glyph: u16) -> Result<u16> {
         let last = self.num_hmetrics.saturating_sub(1) as usize;
-        let index = if glyph as usize < self.num_hmetrics as usize {
+        let index = if (glyph as usize) < self.num_hmetrics as usize {
             glyph as usize
         } else {
             last
@@ -392,8 +392,7 @@ fn flow_to_lines(flow: &Flow, fonts: &[TrueType; 2]) -> Vec<Line> {
                 italic: false,
             }];
             item_runs.extend(runs.iter().cloned());
-            wrapped_lines(&item_runs, 10.0, fonts, LEFT_MARGIN + 18.0),
-
+            wrapped_lines(&item_runs, 10.0, fonts, LEFT_MARGIN + 18.0)
         }
         Flow::Table(rows) => {
             let size = 9.0;
@@ -717,7 +716,7 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
         format!("<< /Type /Catalog /Pages {pages_id} 0 R >>").into_bytes(),
     );
 
-    let mut output = b"%PDF-1.7\n%\xe2\xe3\cf\xd3\n".to_vec();
+    let mut output = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
     let mut offsets = vec![0usize; objects.len()];
     for (id, object) in objects.iter().enumerate().skip(1) {
         offsets[id] = output.len();
