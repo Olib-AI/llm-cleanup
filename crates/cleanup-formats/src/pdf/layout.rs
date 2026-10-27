@@ -1273,10 +1273,11 @@ fn to_rgb(kind: ColorKind, samples: &[u8], width: usize, height: usize) -> Optio
                 return None;
             }
             let mut rgb = Vec::with_capacity(pixels * 3);
-            for pixel in samples[..pixels * 4].chunks_exact(4) {
-                let k = u32::from(pixel[3]);
-                for value in &pixel[..3] {
-                    let channel = (u32::from(*value) * (255 - k)) / 255;
+            for pixel in samples[..pixels * 4].as_chunks::<4>().0 {
+                let [cyan, magenta, yellow, black] = *pixel;
+                let k = u32::from(black);
+                for value in [cyan, magenta, yellow] {
+                    let channel = (u32::from(value) * (255 - k)) / 255;
                     rgb.push(channel as u8);
                 }
             }
