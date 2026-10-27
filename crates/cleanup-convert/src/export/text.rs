@@ -219,7 +219,8 @@ fn render_table(table: &Table) -> Vec<String> {
                 .max(1)
                 .min(columns.saturating_sub(cursor).max(1));
             let single_line = cell.text().replace('\n', " ");
-            let needed = single_line.chars().count().min(MAX_COLUMN);
+            // Column widths include the one-space padding on each side of the cell.
+            let needed = single_line.chars().count().min(MAX_COLUMN) + 2;
             if span == 1 {
                 widths[cursor] = widths[cursor].max(needed);
             } else {
