@@ -213,8 +213,8 @@ fn build_zip(
     layout: &cleanup_formats::PdfLayout,
     body_size: f64,
     page_size: (f64, f64),
-) -> zip::result::Result<()> {
-    let mut writer = zip::ZipWriter::new(out);
+) -> zip::result::ZipResult<()> {
+    let mut writer = zip::ZipWriter::new(Cursor::new(out));
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     writer.start_file("[Content_Types].xml", options)?;
