@@ -14,6 +14,9 @@ pub use docx::Docx;
 pub use html::Html;
 pub use image::ImageFormat;
 pub use markdown::Markdown;
-pub use pdf::Pdf;
+pub use pdf::{
+    body_font_size, cluster_lines, pdf_layout, Pdf, PageLayout, LayoutImage, LayoutLink,
+    LayoutSpan, PdfLayout,
+};
 pub use sniff::{format_for_path, formatter_for_path};
 pub use text::PlainText;

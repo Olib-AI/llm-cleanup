@@ -1229,6 +1229,9 @@ struct FontProfile {
     code_len: usize,
     decode: HashMap<u32, String>,
     encode: HashMap<char, u32>,
+    /// The font's `BaseFont` name (e.g. `Helvetica-BoldOblique`), used to guess
+    /// bold/italic styling for layout-aware conversion targets.
+    base_name: String,
     supported: bool,
 }
 
@@ -1238,11 +1241,12 @@ impl FontProfile {
             code_len: 1,
             decode: HashMap::new(),
             encode: HashMap::new(),
+            base_name: String::new(),
             supported: false,
         }
     }
 
-    fn from_decode(code_len: usize, decode: HashMap<u32, String>) -> Self {
+    fn from_decode(code_len: usize, decode: HashMap<u32, String>, base_name: String) -> Self {
         let mut encode: HashMap<char, u32> = HashMap::new();
         let mut codes: Vec<u32> = decode.keys().copied().collect();
         codes.sort_unstable();
@@ -1259,6 +1263,7 @@ impl FontProfile {
             code_len: code_len.max(1),
             decode,
             encode,
+            base_name,
             supported: true,
         }
     }
@@ -1692,7 +1697,11 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
         let (decode, codespace_len) = parse_tounicode_cmap(&data);
         if !decode.is_empty() {
             let code_len = codespace_len.unwrap_or(if subtype == "Type0" { 2 } else { 1 });
-            return FontProfile::from_decode(code_len, decode);
+            let base_name = dict_get(font_dict, "BaseFont")
+                .and_then(as_name)
+                .cloned()
+                .unwrap_or_default();
+            return FontProfile::from_decode(code_len, decode, base_name);
         }
     }
 
@@ -1701,8 +1710,9 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
     if subtype == "Type0" {
         return FontProfile::unsupported();
     }
-    let base_font = dict_get(font_dict, "BaseFont")
-        .and_then(as_name)
+    let base_font_raw = dict_get(font_dict, "BaseFont").and_then(as_name).cloned();
+    let base_font = base_font_raw
+        .as_deref()
         .unwrap_or("")
         .to_ascii_lowercase();
     if base_font.contains("symbol") || base_font.contains("zapfdingbats") {
@@ -1710,7 +1720,7 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
     }
 
     let encoding = dict_get(font_dict, "Encoding").map(|value| pdf.resolve(value).clone());
-    let (mut base_name, mut differences): (String, Vec<Value>) =
+    let (mut encoding_base, mut differences): (String, Vec<Value>) =
         ("WinAnsiEncoding".to_string(), Vec::new());
     match &encoding {
         Some(Value::Name(name)) => base_name = name.clone(),
@@ -1760,7 +1770,8 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
             _ => {}
         }
     }
-    FontProfile::from_decode(1, decode)
+    let base_name = base_font_raw.as_deref().unwrap_or("").to_string();
+    FontProfile::from_decode(1, decode, base_name)
 }
 
 fn fonts_for_resources(
@@ -1792,9 +1803,60 @@ fn fonts_for_resources(
 // Page tree, content streams, and prose spans
 // ---------------------------------------------------------------------------
 
+/// Text state for one content stream: the text matrix, current font and size.
+/// The matrix maps text space to user space; its translation components (e, f)
+/// are the point at which the next string will be shown.
+struct TextState {
+    tm: [f64; 6],
+    tlm: [f64; 6],
+    font: Option<String>,
+    font_size: f64,
+    leading: f64,
+    stack: Vec<TextState>,
+}
+
+impl TextState {
+    fn new() -> Self {
+        TextState {
+            tm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            tlm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            font: None,
+            font_size: 10.0,
+            leading: 0.0,
+            stack: Vec::new(),
+        }
+    }
+
+    fn set_text_matrix(&mut self, m: [f64; 6]) {
+        self.tm = m;
+        self.tlm = m;
+    }
+
+    fn translate(&mut self, tx: f64, ty: f64) {
+        let [a, b, c, d, e, f] = self.tm;
+        self.tm = [a, b, c, d, e + a * tx + c * ty, f + b * tx + d * ty];
+        self.tlm = self.tm;
+    }
+
+    fn next_line(&mut self) {
+        self.tm = [1.0, 0.0, 0.0, 1.0, self.tlm[4], self.tlm[5] - self.leading];
+        self.tlm = self.tm;
+    }
+
+    fn position(&self) -> (f64, f64) {
+        (self.tm[4], self.tm[5])
+    }
+}
+
 #[derive(Debug)]
 struct StreamCtx {
     reference: Ref,
+    /// Zero-based index of the page this stream belongs to (Form XObject
+    /// streams are attributed to the page that first references them).
+    page_index: usize,
+    /// The page's media box `[llx, lly, urx, ury]`, used to convert user-space
+    /// points to top-left-origin page coordinates.
+    page_rect: [f64; 4],
     decoded: Vec<u8>,
     fonts: BTreeMap<String, FontProfile>,
     base: usize,
@@ -1808,6 +1870,12 @@ struct SegmentInfo {
     text: String,
     font_name: String,
     is_hex: bool,
+    /// User-space position (x, y, origin bottom-left) where the string starts.
+    x: f64,
+    y: f64,
+    font_size: f64,
+    bold: bool,
+    italic: bool,
 }
 
 #[derive(Debug)]
@@ -1820,17 +1888,102 @@ struct DerivedPdf {
     virtual_source: Vec<u8>,
     unsupported_fragments: usize,
     page_count: usize,
+    pages: Vec<PageInfo>,
 }
 
+#[derive(Debug, Clone)]
 struct PageInfo {
+    /// Reference of the page object itself.
+    page_ref: Ref,
     content_refs: Vec<Ref>,
     fonts: BTreeMap<String, FontProfile>,
     resources: Option<Value>,
+    media_box: [f64; 4],
+    /// Link annotations on this page, rects in user space `[llx, lly, urx, ury]`.
+    links: Vec<([f64; 4], String)>,
+}
+
+fn as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Int(number) => Some(*number as f64),
+        Value::Real(text) => text.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn array_of_f64<'a>(pdf: &'a ParsedPdf, value: &'a Value) -> Option<[f64; 4]> {
+    let Value::Array(items) = pdf.resolve(value) else {
+        return None;
+    };
+    let mut out = [0.0; 4];
+    for (i, item) in items.iter().enumerate().take(4) {
+        out[i] = as_f64(item).unwrap_or(0.0);
+    }
+    Some(out)
+}
+
+/// The page's media box `[llx, lly, urx, ury]`; `[0, 0, 612, 792]` when absent.
+fn media_box_of(dict: &[(String, Value)], pdf: &ParsedPdf) -> [f64; 4] {
+    dict_get(dict, "MediaBox")
+        .and_then(|value| array_of_f64(pdf, value))
+        .unwrap_or([0.0, 0.0, 612.0, 792.0])
+}
+
+/// The URI of a link annotation, following `/A` (direct or indirect) and
+/// falling back to a `/S /URI` key on the annotation dictionary itself.
+fn link_uri(pdf: &ParsedPdf, annot: &[(String, Value)]) -> Option<String> {
+    let a_dict = dict_get(annot, "A").map(|value| match value {
+        Value::Ref(reference) => pdf.object_dict(*reference).cloned(),
+        Value::Dict(dict) => Some(dict.clone()),
+        _ => None,
+    });
+    let a_dict = match a_dict {
+        Some(Some(dict)) => dict,
+        _ => annot.to_vec(),
+    };
+    if dict_get(&a_dict, "S").and_then(as_name) != Some("URI") {
+        return None;
+    }
+    dict_get(&a_dict, "URI").and_then(|value| match value {
+        Value::Str(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+        Value::Name(name) => Some(name.clone()),
+        _ => None,
+    })
+}
+
+fn link_annotations(
+    pdf: &ParsedPdf,
+    dict: &[(String, Value)],
+) -> Vec<([f64; 4], String)> {
+    let mut out = Vec::new();
+    let Some(Value::Array(annots)) = dict_get(dict, "Annots") else {
+        return out;
+    };
+    for item in annots {
+        let Some(reference) = as_ref(item) else {
+            continue;
+        };
+        let Some(annot) = pdf.object_dict(reference) else {
+            continue;
+        };
+        if dict_get(annot, "Subtype").and_then(as_name) != Some("Link") {
+            continue;
+        }
+        let Some(rect) = dict_get(annot, "Rect").and_then(|value| array_of_f64(pdf, value)) else {
+            continue;
+        };
+        let Some(uri) = link_uri(pdf, annot) else {
+            continue;
+        };
+        out.push((rect, uri));
+    }
+    out
 }
 
 fn walk_pages(
     pdf: &ParsedPdf,
     node: &Value,
+    node_ref: Ref,
     inherited_resources: &Option<Value>,
     visited: &mut BTreeSet<Ref>,
     out: &mut Vec<PageInfo>,
@@ -1839,11 +1992,15 @@ fn walk_pages(
     if depth > 64 || out.len() > 100_000 {
         return;
     }
-    if let Value::Ref(reference) = node
-        && !visited.insert(*reference)
-    {
-        return;
-    }
+    let node_reference = match node {
+        Value::Ref(reference) => {
+            if !visited.insert(*reference) {
+                return;
+            }
+            Some(*reference)
+        }
+        _ => None,
+    };
     let Some(dict) = pdf.resolve_dict(node) else {
         return;
     };
@@ -1855,7 +2012,19 @@ fn walk_pages(
     {
         let kids = kids.clone();
         for kid in &kids {
-            walk_pages(pdf, kid, &resources, visited, out, depth + 1);
+            if let Some(reference) = as_ref(kid)
+                && let Some(kid_obj) = pdf.get(reference)
+            {
+                walk_pages(
+                    pdf,
+                    &kid_obj.value,
+                    reference,
+                    &resources,
+                    visited,
+                    out,
+                    depth + 1,
+                );
+            }
         }
         return;
     }
@@ -1873,9 +2042,15 @@ fn walk_pages(
     }
     let fonts = fonts_for_resources(pdf, resources.as_ref());
     out.push(PageInfo {
+        page_ref: node_reference.unwrap_or(Ref {
+            num: 0,
+            generation: 0,
+        }),
         content_refs,
         fonts,
         resources,
+        media_box: media_box_of(dict, pdf),
+        links: link_annotations(pdf, dict),
     });
 }
 
@@ -1884,6 +2059,8 @@ fn push_content_stream(
     streams: &mut Vec<StreamCtx>,
     seen: &mut BTreeSet<Ref>,
     reference: Ref,
+    page_index: usize,
+    page_rect: [f64; 4],
     fonts: BTreeMap<String, FontProfile>,
 ) {
     if !seen.insert(reference) {
@@ -1892,6 +2069,8 @@ fn push_content_stream(
     if let Some(Ok(decoded)) = pdf.decoded_stream(reference) {
         streams.push(StreamCtx {
             reference,
+            page_index,
+            page_rect,
             decoded,
             fonts,
             base: 0,
@@ -1907,6 +2086,8 @@ fn collect_form_streams(
     seen: &mut BTreeSet<Ref>,
     visited_forms: &mut BTreeSet<Ref>,
     depth: usize,
+    page_index: usize,
+    page_rect: [f64; 4],
 ) {
     if depth > 16 {
         return;
@@ -1941,7 +2122,7 @@ fn collect_form_streams(
         for (name, profile) in fonts_for_resources(pdf, own_resources.as_ref()) {
             fonts.insert(name, profile);
         }
-        push_content_stream(pdf, streams, seen, reference, fonts.clone());
+        push_content_stream(pdf, streams, seen, reference, page_index, page_rect, fonts.clone());
         collect_form_streams(
             pdf,
             own_resources.as_ref().or(Some(resources)),
@@ -1950,6 +2131,8 @@ fn collect_form_streams(
             seen,
             visited_forms,
             depth + 1,
+            page_index,
+            page_rect,
         );
     }
 }
@@ -1967,7 +2150,9 @@ enum Operand {
     Name(String),
     Str(ContentString),
     Array(Vec<Operand>),
-    Other,
+    /// A numeric literal, kept as its source text so the layout extraction can
+    /// rebuild text matrices, font sizes and word advances from content streams.
+    Other(String),
 }
 
 fn parse_content_literal(bytes: &[u8], start: usize) -> Result<(ContentString, usize)> {
@@ -2148,7 +2333,7 @@ impl<'a> ContentLexer<'a> {
                             None => break,
                         }
                     }
-                    Some(ContentToken::Operand(Operand::Other))
+                    Some(ContentToken::Operand(Operand::Other(String::new())))
                 } else {
                     let (string, end) = parse_content_hex(self.bytes, self.pos).ok()?;
                     self.pos = end;
@@ -2161,7 +2346,7 @@ impl<'a> ContentLexer<'a> {
                     Some(ContentToken::Operator(">>".to_string()))
                 } else {
                     self.pos += 1;
-                    Some(ContentToken::Operand(Operand::Other))
+                    Some(ContentToken::Operand(Operand::Other(String::new())))
                 }
             }
             b'[' => {
@@ -2177,7 +2362,7 @@ impl<'a> ContentLexer<'a> {
                         }
                         Some(_) => match self.next_token() {
                             Some(ContentToken::Operand(operand)) => items.push(operand),
-                            Some(_) => items.push(Operand::Other),
+                            Some(_) => items.push(Operand::Other(String::new())),
                             None => break,
                         },
                     }
@@ -2220,7 +2405,7 @@ impl<'a> ContentLexer<'a> {
                     .all(|ch| ch.is_ascii_digit() || matches!(ch, '+' | '-' | '.'))
                     && token.chars().any(|ch| ch.is_ascii_digit());
                 if numeric || token == "true" || token == "false" || token == "null" {
-                    Some(ContentToken::Operand(Operand::Other))
+                    Some(ContentToken::Operand(Operand::Other(token)))
                 } else {
                     Some(ContentToken::Operator(token))
                 }
@@ -2261,11 +2446,18 @@ impl<'a> ContentLexer<'a> {
     }
 }
 
+fn font_style(base_name: &str) -> (bool, bool) {
+    let base = base_name.to_ascii_lowercase();
+    (base.contains("bold"), base.contains("italic") || base.contains("oblique"))
+}
+
 fn make_segment(
     stream_index: usize,
     fonts: &BTreeMap<String, FontProfile>,
     font_name: Option<&str>,
     string: &ContentString,
+    position: (f64, f64),
+    font_size: f64,
     unsupported: &mut usize,
 ) -> Option<SegmentInfo> {
     let Some(font_name) = font_name else {
@@ -2276,6 +2468,7 @@ fn make_segment(
         *unsupported += 1;
         return None;
     };
+    let (bold, italic) = font_style(&profile.base_name);
     let code_len = profile.code_len.max(1);
     let mut text = String::new();
     let mut boundaries = vec![0usize];
@@ -2307,7 +2500,27 @@ fn make_segment(
         text,
         font_name: font_name.to_string(),
         is_hex: string.is_hex,
+        x: position.0,
+        y: position.1,
+        font_size,
+        bold,
+        italic,
     })
+}
+
+/// Parse the first `count` operands as numbers; every operand must be numeric.
+fn numeric_operands<const COUNT: usize>(operands: &[Operand]) -> Option<[f64; COUNT]> {
+    if operands.len() < COUNT {
+        return None;
+    }
+    let mut out = [0.0; COUNT];
+    for (slot, operand) in out.iter_mut().zip(operands.iter()) {
+        *slot = match operand {
+            Operand::Other(text) => text.parse::<f64>().ok()?,
+            _ => return None,
+        };
+    }
+    Some(out)
 }
 
 fn flush_span(
@@ -2354,8 +2567,7 @@ fn tokenize_stream(
     let fonts = ctx.fonts.clone();
     let mut lexer = ContentLexer::new(&ctx.decoded);
     let mut operands: Vec<Operand> = Vec::new();
-    let mut current_font: Option<String> = None;
-    let mut font_stack: Vec<Option<String>> = Vec::new();
+    let mut state = TextState::new();
     let mut segments: Vec<SegmentInfo> = Vec::new();
 
     while let Some(token) = lexer.next_token() {
@@ -2370,18 +2582,50 @@ fn tokenize_stream(
                     "ET" => {
                         flush_span(streams, spans, span_segments, &mut segments);
                     }
+                    "Tm" => {
+                        if let Some(matrix) = numeric_operands(&operands) {
+                            state.set_text_matrix(matrix);
+                        }
+                    }
+                    "Td" => {
+                        if let Some([tx, ty]) = numeric_operands(&operands) {
+                            state.translate(tx, ty);
+                        }
+                    }
+                    "TD" => {
+                        if let Some([tx, ty]) = numeric_operands(&operands) {
+                            state.leading = -ty;
+                            state.translate(tx, ty);
+                        }
+                    }
+                    "T*" => state.next_line(),
+                    "TL" => {
+                        if let Some([leading]) = numeric_operands(&operands) {
+                            state.leading = leading;
+                        }
+                    }
                     "Tf" => {
                         if let Some(Operand::Name(name)) = operands.first() {
-                            current_font = Some(name.clone());
+                            state.font = Some(name.clone());
+                        }
+                        if let Some(Operand::Other(size)) = operands.get(1) {
+                            if let Ok(size) = size.parse::<f64>() {
+                                state.font_size = size;
+                            }
                         }
                     }
                     "Tj" | "'" => {
+                        if operator == "'" {
+                            state.next_line();
+                        }
                         if let Some(Operand::Str(string)) = operands.into_iter().next()
                             && let Some(segment) = make_segment(
                                 stream_index,
                                 &fonts,
-                                current_font.as_deref(),
+                                state.font.as_deref(),
                                 &string,
+                                state.position(),
+                                state.font_size,
                                 unsupported,
                             )
                         {
@@ -2391,12 +2635,17 @@ fn tokenize_stream(
                         continue;
                     }
                     "\"" => {
+                        // `" number number string`: set spacing, move to the next
+                        // line, then show the string.
+                        state.next_line();
                         if let Some(Operand::Str(string)) = operands.into_iter().last()
                             && let Some(segment) = make_segment(
                                 stream_index,
                                 &fonts,
-                                current_font.as_deref(),
+                                state.font.as_deref(),
                                 &string,
+                                state.position(),
+                                state.font_size,
                                 unsupported,
                             )
                         {
@@ -2407,25 +2656,45 @@ fn tokenize_stream(
                     }
                     "TJ" => {
                         if let Some(Operand::Array(items)) = operands.into_iter().next() {
+                            let mut x = state.position().0;
+                            let y = state.position().1;
                             for item in items {
-                                if let Operand::Str(string) = item
-                                    && let Some(segment) = make_segment(
-                                        stream_index,
-                                        &fonts,
-                                        current_font.as_deref(),
-                                        &string,
-                                        unsupported,
-                                    )
-                                {
-                                    segments.push(segment);
+                                match item {
+                                    Operand::Str(string) => {
+                                        if let Some(segment) = make_segment(
+                                            stream_index,
+                                            &fonts,
+                                            state.font.as_deref(),
+                                            &string,
+                                            (x, y),
+                                            state.font_size,
+                                            unsupported,
+                                        ) {
+                                            segments.push(segment);
+                                        }
+                                    }
+                                    Operand::Other(width) => {
+                                        if let Ok(width) = width.parse::<f64>() {
+                                            x += width * state.font_size / 1000.0;
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
+                            // Showing text advances the text origin; remember how
+                            // far we ran so later operators stay aligned with it.
+                            state.tm[4] = x;
+                            state.tlm[4] = x;
                         }
                         operands = Vec::new();
                         continue;
                     }
-                    "q" => font_stack.push(current_font.clone()),
-                    "Q" => current_font = font_stack.pop().unwrap_or(current_font),
+                    "q" => state.stack.push(state.clone()),
+                    "Q" => {
+                        if let Some(saved) = state.stack.pop() {
+                            state = saved;
+                        }
+                    }
                     _ => {}
                 }
                 operands.clear();
@@ -2449,26 +2718,42 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
         && let Some(catalog) = parsed.object_dict(root)
         && let Some(pages_root) = dict_get(catalog, "Pages").cloned()
     {
+        let pages_root_ref = as_ref(&pages_root)
+            .copied()
+            .unwrap_or(Ref {
+                num: 0,
+                generation: 0,
+            });
         let mut visited = BTreeSet::new();
-        walk_pages(&parsed, &pages_root, &None, &mut visited, &mut pages, 0);
+        walk_pages(
+            &parsed,
+            &pages_root,
+            pages_root_ref,
+            &None,
+            &mut visited,
+            &mut pages,
+            0,
+        );
     }
     let page_count = pages.len();
 
     let mut streams: Vec<StreamCtx> = Vec::new();
     let mut seen: BTreeSet<Ref> = BTreeSet::new();
-    for page in &pages {
+    for (page_index, page) in pages.iter().enumerate() {
         for &reference in &page.content_refs {
             push_content_stream(
                 &parsed,
                 &mut streams,
                 &mut seen,
                 reference,
+                page_index,
+                page.media_box,
                 page.fonts.clone(),
             );
         }
     }
     let mut visited_forms: BTreeSet<Ref> = BTreeSet::new();
-    for page in &pages {
+    for (page_index, page) in pages.iter().enumerate() {
         collect_form_streams(
             &parsed,
             page.resources.as_ref(),
@@ -2477,6 +2762,8 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
             &mut seen,
             &mut visited_forms,
             0,
+            page_index,
+            page.media_box,
         );
     }
 
@@ -2508,6 +2795,7 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
         virtual_source,
         unsupported_fragments,
         page_count,
+        pages,
     })
 }
 
@@ -3307,6 +3595,334 @@ impl Format for Pdf {
         }
         repack_pdf(rendered, &parsed, &replacements).ok()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Layout-aware extraction (for lossy conversion targets)
+// ---------------------------------------------------------------------------
+
+/// A string of text as it was drawn on a page, with its position and style.
+///
+/// Coordinates are PDF points with the origin at the page's top-left corner
+/// and `y` increasing downward — the natural coordinate system for Markdown,
+/// DOCX and other flow targets.
+#[derive(Debug, Clone)]
+pub struct LayoutSpan {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub font_size: f64,
+    pub font_name: String,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// An embedded image placed on a page, carrying the bytes of its encoded
+/// stream (`DCTDecode` images are JPEG bytes and pass straight through).
+#[derive(Debug, Clone)]
+pub struct LayoutImage {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub mime: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+/// A link annotation: the page rectangle it covers and its URI target.
+#[derive(Debug, Clone)]
+pub struct LayoutLink {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PageLayout {
+    pub width: f64,
+    pub height: f64,
+    pub spans: Vec<LayoutSpan>,
+    pub images: Vec<LayoutImage>,
+    pub links: Vec<LayoutLink>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfLayout {
+    pub pages: Vec<PageLayout>,
+}
+
+/// Cluster spans into visual lines: spans whose baselines are within a small
+/// tolerance belong to the same line; lines come out top-to-bottom and the
+/// spans inside each line left-to-right.
+pub fn cluster_lines(spans: &[LayoutSpan]) -> Vec<Vec<LayoutSpan>> {
+    let mut spans: Vec<LayoutSpan> = spans.to_vec();
+    spans.sort_by(|a, b| {
+        a.y.partial_cmp(&b.y)
+            .unwrap_or(std::cmp::Ordering::Less)
+            .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Less))
+    });
+    let mut lines: Vec<Vec<LayoutSpan>> = Vec::new();
+    for span in spans {
+        let tolerance = |line: &[LayoutSpan]| {
+            let biggest = line
+                .iter()
+                .map(|span| span.font_size)
+                .fold(0.0f64, f64::max)
+                .max(span.font_size);
+            2.5f64.max(0.4 * biggest)
+        };
+        if let Some(last) = lines.last_mut()
+            && let Some(previous) = last.last()
+            && span.y - previous.y <= tolerance(last)
+        {
+            last.push(span);
+        } else {
+            lines.push(vec![span]);
+        }
+    }
+    for line in &mut lines {
+        line.sort_by(|a, b| {
+            a.x.partial_cmp(&b.x)
+                .unwrap_or(std::cmp::Ordering::Less)
+        });
+    }
+    lines
+}
+
+/// The most common font size among `spans` (the body text size), or `10.0`.
+pub fn body_font_size(spans: &[LayoutSpan]) -> f64 {
+    let mut counts: BTreeMap<i32, usize> = BTreeMap::new();
+    for span in spans {
+        *counts.entry((span.font_size * 10.0) as i32).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(size, _)| size as f64 / 10.0)
+        .unwrap_or(10.0)
+}
+
+/// The `/XObject` name → object reference map declared in a resources dict.
+fn xobjects_of<'a>(
+    resources: Option<&'a Value>,
+    pdf: &'a ParsedPdf,
+) -> Vec<(String, Ref)> {
+    let mut out = Vec::new();
+    let Some(resource_dict) = resources.and_then(|value| pdf.resolve_dict(value)) else {
+        return out;
+    };
+    let Some(xobjects) = dict_get(resource_dict, "XObject") else {
+        return out;
+    };
+    let Some(xobject_dict) = pdf.resolve_dict(xobjects) else {
+        return out;
+    };
+    for (name, value) in xobject_dict {
+        if let Some(reference) = as_ref(value) {
+            out.push((name.clone(), reference));
+        }
+    }
+    out
+}
+
+/// MIME type of an embedded image XObject; `None` for formats we cannot
+/// emit losslessly (we never re-encode pixels).
+fn image_mime(dict: &[(String, Value)]) -> Option<&'static str> {
+    let filters = dict_filters(dict);
+    if filters.iter().any(|f| f == "DCTDecode" || f == "DCT") {
+        return Some("image/jpeg");
+    }
+    None
+}
+
+/// Find every `/Name Do` invocation (an inline XObject show) in a decoded
+/// content stream, returning the name and the position of its leading slash.
+fn xobject_invocations(decoded: &[u8]) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < decoded.len() {
+        if decoded[pos] == b'/' {
+            let mut end = pos + 1;
+            while end < decoded.len()
+                && !is_pdf_ws(decoded[end])
+                && !is_pdf_delimiter(decoded[end])
+            {
+                end += 1;
+            }
+            let name = String::from_utf8_lossy(&decoded[pos + 1..end]).into_owned();
+            let mut p = end;
+            while p < decoded.len() && is_pdf_ws(decoded[p]) {
+                p += 1;
+            }
+            if decoded.get(p..p + 2) == Some(b"Do") {
+                out.push((name, pos));
+            }
+            pos = end;
+        } else {
+            pos += 1;
+        }
+    }
+    out
+}
+
+/// The placement rect of one image XObject invocation: the most recent
+/// `<six numbers> cm` text/graphics matrix before the `/Name Do` maps the
+/// image's natural `[0, 0]-[width, height]` rectangle into user space.
+fn image_placement(
+    decoded: &[u8],
+    name_pos: usize,
+    width: f64,
+    height: f64,
+) -> Option<[f64; 4]> {
+    let from = name_pos.saturating_sub(512);
+    let cm_at = from + decoded[from..name_pos].rfind(b" cm ")?;
+    let tokens: Vec<&str> = decoded[..cm_at].split_ascii_whitespace().collect();
+    if tokens.len() < 6 {
+        return None;
+    }
+    let mut matrix = [0.0; 6];
+    for (i, token) in tokens[tokens.len() - 6..].iter().enumerate() {
+        matrix[i] = match token.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
+    }
+    let [a, b, c, d, e, f] = matrix;
+    let corners = [
+        (0.0, 0.0),
+        (width, 0.0),
+        (0.0, height),
+        (width, height),
+    ];
+    let mut xs = [0.0; 4];
+    let mut ys = [0.0; 4];
+    for (i, (x, y)) in corners.iter().enumerate() {
+        xs[i] = a * x + c * y + e;
+        ys[i] = b * x + d * y + f;
+    }
+    Some([
+        xs.iter().copied().fold(f64::INFINITY, f64::min),
+        ys.iter().copied().fold(f64::INFINITY, f64::min),
+        xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    ])
+}
+
+/// Image placements on one page: scan that page's content streams for
+/// `/XObjectName Do` invocations and resolve each to an image XObject.
+fn collect_images(
+    derived: &DerivedPdf,
+    page_index: usize,
+    page: &PageInfo,
+) -> Vec<LayoutImage> {
+    let mut out = Vec::new();
+    let xobjects = xobjects_of(page.resources.as_ref(), &derived.parsed);
+    if xobjects.is_empty() {
+        return out;
+    }
+    for stream_index in 0..derived.streams.len() {
+        let stream = match derived.streams.get(stream_index) {
+            Some(stream) if stream.page_index == page_index => stream,
+            _ => continue,
+        };
+        let decoded = &stream.decoded;
+        for (name, name_pos) in xobject_invocations(decoded) {
+            let Some(reference) = xobjects.iter().find(|(n, _)| n == &name).map(|(_, r)| *r) else {
+                continue;
+            };
+            let Some(object) = derived.parsed.get(reference) else {
+                continue;
+            };
+            let Some(dict) = as_dict(&object.value) else {
+                continue;
+            };
+            if dict_get(dict, "Subtype").and_then(as_name) != Some("Image") {
+                continue;
+            }
+            let Some(mime) = image_mime(dict) else {
+                continue;
+            };
+            let width = dict_get(dict, "Width").and_then(as_usize).unwrap_or(0) as f64;
+            let height = dict_get(dict, "Height").and_then(as_usize).unwrap_or(0) as f64;
+            let Some(raw) = object.stream.as_deref() else {
+                continue;
+            };
+            let Some([minx, miny, maxx, maxy]) =
+                image_placement(decoded, name_pos, width, height)
+            else {
+                continue;
+            };
+            out.push(LayoutImage {
+                x: minx,
+                y: miny,
+                width: maxx - minx,
+                height: maxy - miny,
+                mime,
+                bytes: raw.to_vec(),
+            });
+        }
+    }
+    out
+}
+
+/// Extract per-page positioned text, embedded images and link annotations
+/// from a PDF file, for use by the lossy conversion targets (Markdown, DOCX,
+/// plain text). Coordinates use a top-left page origin.
+pub fn pdf_layout(bytes: &[u8]) -> Result<PdfLayout> {
+    let derived = derive_pdf(bytes)?;
+    let mut pages = Vec::with_capacity(derived.pages.len());
+    for (page_index, page) in derived.pages.iter().enumerate() {
+        let [lx, ly, ux, uy] = page.media_box;
+        let width = ux - lx;
+        let height = uy - ly;
+        let mut spans: Vec<LayoutSpan> = Vec::new();
+        for stream_index in 0..derived.streams.len() {
+            if derived.streams[stream_index].page_index != page_index {
+                continue;
+            }
+            for segment in &derived.span_segments[stream_index] {
+                spans.push(LayoutSpan {
+                    text: segment.text.clone(),
+                    x: segment.x - lx,
+                    y: uy - segment.y,
+                    font_size: segment.font_size,
+                    font_name: segment.font_name.clone(),
+                    bold: segment.bold,
+                    italic: segment.italic,
+                });
+            }
+        }
+        spans.sort_by(|a, b| {
+            a.y.partial_cmp(&b.y)
+                .unwrap_or(std::cmp::Ordering::Less)
+                .then_with(|| {
+                    a.x.partial_cmp(&b.x)
+                        .unwrap_or(std::cmp::Ordering::Less)
+                })
+        });
+        let images = collect_images(derived, page_index, page);
+        let links: Vec<LayoutLink> = page
+            .links
+            .iter()
+            .map(|([llx, lly, urx, ury], uri)| LayoutLink {
+                x0: llx - lx,
+                x1: urx - lx,
+                y0: uy - ury,
+                y1: uy - lly,
+                uri: uri.clone(),
+            })
+            .collect();
+        pages.push(PageLayout {
+            width,
+            height,
+            spans,
+            images,
+            links,
+        });
+    }
+    Ok(PdfLayout { pages })
 }
 
 #[cfg(test)]
