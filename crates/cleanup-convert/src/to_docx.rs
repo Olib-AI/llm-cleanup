@@ -4,10 +4,12 @@
 
 use std::io::Cursor;
 
+use crate::table_regions;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
-use cleanup_formats::{LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines};
-use crate::table_regions;
+use cleanup_formats::{
+    LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines,
+};
 use docx_rs::{Docx, Paragraph, Run};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use zip::write::SimpleFileOptions;

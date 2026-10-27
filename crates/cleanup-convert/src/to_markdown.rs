@@ -1,11 +1,13 @@
 //! Convert to Markdown.
 
+use crate::table_regions;
 use crate::to_text::html_paragraph_texts;
 use crate::xml_text::docx_paragraph_texts;
 use crate::{ConvertError, ConvertReport, Result};
 use cleanup_core::FormatId;
-use cleanup_formats::{LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout};
-use crate::table_regions;
+use cleanup_formats::{
+    LayoutImage, LayoutLink, LayoutSpan, PageLayout, body_font_size, cluster_lines, pdf_layout,
+};
 
 /// Convert already-cleaned `src` bytes (in format `from`) into Markdown.
 pub fn convert(from: FormatId, src: &[u8]) -> Result<(Vec<u8>, ConvertReport)> {
