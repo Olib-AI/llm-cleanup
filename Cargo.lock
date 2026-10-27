@@ -885,6 +885,7 @@ dependencies = [
  "docx-rs",
  "pulldown-cmark",
  "thiserror 2.0.21",
+ "zip 9.1.0",
 ]
 
 [[package]]
