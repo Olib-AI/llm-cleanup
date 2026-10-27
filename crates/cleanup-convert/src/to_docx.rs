@@ -2,7 +2,7 @@
 //! hand-built `.docx` package (zip + OPC XML) so embedded JPEG images, page size,
 //! headings, lists and tables survive the conversion.
 
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use crate::table_regions;
 use crate::{ConvertError, ConvertReport, Result};
