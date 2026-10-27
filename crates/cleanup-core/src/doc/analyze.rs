@@ -1040,9 +1040,7 @@ fn take_list(indices: &[usize], lines: &mut [Line], start: usize) -> (Block, usi
             let next_text = lines[next_index].text().trim().to_string();
             let next_words = lines[next_index].words.clone();
             let gap = next_rect.y - previous_bottom;
-            if gap > item_size * 0.9
-                || is_bullet_prefix(&next_text)
-                || next_size > item_size * 1.15
+            if gap > item_size * 0.9 || is_bullet_prefix(&next_text) || next_size > item_size * 1.15
             {
                 break;
             }
