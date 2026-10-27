@@ -1699,7 +1699,7 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
             let code_len = codespace_len.unwrap_or(if subtype == "Type0" { 2 } else { 1 });
             let base_name = dict_get(font_dict, "BaseFont")
                 .and_then(as_name)
-                .cloned()
+                .copied()
                 .unwrap_or_default();
             return FontProfile::from_decode(code_len, decode, base_name);
         }
@@ -1710,7 +1710,7 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
     if subtype == "Type0" {
         return FontProfile::unsupported();
     }
-    let base_font_raw = dict_get(font_dict, "BaseFont").and_then(as_name).cloned();
+    let base_font_raw = dict_get(font_dict, "BaseFont").and_then(as_name).copied();
     let base_font = base_font_raw.as_deref().unwrap_or("").to_ascii_lowercase();
     if base_font.contains("symbol") || base_font.contains("zapfdingbats") {
         return FontProfile::unsupported();
@@ -1720,10 +1720,10 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
     let (mut encoding_base, mut differences): (String, Vec<Value>) =
         ("WinAnsiEncoding".to_string(), Vec::new());
     match &encoding {
-        Some(Value::Name(name)) => base_name = name.clone(),
+        Some(Value::Name(name)) => encoding_base = name.clone(),
         Some(Value::Dict(dict)) => {
             if let Some(name) = dict_get(dict, "BaseEncoding").and_then(as_name) {
-                base_name = name.to_string();
+                encoding_base = name.to_string();
             }
             if let Some(Value::Array(items)) = dict_get(dict, "Differences") {
                 differences = items.clone();
@@ -1731,14 +1731,14 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
         }
         _ => {}
     }
-    if base_name == "MacExpertEncoding" {
+    if encoding_base == "MacExpertEncoding" {
         return FontProfile::unsupported();
     }
 
     let mut decode: HashMap<u32, String> = HashMap::new();
     for code in 0u16..=255 {
         let byte = code as u8;
-        let ch = if base_name == "MacRomanEncoding" {
+        let ch = if encoding_base == "MacRomanEncoding" {
             macroman_char(byte)
         } else {
             winansi_char(byte)
@@ -1803,6 +1803,7 @@ fn fonts_for_resources(
 /// Text state for one content stream: the text matrix, current font and size.
 /// The matrix maps text space to user space; its translation components (e, f)
 /// are the point at which the next string will be shown.
+#[derive(Clone)]
 struct TextState {
     tm: [f64; 6],
     tlm: [f64; 6],
@@ -1977,7 +1978,7 @@ fn link_annotations(pdf: &ParsedPdf, dict: &[(String, Value)]) -> Vec<([f64; 4],
 fn walk_pages(
     pdf: &ParsedPdf,
     node: &Value,
-    node_ref: Ref,
+    _node_ref: Ref,
     inherited_resources: &Option<Value>,
     visited: &mut BTreeSet<Ref>,
     out: &mut Vec<PageInfo>,
@@ -2723,7 +2724,7 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
         && let Some(catalog) = parsed.object_dict(root)
         && let Some(pages_root) = dict_get(catalog, "Pages").cloned()
     {
-        let pages_root_ref = as_ref(&pages_root).copied().unwrap_or(Ref {
+        let pages_root_ref = as_ref(&pages_root).unwrap_or(Ref {
             num: 0,
             generation: 0,
         });
@@ -3767,8 +3768,9 @@ fn xobject_invocations(decoded: &[u8]) -> Vec<(String, usize)> {
 /// image's natural `[0, 0]-[width, height]` rectangle into user space.
 fn image_placement(decoded: &[u8], name_pos: usize, width: f64, height: f64) -> Option<[f64; 4]> {
     let from = name_pos.saturating_sub(512);
-    let cm_at = from + decoded[from..name_pos].rfind(b" cm ")?;
-    let tokens: Vec<&str> = decoded[..cm_at].split_ascii_whitespace().collect();
+    let cm_at = from + decoded[from..name_pos].windows(4).rposition(|w| w == b" cm ")?;
+    let text = std::str::from_utf8(&decoded[..cm_at]).unwrap_or("");
+    let tokens: Vec<&str> = text.split_ascii_whitespace().collect();
     if tokens.len() < 6 {
         return None;
     }
@@ -3879,7 +3881,7 @@ pub fn pdf_layout(bytes: &[u8]) -> Result<PdfLayout> {
                 .unwrap_or(std::cmp::Ordering::Less)
                 .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Less))
         });
-        let images = collect_images(derived, page_index, page);
+        let images = collect_images(&derived, page_index, page);
         let links: Vec<LayoutLink> = page
             .links
             .iter()
