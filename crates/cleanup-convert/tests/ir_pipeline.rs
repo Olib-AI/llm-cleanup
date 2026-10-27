@@ -209,9 +209,11 @@ fn raster_images_are_extracted_and_embedded() {
     )
     .expect("docx -> pdf");
     let pdf_text = String::from_utf8_lossy(&pdf.bytes).into_owned();
+    let embedded = pdf_text.matches("/Subtype /Image").count();
     assert!(
-        pdf_text.matches("/Subtype /Image").count() >= 2,
-        "the PDF exporter dropped embedded images"
+        embedded >= 2,
+        "the PDF exporter embedded {embedded} image(s); warnings: {:?}",
+        pdf.report.warnings
     );
 }
 
@@ -408,8 +410,10 @@ fn every_fixture_converts_to_every_target() {
                     output.bytes.starts_with(b"PK"),
                     "{name} -> DOCX is not a zip"
                 ),
+                // A PDF source converts to itself, keeping its own header, so only the
+                // `%PDF-` magic is guaranteed here.
                 Target::Pdf => assert!(
-                    output.bytes.starts_with(b"%PDF-1.7"),
+                    output.bytes.starts_with(b"%PDF-"),
                     "{name} -> PDF is not a PDF"
                 ),
                 Target::Markdown | Target::Text => {
@@ -429,7 +433,16 @@ fn every_fixture_converts_to_every_target() {
 
 #[test]
 fn pdf_output_is_self_describing() {
-    let output = convert("ai_slop_samples.pdf", Target::Pdf);
+    // Convert *into* PDF from a non-PDF source: a PDF source is its own target and is returned
+    // byte-for-byte, which would never exercise the exporter.
+    let markdown = b"# Findings\n\nCafe naive - \xe2\x88\x91\n\n| Item | Total |\n| --- | ---: |\n| Widgets | 1204 |\n";
+    let output = convert_document(
+        FormatId::Markdown,
+        markdown,
+        Target::Pdf,
+        &ConvertOptions::default(),
+    )
+    .expect("markdown -> pdf");
     let text = String::from_utf8_lossy(&output.bytes).into_owned();
     assert!(text.starts_with("%PDF-1.7"));
     assert!(text.contains("/FontFile2"), "fonts must be embedded");

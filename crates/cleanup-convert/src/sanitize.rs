@@ -180,6 +180,14 @@ fn sanitize_inlines(
                 edits.push((range, String::new(), rule_id.to_string()));
             }
         }
+        // Disclaimers are content-free wherever they appear, so they are removed from the middle
+        // of a block too — readers merge wrap-adjacent paragraphs, and a disclaimer that lands
+        // inside one is still a disclaimer.
+        for range in disclaimer_ranges(&text) {
+            if on_char_boundary(&text, range.start) && on_char_boundary(&text, range.end) {
+                edits.push((range, String::new(), "ir.disclaimer".to_string()));
+            }
+        }
     }
     if edits.is_empty() {
         return;
@@ -435,6 +443,38 @@ fn is_pure_boilerplate(text: &str) -> bool {
     sentences
         .iter()
         .all(|range| is_slop_sentence(&text[range.clone()]))
+}
+
+/// Ranges of sentences in `text` that are pure disclaimers.
+///
+/// A lone sentence is left to [`is_pure_boilerplate`]: dropping the only sentence in a block is
+/// block removal, not sentence trimming.
+fn disclaimer_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let sentences = sentence_ranges(text);
+    if sentences.len() < 2 {
+        return Vec::new();
+    }
+    sentences
+        .into_iter()
+        .filter(|range| is_disclaimer_sentence(&text[range.clone()]))
+        .collect()
+}
+
+/// True if this single sentence is a disclaimer rather than document content.
+fn is_disclaimer_sentence(sentence: &str) -> bool {
+    let normalized = normalized(sentence);
+    if normalized.is_empty() {
+        return false;
+    }
+    if PURE_BOILERPLATE
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+    {
+        return true;
+    }
+    DISCLAIMER_SENTENCES
+        .iter()
+        .any(|pattern| normalized.starts_with(*pattern))
 }
 
 /// Sentence ranges at the start/end of `text` that are assistant chatter.
