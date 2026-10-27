@@ -2619,10 +2619,10 @@ fn tokenize_stream(
                         if let Some(Operand::Name(name)) = operands.first() {
                             state.font = Some(name.clone());
                         }
-                        if let Some(Operand::Other(size)) = operands.get(1) {
-                            if let Ok(size) = size.parse::<f64>() {
-                                state.font_size = size;
-                            }
+                        if let Some(Operand::Other(size)) = operands.get(1)
+                            && let Ok(size) = size.parse::<f64>()
+                        {
+                            state.font_size = size;
                         }
                     }
                     "Tj" | "'" => {
