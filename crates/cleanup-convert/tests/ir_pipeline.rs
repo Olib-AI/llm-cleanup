@@ -323,7 +323,8 @@ fn assistant_slop_is_removed_without_losing_content() {
     ] {
         assert!(
             !markdown.contains(slop),
-            "boilerplate `{slop}` survived sanitization:\n{markdown}"
+            "boilerplate `{slop}` survived sanitization (warnings: {:?}):\n{markdown}",
+            output.report.warnings
         );
     }
     for content in [

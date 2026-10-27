@@ -121,7 +121,7 @@ fn sanitize_blocks(
             let drop = matches!(
                 block,
                 Block::Paragraph { .. } | Block::Heading { .. } | Block::Callout { .. }
-            ) && is_pure_boilerplate(&text);
+            ) && (is_pure_boilerplate(&text) || is_short_disclaimer(&text));
             if drop {
                 removed += 1;
             }
@@ -443,6 +443,19 @@ fn is_pure_boilerplate(text: &str) -> bool {
     sentences
         .iter()
         .all(|range| is_slop_sentence(&text[range.clone()]))
+}
+
+/// A short block that carries an explicit disclaimer phrase is boilerplate even when the
+/// sentence splitter does not isolate the phrase (merged paragraphs, unusual punctuation).
+fn is_short_disclaimer(text: &str) -> bool {
+    let normalized = normalized(text);
+    if normalized.split_whitespace().count() > 24 {
+        return false;
+    }
+    DISCLAIMER_SENTENCES
+        .iter()
+        .chain(PURE_BOILERPLATE.iter())
+        .any(|pattern| normalized.contains(*pattern))
 }
 
 /// Ranges of sentences in `text` that are pure disclaimers.

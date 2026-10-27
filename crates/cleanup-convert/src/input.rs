@@ -1024,6 +1024,16 @@ fn docx(src: &[u8]) -> Result<(Doc, Vec<String>)> {
             Ok(XmlEvent::Empty(element)) => {
                 let name = element.name().as_ref().to_string();
                 match local(&name) {
+                    // `<a:blip r:embed="rId3"/>` is how every writer spells an inline image,
+                    // so the reference has to be read here as well as on a start tag.
+                    "blip" => {
+                        for attribute in element.attributes().flatten() {
+                            if local(attribute.key.as_ref()) == "embed" {
+                                let value: &str = &attribute.value;
+                                embed_image(src, &images, value, &mut doc, &mut warnings);
+                            }
+                        }
+                    }
                     "pStyle" => {
                         for attribute in element.attributes().flatten() {
                             if local(attribute.key.as_ref()) == "val" {
