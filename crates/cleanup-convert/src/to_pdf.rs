@@ -456,11 +456,11 @@ fn wrapped_lines(runs: &[Run], size: f64, fonts: &[TrueType; 2], x_start: f64) -
     let mut cur_units = 0.0;
 
     let flush = |cur: &mut Vec<(usize, bool, String)>,
-                     cur_units: &mut f64,
-                     lines: &mut Vec<Line>,
-                     x_start: f64,
-                     size: f64,
-                     fonts: &[TrueType; 2]| {
+                 cur_units: &mut f64,
+                 lines: &mut Vec<Line>,
+                 x_start: f64,
+                 size: f64,
+                 fonts: &[TrueType; 2]| {
         if cur.is_empty() {
             return;
         }
