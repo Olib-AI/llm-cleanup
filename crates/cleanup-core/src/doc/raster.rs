@@ -194,9 +194,8 @@ pub fn decode_png(bytes: &[u8]) -> Option<RasterImage> {
                 _ => {
                     // Composite RGBA over white so the page background never turns black.
                     let alpha = u16::from(pixel[3]);
-                    for channel_index in 0..3 {
-                        let value =
-                            (u16::from(pixel[channel_index]) * alpha + 255 * (255 - alpha)) / 255;
+                    for &sample in pixel.iter().take(3) {
+                        let value = (u16::from(sample) * alpha + 255 * (255 - alpha)) / 255;
                         rgb.push(value as u8);
                     }
                 }

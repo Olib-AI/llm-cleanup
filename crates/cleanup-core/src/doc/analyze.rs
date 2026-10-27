@@ -242,9 +242,7 @@ pub fn analyze(layout: &LayoutDoc, options: &AnalyzeOptions) -> (Doc, Vec<String
 
     let page_spec = derive_page_spec(layout);
     let mut blocks: Vec<Block> = Vec::new();
-    for index in 0..page_count {
-        let page = &layout.pages[index];
-        let lines = &mut page_lines[index];
+    for (index, (page, lines)) in layout.pages.iter().zip(page_lines.iter_mut()).enumerate() {
         blocks.extend(analyze_page(
             index,
             page,

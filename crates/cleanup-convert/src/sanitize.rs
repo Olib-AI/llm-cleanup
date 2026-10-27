@@ -234,9 +234,9 @@ fn apply_to_inlines(
             return (0, 0);
         }
         let last = starts.len() - 2;
-        for index in 0..=last {
-            if offset <= starts[index + 1] {
-                return (index, offset.saturating_sub(starts[index]));
+        for (index, window) in starts.windows(2).enumerate() {
+            if offset <= window[1] {
+                return (index, offset.saturating_sub(window[0]));
             }
         }
         (last, offset.saturating_sub(starts[last]))

@@ -524,6 +524,7 @@ impl<'a> Layout<'a> {
         self.fill_rect(self.left() + indent, top, width, height, color);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_image(
         &mut self,
         asset: &ImageAsset,
