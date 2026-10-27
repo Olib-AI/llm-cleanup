@@ -3768,7 +3768,10 @@ fn xobject_invocations(decoded: &[u8]) -> Vec<(String, usize)> {
 /// image's natural `[0, 0]-[width, height]` rectangle into user space.
 fn image_placement(decoded: &[u8], name_pos: usize, width: f64, height: f64) -> Option<[f64; 4]> {
     let from = name_pos.saturating_sub(512);
-    let cm_at = from + decoded[from..name_pos].windows(4).rposition(|w| w == b" cm ")?;
+    let cm_at = from
+        + decoded[from..name_pos]
+            .windows(4)
+            .rposition(|w| w == b" cm ")?;
     let text = std::str::from_utf8(&decoded[..cm_at]).unwrap_or("");
     let tokens: Vec<&str> = text.split_ascii_whitespace().collect();
     if tokens.len() < 6 {
