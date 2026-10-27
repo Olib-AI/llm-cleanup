@@ -602,9 +602,18 @@ impl<'a> Layout<'a> {
                 let x0: f32 = self.left() + indent + widths[..*start].iter().sum::<f32>();
                 let bold = cell.header || row.header;
                 let mut baseline = top + padding + BODY_SIZE;
+                let align = if cell.align == Align::Left {
+                    table
+                        .columns
+                        .get(*start)
+                        .map(|column| column.align)
+                        .unwrap_or(Align::Left)
+                } else {
+                    cell.align
+                };
                 for line in lines {
                     let text_width = self.measure(line, BODY_SIZE, bold);
-                    let shift = match cell.align {
+                    let shift = match align {
                         Align::Left => 0.0,
                         Align::Center => ((width - text_width) / 2.0).max(0.0),
                         Align::Right => (width - text_width - padding).max(0.0),

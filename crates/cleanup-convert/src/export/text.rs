@@ -288,7 +288,16 @@ fn render_table(table: &Table) -> Vec<String> {
                     .cloned()
                     .unwrap_or_default();
                 line.push(' ');
-                line.push_str(&pad(&text, inner_width.saturating_sub(2), cell.align));
+                let align = if cell.align == Align::Left {
+                    table
+                        .columns
+                        .get(*start)
+                        .map(|column| column.align)
+                        .unwrap_or(Align::Left)
+                } else {
+                    cell.align
+                };
+                line.push_str(&pad(&text, inner_width.saturating_sub(2), align));
                 line.push(' ');
                 line.push('\u{2502}');
                 column += span;
