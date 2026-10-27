@@ -3535,7 +3535,7 @@ mod tests {
     fn xref_streams_and_object_streams_are_resolved() {
         // Committed fixture: catalog/pages/page/font/info live in a Flate object
         // stream and the file is indexed by an xref stream (no trailer keyword).
-        let bytes = include_bytes!("../../../samples/pdf/xref_stream.pdf");
+        let bytes = include_bytes!("../../../../samples/pdf/xref_stream.pdf");
         assert_eq!(
             span_texts(bytes),
             ["\u{201C}Compressed\u{201D} \u{2013} objects\u{2026}"]

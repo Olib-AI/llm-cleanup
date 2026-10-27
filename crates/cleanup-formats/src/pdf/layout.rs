@@ -447,7 +447,7 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
 fn font_metrics(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontMetrics {
     let mut metrics = FontMetrics::default();
     let descendant = dict_get(dict, "DescendantFonts")
-        .and_then(|value| pdf.resolve(value))
+        .map(|value| pdf.resolve(value))
         .and_then(|value| match value {
             Value::Array(items) => items.first().cloned(),
             _ => None,
@@ -459,7 +459,7 @@ fn font_metrics(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontMetrics {
             metrics.default_width = default_width as f32;
         }
         if let Some(widths) = dict_get(descendant, "W")
-            .and_then(|value| pdf.resolve(value))
+            .map(|value| pdf.resolve(value))
             .and_then(|value| match value {
                 Value::Array(items) => Some(items.clone()),
                 _ => None,
@@ -473,7 +473,7 @@ fn font_metrics(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontMetrics {
         metrics.first_char = first as i32;
     }
     if let Some(widths) = dict_get(dict, "Widths")
-        .and_then(|value| pdf.resolve(value))
+        .map(|value| pdf.resolve(value))
         .and_then(|value| match value {
             Value::Array(items) => Some(items.clone()),
             _ => None,
@@ -1129,7 +1129,7 @@ impl<'a> Interpreter<'a> {
                 );
                 return;
             };
-            let Some(png) = encode_png(width as u32, height as u32, &rgb) else {
+            let Some(png) = cleanup_core::doc::encode_png(width as u32, height as u32, &rgb) else {
                 return;
             };
             (ImageKind::Png, png)
