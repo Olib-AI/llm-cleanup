@@ -1014,39 +1014,43 @@ fn take_list(indices: &[usize], lines: &mut [Line], start: usize) -> (Block, usi
     let anchor_page = lines[first_index].page;
     while cursor < indices.len() {
         let index = indices[cursor];
-        let line = &lines[index];
-        let text = line.text();
+        let text = lines[index].text();
         let trimmed = text.trim();
         if !is_bullet_prefix(trimmed) {
             break;
         }
         let mut item_text = strip_bullet(trimmed);
-        let mut item_words = line.words.clone();
+        let mut item_words = lines[index].words.clone();
         if !item_words.is_empty() {
             drop_marker_word(&mut item_words, trimmed);
         }
-        anchor_rect = anchor_rect.union(&line.rect);
-        let indent = (line.rect.x - base_x).max(0.0);
-        let depth = ((indent / (line.font_size * 1.6).max(4.0)).round() as usize).min(4);
+        let rect = lines[index].rect;
+        let item_size = lines[index].font_size;
+        anchor_rect = anchor_rect.union(&rect);
+        let indent = (rect.x - base_x).max(0.0);
+        let depth = ((indent / (item_size * 1.6).max(4.0)).round() as usize).min(4);
         lines[index].consumed = true;
         cursor += 1;
         while cursor < indices.len() {
             let next_index = indices[cursor];
-            let next_line = &lines[next_index];
             let previous_bottom = lines[indices[cursor - 1]].rect.bottom();
-            let gap = next_line.rect.y - previous_bottom;
-            if gap > line.font_size * 0.9
-                || is_bullet_prefix(next_line.text().trim())
-                || next_line.font_size > line.font_size * 1.15
+            // Copy everything needed out of the borrow before marking the line consumed.
+            let next_rect = lines[next_index].rect;
+            let next_size = lines[next_index].font_size;
+            let next_text = lines[next_index].text().trim().to_string();
+            let next_words = lines[next_index].words.clone();
+            let gap = next_rect.y - previous_bottom;
+            if gap > item_size * 0.9
+                || is_bullet_prefix(&next_text)
+                || next_size > item_size * 1.15
             {
                 break;
             }
-            let continuation = next_line.text();
             if !item_text.is_empty() {
                 item_text.push(' ');
             }
-            item_text.push_str(continuation.trim());
-            item_words.extend(next_line.words.iter().cloned());
+            item_text.push_str(&next_text);
+            item_words.extend(next_words);
             lines[next_index].consumed = true;
             cursor += 1;
         }
