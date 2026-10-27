@@ -5,7 +5,7 @@
 //! PDF converters can be exercised against real, designed documents rather
 //! than hand-made byte strings.
 
-use cleanup_convert::{convert, Target};
+use cleanup_convert::{Target, convert};
 use cleanup_core::FormatId;
 use cleanup_formats::{cluster_lines, pdf_layout};
 use std::path::{Path, PathBuf};
@@ -30,12 +30,18 @@ fn fixture_names() -> Vec<String> {
 /// Extract readable text from a fixture PDF via our native layout parser.
 fn extract_text(path: &Path) -> String {
     let bytes = std::fs::read(path).expect("fixture readable");
-    let layout = pdf_layout(&bytes).unwrap_or_else(|e| panic!("{}: pdf_layout failed: {e}", path.display()));
+    let layout = pdf_layout(&bytes).unwrap_or_else(|e| {
+        panic!("{}: pdf_layout failed: {e}", path.display())
+    });
     assert!(layout.pages.len() >= 1, "{}: no pages", path.display());
     let mut text = String::new();
     for page in &layout.pages {
         for line in cluster_lines(&page.spans) {
-            let line_text: String = line.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+            let line_text: String = line
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             if !line_text.trim().is_empty() {
                 text.push_str(line_text.trim());
                 text.push('\n');
@@ -56,12 +62,7 @@ fn every_fixture_pdf_parses_and_converts_to_all_targets() {
             !text.trim().is_empty(),
             "{name}: layout extraction yielded no text"
         );
-        for target in [
-            Target::Text,
-            Target::Markdown,
-            Target::Docx,
-            Target::Pdf,
-        ] {
+        for target in [Target::Text, Target::Markdown, Target::Docx, Target::Pdf] {
             let (out, _report) =
                 convert(FormatId::PlainText, text.as_bytes(), target)
                     .unwrap_or_else(|e| panic!("{name} -> {target:?}: {e}"));

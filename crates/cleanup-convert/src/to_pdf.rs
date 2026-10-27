@@ -230,9 +230,12 @@ impl TrueType {
             let platform = u16::from_be_bytes([data[base + offset], data[base + offset + 1]]);
             let encoding =
                 u16::from_be_bytes([data[base + offset + 2], data[base + offset + 3]]);
-            let sel =
-                u32::from_be_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]])
-                    as usize;
+            let sel = u32::from_be_bytes([
+                data[base + offset + 4],
+                data[base + offset + 5],
+                data[base + offset + 6],
+                data[base + offset + 7],
+            ]) as usize;
             offset += 8;
             let priority = match (platform, encoding) {
                 (3, 1) => 0,
@@ -456,31 +459,36 @@ fn wrapped_lines(
     let mut cur: Vec<(usize, bool, String)> = Vec::new();
     let mut cur_units = 0.0;
 
-        let mut flush = |lines: &mut Vec<Line>, x_start: f64, size: f64, fonts: &[TrueType; 2]| {
-            if cur.is_empty() {
-                return;
-            }
-            let mut spans = Vec::new();
-            let mut x = x_start;
-            for (font, italic, word) in cur.drain(..) {
-                spans.push(Span {
-                    x,
-                    font,
-                    size,
-                    italic,
-                    text: word,
-                });
-                x += measure_units(fonts, font, &word) * size / 1000.0 + SPACE_WIDTH_PT;
-            }
-            cur_units = 0.0;
-            lines.push(Line { spans, size });
-        };
+    let mut flush = |cur: &mut Vec<(usize, bool, String)>,
+                     cur_units: &mut f64,
+                     lines: &mut Vec<Line>,
+                     x_start: f64,
+                     size: f64,
+                     fonts: &[TrueType; 2]| {
+        if cur.is_empty() {
+            return;
+        }
+        let mut spans = Vec::new();
+        let mut x = x_start;
+        for (font, italic, word) in cur.drain(..) {
+            spans.push(Span {
+                x,
+                font,
+                size,
+                italic,
+                text: word,
+            });
+            x += measure_units(fonts, font, &word) * size / 1000.0 + SPACE_WIDTH_PT;
+        }
+        *cur_units = 0.0;
+        lines.push(Line { spans, size });
+    };
 
     for run in runs {
         let font = if run.bold { 1 } else { 0 };
         for (word, forced) in split_breaks(&run.text) {
             if forced {
-                flush(&mut lines, x_start, size, fonts);
+                flush(&mut cur, &mut cur_units, &mut lines, x_start, size, fonts);
                 continue;
             }
             let word_units = measure_units(fonts, font, &word);
@@ -491,7 +499,7 @@ fn wrapped_lines(
             };
 
             if needed > max_units {
-                flush(&mut lines, x_start, size, fonts);
+                flush(&mut cur, &mut cur_units, &mut lines, x_start, size, fonts);
                 cur.push((font, run.italic, word));
                 cur_units = word_units;
             } else {
@@ -503,7 +511,7 @@ fn wrapped_lines(
             }
         }
     }
-    flush(&mut lines, x_start, size, fonts);
+    flush(&mut cur, &mut cur_units, &mut lines, x_start, size, fonts);
     lines
 }
 
@@ -561,10 +569,10 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
 
     let mut objects: Vec<Vec<u8>> = Vec::new();
     objects.push(Vec::new()); // object 0 is unused
-    let mut new_object = |body: Vec<u8>| -> u32 {
+    fn push_object(objects: &mut Vec<Vec<u8>>, body: Vec<u8>) -> u32 {
         objects.push(body);
         (objects.len() - 1) as u32
-    };
+    }
 
     // Per font the objects are created consecutively: font dict, CID font,
     // font descriptor, font file, ToUnicode CMap.
@@ -574,7 +582,8 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             .map(|glyph| font.width(glyph).map(|w| w.to_string()))
             .collect::<Result<Vec<_>>>()?
             .join(" ");
-        let font_dict_id = new_object(
+        let font_dict_id = push_object(
+            &mut objects,
             format!(
                 "<< /Type /Font /Subtype /Type0 /BaseFont /F{} /Encoding /Identity-H /DescendantFonts [{cid} 0 R] /ToUnicode {tounicode} 0 R >>",
                 index + 1,
@@ -583,7 +592,8 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             )
             .into_bytes(),
         );
-        let _cid = new_object(
+        let _cid = push_object(
+            &mut objects,
             format!(
                 "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /F{} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {desc} 0 R /DW 600 /W [0 [{widths}]] /CIDToGIDMap /Identity >>",
                 index + 1,
@@ -591,7 +601,8 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             )
             .into_bytes(),
         );
-        let _desc = new_object(
+        let _desc = push_object(
+            &mut objects,
             format!(
                 "<< /Type /FontDescriptor /FontName /F{} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {file} 0 R >>",
                 index + 1,
@@ -606,19 +617,22 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             )
             .into_bytes(),
         );
-        new_object(stream_object(
-            &format!("/Length {} /Length1 {}", font.data.len(), font.data.len()),
-            &font.data,
-        )); // font_dict_id + 3
-        new_object(Vec::new()); // font_dict_id + 4, ToUnicode placeholder
+        push_object(
+            &mut objects,
+            stream_object(
+                &format!("/Length {} /Length1 {}", font.data.len(), font.data.len()),
+                &font.data,
+            ),
+        ); // font_dict_id + 3
+        push_object(&mut objects, Vec::new()); // font_dict_id + 4, ToUnicode placeholder
         font_ids[index] = font_dict_id;
     }
 
     // One content stream placeholder + one page object per page.
     let mut page_refs: Vec<(u32, u32)> = Vec::new();
     for _ in &pages {
-        let content_id = new_object(Vec::new()); // placeholder
-        let page_id = new_object(Vec::new());    // placeholder
+        let content_id = push_object(&mut objects, Vec::new()); // placeholder
+        let page_id = push_object(&mut objects, Vec::new());    // placeholder
         page_refs.push((page_id, content_id));
     }
 
@@ -678,7 +692,8 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
         .map(|(page_id, _)| format!("{page_id} 0 R"))
         .collect::<Vec<_>>()
         .join(" ");
-    let pages_id = new_object(
+    let pages_id = push_object(
+        &mut objects,
         format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", pages.len()).into_bytes(),
     );
     for (page_id, content_id) in &page_refs {
@@ -697,7 +712,10 @@ fn render_pdf(flows: Vec<Flow>, fonts: &[TrueType; 2]) -> Result<Vec<u8>> {
             stream_object(&format!("/Length {}", cmap.len()), &cmap);
     }
 
-    let catalog_id = new_object(format!("<< /Type /Catalog /Pages {pages_id} 0 R >>").into_bytes());
+    let catalog_id = push_object(
+        &mut objects,
+        format!("<< /Type /Catalog /Pages {pages_id} 0 R >>").into_bytes(),
+    );
 
     let mut output = b"%PDF-1.7\n%\xe2\xe3\cf\xd3\n".to_vec();
     let mut offsets = vec![0usize; objects.len()];
@@ -805,23 +823,6 @@ fn markdown_flows(src: &[u8]) -> Result<Vec<Flow>> {
         }
     };
 
-    let mut add_run = |text: &str, bold: bool, italic: bool| {
-        let run = Run {
-            text: text.to_string(),
-            bold,
-            italic,
-        };
-        if heading_level.is_some() {
-            heading_runs.push(run);
-        } else if item_runs.is_some() {
-            item_runs.as_mut().unwrap().push(run);
-        } else if current_cell.is_some() {
-            current_cell.as_mut().unwrap().push(run);
-        } else {
-            current.get_or_insert_with(Vec::new).push(run);
-        }
-    };
-
     for ev in Parser::new_ext(s, crate::md_options()) {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
@@ -891,8 +892,38 @@ fn markdown_flows(src: &[u8]) -> Result<Vec<Flow>> {
             }
             Event::Start(Tag::Link { .. }) | Event::Start(Tag::Image { .. }) => {}
             Event::End(TagEnd::Link) | Event::End(TagEnd::Image) => {}
-            Event::Text(t) => add_run(&t, bold, italic),
-            Event::Code(t) => add_run(&t, bold, italic),
+            Event::Text(t) => {
+                let run = Run {
+                    text: t.to_string(),
+                    bold,
+                    italic,
+                };
+                if heading_level.is_some() {
+                    heading_runs.push(run);
+                } else if item_runs.is_some() {
+                    item_runs.as_mut().unwrap().push(run);
+                } else if current_cell.is_some() {
+                    current_cell.as_mut().unwrap().push(run);
+                } else {
+                    current.get_or_insert_with(Vec::new).push(run);
+                }
+            }
+            Event::Code(t) => {
+                let run = Run {
+                    text: t.to_string(),
+                    bold,
+                    italic,
+                };
+                if heading_level.is_some() {
+                    heading_runs.push(run);
+                } else if item_runs.is_some() {
+                    item_runs.as_mut().unwrap().push(run);
+                } else if current_cell.is_some() {
+                    current_cell.as_mut().unwrap().push(run);
+                } else {
+                    current.get_or_insert_with(Vec::new).push(run);
+                }
+            }
             Event::SoftBreak | Event::HardBreak => {
                 add_run(" ", bold, italic, false);
             }

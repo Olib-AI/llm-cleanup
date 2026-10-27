@@ -162,7 +162,7 @@ fn table_to_markdown(rows: &[Vec<LayoutSpan>]) -> String {
             for _ in &centers {
                 out.push_str("|:---");
             }
-            out.push('|\n');
+            out.push_str("|\n");
         }
     }
     out
