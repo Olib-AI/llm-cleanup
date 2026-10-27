@@ -2077,6 +2077,7 @@ fn push_content_stream(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_form_streams(
     pdf: &ParsedPdf,
     resources: Option<&Value>,
