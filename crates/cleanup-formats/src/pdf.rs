@@ -1849,6 +1849,7 @@ impl TextState {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct StreamCtx {
     reference: Ref,
     /// Zero-based index of the page this stream belongs to (Form XObject
@@ -1892,6 +1893,7 @@ struct DerivedPdf {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PageInfo {
     /// Reference of the page object itself.
     page_ref: Ref,
