@@ -16,7 +16,7 @@ pub fn render(doc: &Doc) -> Rendered {
     let mut used_assets: Vec<usize> = Vec::new();
 
     for block in &doc.blocks {
-        render_block(block, doc, 0, &mut out, &mut warnings, &mut used_assets);
+        render_block(block, doc, &mut out, &mut warnings, &mut used_assets);
     }
 
     for index in used_assets {
@@ -40,7 +40,6 @@ pub fn render(doc: &Doc) -> Rendered {
 fn render_block(
     block: &Block,
     doc: &Doc,
-    depth: usize,
     out: &mut String,
     warnings: &mut Vec<String>,
     used_assets: &mut Vec<usize>,
@@ -116,7 +115,7 @@ fn render_block(
         Block::Callout { kind, blocks, .. } => {
             let mut inner = String::new();
             for block in blocks {
-                render_block(block, doc, depth + 1, &mut inner, warnings, used_assets);
+                render_block(block, doc, &mut inner, warnings, used_assets);
             }
             let inner = inner.trim_end();
             if inner.is_empty() {
@@ -140,7 +139,7 @@ fn render_block(
         Block::Columns { columns, .. } => {
             for column in columns {
                 for block in &column.blocks {
-                    render_block(block, doc, depth, out, warnings, used_assets);
+                    render_block(block, doc, out, warnings, used_assets);
                 }
             }
         }
@@ -414,27 +413,29 @@ mod tests {
     #[test]
     fn rectangular_tables_become_gfm() {
         let mut doc = Doc::new(PageSpec::default());
-        let mut table = Table::default();
-        table.columns = vec![
-            ColumnSpec {
-                width: 1.0,
-                align: Align::Left,
-            },
-            ColumnSpec {
-                width: 1.0,
-                align: Align::Right,
-            },
-        ];
-        table.headers.push(Row {
-            cells: vec![Cell::paragraph("Item"), Cell::paragraph("Total")],
-            header: true,
-            fill: None,
-        });
-        table.rows.push(Row {
-            cells: vec![Cell::paragraph("Widgets"), Cell::paragraph("1,204")],
-            header: false,
-            fill: None,
-        });
+        let table = Table {
+            columns: vec![
+                ColumnSpec {
+                    width: 1.0,
+                    align: Align::Left,
+                },
+                ColumnSpec {
+                    width: 1.0,
+                    align: Align::Right,
+                },
+            ],
+            headers: vec![Row {
+                cells: vec![Cell::paragraph("Item"), Cell::paragraph("Total")],
+                header: true,
+                fill: None,
+            }],
+            rows: vec![Row {
+                cells: vec![Cell::paragraph("Widgets"), Cell::paragraph("1,204")],
+                header: false,
+                fill: None,
+            }],
+            ..Table::default()
+        };
         doc.blocks.push(Block::Table(table));
         let text = String::from_utf8(render(&doc).bytes).expect("utf8");
         assert!(text.contains("| Item | Total |"), "{text}");

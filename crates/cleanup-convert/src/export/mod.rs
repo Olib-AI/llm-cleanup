@@ -41,16 +41,6 @@ impl RunStyle {
             strike: style.strike,
         }
     }
-
-    pub(crate) fn key(self) -> (bool, bool, bool, bool, bool) {
-        (
-            self.bold,
-            self.italic,
-            self.code,
-            self.underline,
-            self.strike,
-        )
-    }
 }
 
 /// Look up an asset by index, warning when a figure points at a missing asset.

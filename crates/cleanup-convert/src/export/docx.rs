@@ -34,35 +34,36 @@ const PIC_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 pub fn render(doc: &Doc) -> Rendered {
     let mut writer = Writer::new(doc);
     for block in &doc.blocks {
-        writer.block(block, 0);
+        writer.block(block);
     }
     let document_xml = writer.document_xml();
     let (rels_xml, media) = writer.relationships();
 
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    files.push((
-        "[Content_Types].xml".to_string(),
-        content_types(&media).into_bytes(),
-    ));
-    files.push(("_rels/.rels".to_string(), package_rels().into_bytes()));
-    files.push(("word/document.xml".to_string(), document_xml.into_bytes()));
-    files.push(("word/styles.xml".to_string(), styles_xml().into_bytes()));
-    files.push((
-        "word/numbering.xml".to_string(),
-        numbering_xml().into_bytes(),
-    ));
-    files.push((
-        "word/_rels/document.xml.rels".to_string(),
-        rels_xml.into_bytes(),
-    ));
-    files.push((
-        "docProps/core.xml".to_string(),
-        core_properties(doc).into_bytes(),
-    ));
-    files.push((
-        "docProps/app.xml".to_string(),
-        app_properties().into_bytes(),
-    ));
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        (
+            "[Content_Types].xml".to_string(),
+            content_types(&media).into_bytes(),
+        ),
+        ("_rels/.rels".to_string(), package_rels().into_bytes()),
+        ("word/document.xml".to_string(), document_xml.into_bytes()),
+        ("word/styles.xml".to_string(), styles_xml().into_bytes()),
+        (
+            "word/numbering.xml".to_string(),
+            numbering_xml().into_bytes(),
+        ),
+        (
+            "word/_rels/document.xml.rels".to_string(),
+            rels_xml.into_bytes(),
+        ),
+        (
+            "docProps/core.xml".to_string(),
+            core_properties(doc).into_bytes(),
+        ),
+        (
+            "docProps/app.xml".to_string(),
+            app_properties().into_bytes(),
+        ),
+    ];
     for (name, bytes) in media {
         files.push((format!("word/media/{name}"), bytes));
     }
@@ -160,7 +161,7 @@ impl<'a> Writer<'a> {
         self.body.push_str("</w:p>");
     }
 
-    fn block(&mut self, block: &Block, list_depth: usize) {
+    fn block(&mut self, block: &Block) {
         match block {
             Block::Heading { level, inlines, .. } => {
                 let style = format!("Heading{}", (*level).clamp(1, 6));
@@ -230,7 +231,7 @@ impl<'a> Writer<'a> {
                     "<w:p><w:pPr><w:pStyle w:val=\"Callout\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{shade}\"/></w:pPr></w:p>"
                 ));
                 for block in blocks {
-                    self.block(block, list_depth);
+                    self.block(block);
                 }
             }
             Block::Columns { columns, .. } => {
@@ -239,7 +240,7 @@ impl<'a> Writer<'a> {
                 self.section_break(1);
                 for column in columns {
                     for block in &column.blocks {
-                        self.block(block, list_depth);
+                        self.block(block);
                     }
                     self.paragraph("", "");
                 }
@@ -468,12 +469,12 @@ impl<'a> Writer<'a> {
             .display_size
             .map(|rect| rect.width)
             .filter(|width| *width > 1.0)
-            .unwrap_or_else(|| asset.width_px as f32 * 0.75);
+            .unwrap_or(asset.width_px as f32 * 0.75);
         let height_points = figure
             .display_size
             .map(|rect| rect.height)
             .filter(|height| *height > 1.0)
-            .unwrap_or_else(|| asset.height_px as f32 * 0.75);
+            .unwrap_or(asset.height_px as f32 * 0.75);
         let max_width = self.content_width();
         let scale = if width_points > max_width {
             max_width / width_points
@@ -535,12 +536,12 @@ impl<'a> Writer<'a> {
     fn relationships(&self) -> (String, Vec<(String, Vec<u8>)>) {
         let mut out = String::from(XML_HEADER);
         out.push_str(&format!("<Relationships xmlns=\"{REL_NS}\">"));
-        out.push_str(&format!(
-            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
-        ));
-        out.push_str(&format!(
-            "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>"
-        ));
+        out.push_str(
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>",
+        );
+        out.push_str(
+            "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/>",
+        );
         for (asset, id) in &self.media {
             if let Some(asset) = self.doc.assets.get(*asset) {
                 out.push_str(&format!(
@@ -711,27 +712,29 @@ mod tests {
             inlines: vec![Inline::plain("Findings")],
             anchor: None,
         });
-        let mut table = Table::default();
-        table.columns = vec![
-            ColumnSpec {
-                width: 2.0,
-                align: CellAlign::Left,
-            },
-            ColumnSpec {
-                width: 1.0,
-                align: CellAlign::Right,
-            },
-        ];
-        table.headers.push(Row {
-            cells: vec![DocCell::paragraph("Region"), DocCell::paragraph("Revenue")],
-            header: true,
-            fill: None,
-        });
-        table.rows.push(Row {
-            cells: vec![DocCell::paragraph("EMEA"), DocCell::paragraph("1.2M")],
-            header: false,
-            fill: None,
-        });
+        let table = Table {
+            columns: vec![
+                ColumnSpec {
+                    width: 2.0,
+                    align: CellAlign::Left,
+                },
+                ColumnSpec {
+                    width: 1.0,
+                    align: CellAlign::Right,
+                },
+            ],
+            headers: vec![Row {
+                cells: vec![DocCell::paragraph("Region"), DocCell::paragraph("Revenue")],
+                header: true,
+                fill: None,
+            }],
+            rows: vec![Row {
+                cells: vec![DocCell::paragraph("EMEA"), DocCell::paragraph("1.2M")],
+                header: false,
+                fill: None,
+            }],
+            ..Table::default()
+        };
         doc.blocks.push(Block::Table(table));
         doc.blocks.push(Block::Paragraph {
             inlines: vec![

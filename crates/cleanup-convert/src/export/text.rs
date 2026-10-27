@@ -302,8 +302,6 @@ fn render_table(table: &Table) -> Vec<String> {
         let last_row = row_index + 1 == rows.len();
         if last_row {
             out.push(border(&widths, '\u{2514}', '\u{2534}', '\u{2518}'));
-        } else if row_index + 1 == table.headers.len() && !table.headers.is_empty() {
-            out.push(border(&widths, '\u{251C}', '\u{253C}', '\u{2524}'));
         } else {
             out.push(border(&widths, '\u{251C}', '\u{253C}', '\u{2524}'));
         }
@@ -348,27 +346,29 @@ mod tests {
     #[test]
     fn table_uses_box_drawing_and_alignment() {
         let mut doc = Doc::new(PageSpec::default());
-        let mut table = Table::default();
-        table.columns = vec![
-            ColumnSpec {
-                width: 1.0,
-                align: Align::Left,
-            },
-            ColumnSpec {
-                width: 1.0,
-                align: Align::Right,
-            },
-        ];
-        table.headers.push(Row {
-            cells: vec![Cell::paragraph("Item"), Cell::paragraph("Total")],
-            header: true,
-            fill: None,
-        });
-        table.rows.push(Row {
-            cells: vec![Cell::paragraph("Widgets"), Cell::paragraph("1204")],
-            header: false,
-            fill: None,
-        });
+        let table = Table {
+            columns: vec![
+                ColumnSpec {
+                    width: 1.0,
+                    align: Align::Left,
+                },
+                ColumnSpec {
+                    width: 1.0,
+                    align: Align::Right,
+                },
+            ],
+            headers: vec![Row {
+                cells: vec![Cell::paragraph("Item"), Cell::paragraph("Total")],
+                header: true,
+                fill: None,
+            }],
+            rows: vec![Row {
+                cells: vec![Cell::paragraph("Widgets"), Cell::paragraph("1204")],
+                header: false,
+                fill: None,
+            }],
+            ..Table::default()
+        };
         doc.blocks.push(Block::Table(table));
         let text = String::from_utf8(render(&doc).bytes).expect("utf8");
         assert!(text.contains('\u{250C}'));
