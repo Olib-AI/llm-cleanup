@@ -294,22 +294,22 @@ fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len() * 4 / 3 + 4);
     for chunk in input.chunks_exact(3) {
-        out.push(TABLE[chunk[0] >> 2] as char);
-        out.push(TABLE[((chunk[0] & 3) << 4) | (chunk[1] >> 4)] as char);
-        out.push(TABLE[((chunk[1] & 0x0f) << 2) | (chunk[2] >> 6)] as char);
-        out.push(TABLE[chunk[2] & 0x3f] as char);
+        out.push(TABLE[(chunk[0] >> 2) as usize] as char);
+        out.push(TABLE[(((chunk[0] & 3) << 4) | (chunk[1] >> 4)) as usize] as char);
+        out.push(TABLE[(((chunk[1] & 0x0f) << 2) | (chunk[2] >> 6)) as usize] as char);
+        out.push(TABLE[(chunk[2] & 0x3f) as usize] as char);
     }
     let rem = input.chunks_exact(3).remainder();
     match rem.len() {
         1 => {
-            out.push(TABLE[rem[0] >> 2] as char);
-            out.push(TABLE[(rem[0] & 3) << 4] as char);
+            out.push(TABLE[(rem[0] >> 2) as usize] as char);
+            out.push(TABLE[((rem[0] & 3) << 4) as usize] as char);
             out.push_str("==");
         }
         2 => {
-            out.push(TABLE[rem[0] >> 2] as char);
-            out.push(TABLE[((rem[0] & 3) << 4) | (rem[1] >> 4)] as char);
-            out.push(TABLE[(rem[1] & 0x0f) << 2] as char);
+            out.push(TABLE[(rem[0] >> 2) as usize] as char);
+            out.push(TABLE[(((rem[0] & 3) << 4) | (rem[1] >> 4)) as usize] as char);
+            out.push(TABLE[((rem[1] & 0x0f) << 2) as usize] as char);
             out.push('=');
         }
         _ => {}

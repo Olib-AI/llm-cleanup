@@ -7,7 +7,7 @@
 //! (that is what same-format PDF cleaning is for).
 
 use crate::{ConvertError, ConvertReport, Result};
-use cleanup_core::FormatId;
+use cleanup_core::{Format, FormatId};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 
@@ -455,7 +455,7 @@ fn wrapped_lines(runs: &[Run], size: f64, fonts: &[TrueType; 2], x_start: f64) -
     let mut cur: Vec<(usize, bool, String)> = Vec::new();
     let mut cur_units = 0.0;
 
-    let mut flush = |cur: &mut Vec<(usize, bool, String)>,
+    let flush = |cur: &mut Vec<(usize, bool, String)>,
                      cur_units: &mut f64,
                      lines: &mut Vec<Line>,
                      x_start: f64,
@@ -467,6 +467,7 @@ fn wrapped_lines(runs: &[Run], size: f64, fonts: &[TrueType; 2], x_start: f64) -
         let mut spans = Vec::new();
         let mut x = x_start;
         for (font, italic, word) in cur.drain(..) {
+            let advance = measure_units(fonts, font, &word) * size / 1000.0 + SPACE_WIDTH_PT;
             spans.push(Span {
                 x,
                 font,
@@ -474,7 +475,7 @@ fn wrapped_lines(runs: &[Run], size: f64, fonts: &[TrueType; 2], x_start: f64) -
                 italic,
                 text: word,
             });
-            x += measure_units(fonts, font, &word) * size / 1000.0 + SPACE_WIDTH_PT;
+            x += advance;
         }
         *cur_units = 0.0;
         lines.push(Line { spans, size });
@@ -738,16 +739,17 @@ fn stream_object(dictionary: &str, stream: &[u8]) -> Vec<u8> {
     object
 }
 
-fn to_unicode_cmap(mappings: &BTreeMap<u16, u32>) -> Vec<u8> {
+fn to_unicode_cmap(mappings: &BTreeMap<u16, char>) -> Vec<u8> {
     let mut cmap = String::from(
         "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /InterToUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
     );
     for chunk in mappings.iter().collect::<Vec<_>>().chunks(100) {
         cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
         for (glyph, codepoint) in chunk {
-            let utf16: Vec<u16> = char::from_u32(**codepoint)
+            let utf16: Vec<u16> = char::from_u32(*codepoint as u32)
                 .unwrap_or('\u{FFFD}')
                 .encode_utf16(&mut [0; 2])
+                .into_iter()
                 .collect();
             cmap.push_str(&format!("<{:04X}> <", glyph));
             for unit in utf16 {
@@ -916,7 +918,20 @@ fn markdown_flows(src: &[u8]) -> Result<Vec<Flow>> {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                add_run(" ", bold, italic, false);
+                let run = Run {
+                    text: " ".to_string(),
+                    bold,
+                    italic,
+                };
+                if heading_level.is_some() {
+                    heading_runs.push(run);
+                } else if item_runs.is_some() {
+                    item_runs.as_mut().unwrap().push(run);
+                } else if current_cell.is_some() {
+                    current_cell.as_mut().unwrap().push(run);
+                } else {
+                    current.get_or_insert_with(Vec::new).push(run);
+                }
             }
             _ => {}
         }
