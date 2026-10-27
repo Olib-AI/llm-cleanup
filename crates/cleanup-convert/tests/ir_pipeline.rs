@@ -201,8 +201,13 @@ fn raster_images_are_extracted_and_embedded() {
     );
 
     // The same assets must survive a hop through the PDF exporter.
-    let pdf = convert_document(FormatId::Docx, &output.bytes, Target::Pdf, &ConvertOptions::default())
-        .expect("docx -> pdf");
+    let pdf = convert_document(
+        FormatId::Docx,
+        &output.bytes,
+        Target::Pdf,
+        &ConvertOptions::default(),
+    )
+    .expect("docx -> pdf");
     let pdf_text = String::from_utf8_lossy(&pdf.bytes).into_owned();
     assert!(
         pdf_text.matches("/Subtype /Image").count() >= 2,
@@ -215,7 +220,10 @@ fn vector_rules_and_callouts_are_detected() {
     let markdown = text("rich_media_layout.pdf", Target::Markdown);
     // Tinted boxes become quote/box callouts; their text must not vanish.
     assert!(markdown.contains("retention lifted"), "{markdown}");
-    assert!(markdown.contains("filled, stroked background box"), "{markdown}");
+    assert!(
+        markdown.contains("filled, stroked background box"),
+        "{markdown}"
+    );
     // The stroked page frame and rules must not leak into the prose as glyph soup.
     assert!(!markdown.contains("\u{FFFD}"));
 }
@@ -265,14 +273,23 @@ fn typographic_symbols_are_never_dropped() {
 #[test]
 fn columns_linearise_left_to_right() {
     let plain = text("mixed_columns.pdf", Target::Text);
-    let positions: Vec<usize> = ["Left column", "Right column", "First column", "Second column", "Third column"]
-        .iter()
-        .map(|needle| {
-            plain
-                .find(needle)
-                .unwrap_or_else(|| panic!("`{needle}` missing from:\n{}", &plain[..plain.len().min(3000)]))
+    let positions: Vec<usize> = [
+        "Left column",
+        "Right column",
+        "First column",
+        "Second column",
+        "Third column",
+    ]
+    .iter()
+    .map(|needle| {
+        plain.find(needle).unwrap_or_else(|| {
+            panic!(
+                "`{needle}` missing from:\n{}",
+                &plain[..plain.len().min(3000)]
+            )
         })
-        .collect();
+    })
+    .collect();
     assert!(
         positions[0] < positions[1],
         "two-column page interleaved: left at {}, right at {}",
@@ -320,7 +337,11 @@ fn assistant_slop_is_removed_without_losing_content() {
         );
     }
     assert!(
-        output.report.warnings.iter().any(|warning| warning.contains("sanitizer")),
+        output
+            .report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("sanitizer")),
         "the report should mention what the sanitizer did: {:?}",
         output.report.warnings
     );
@@ -341,7 +362,10 @@ fn docx_package_is_valid_openxml() {
         "word/styles.xml",
         "word/_rels/document.xml.rels",
     ] {
-        assert!(names.iter().any(|name| name == required), "missing {required} in {names:?}");
+        assert!(
+            names.iter().any(|name| name == required),
+            "missing {required} in {names:?}"
+        );
     }
     for name in &names {
         if name.ends_with(".xml") || name.ends_with(".rels") {
@@ -375,7 +399,9 @@ fn every_fixture_converts_to_every_target() {
                 continue;
             }
             if output.report.engine.starts_with("ir-") && !output.report.lossy {
-                failures.push(format!("{name} -> {target:?} claims lossless for a re-render"));
+                failures.push(format!(
+                    "{name} -> {target:?} claims lossless for a re-render"
+                ));
             }
             match target {
                 Target::Docx => assert!(

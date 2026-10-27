@@ -40,17 +40,29 @@ pub fn render(doc: &Doc) -> Rendered {
     let (rels_xml, media) = writer.relationships();
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    files.push(("[Content_Types].xml".to_string(), content_types(&media).into_bytes()));
+    files.push((
+        "[Content_Types].xml".to_string(),
+        content_types(&media).into_bytes(),
+    ));
     files.push(("_rels/.rels".to_string(), package_rels().into_bytes()));
     files.push(("word/document.xml".to_string(), document_xml.into_bytes()));
     files.push(("word/styles.xml".to_string(), styles_xml().into_bytes()));
-    files.push(("word/numbering.xml".to_string(), numbering_xml().into_bytes()));
-    files.push(("word/_rels/document.xml.rels".to_string(), rels_xml.into_bytes()));
+    files.push((
+        "word/numbering.xml".to_string(),
+        numbering_xml().into_bytes(),
+    ));
+    files.push((
+        "word/_rels/document.xml.rels".to_string(),
+        rels_xml.into_bytes(),
+    ));
     files.push((
         "docProps/core.xml".to_string(),
         core_properties(doc).into_bytes(),
     ));
-    files.push(("docProps/app.xml".to_string(), app_properties().into_bytes()));
+    files.push((
+        "docProps/app.xml".to_string(),
+        app_properties().into_bytes(),
+    ));
     for (name, bytes) in media {
         files.push((format!("word/media/{name}"), bytes));
     }
@@ -90,7 +102,9 @@ fn pack(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
                 .write_all(bytes)
                 .map_err(|error| format!("zip write {name}: {error}"))?;
         }
-        writer.finish().map_err(|error| format!("zip finish: {error}"))?;
+        writer
+            .finish()
+            .map_err(|error| format!("zip finish: {error}"))?;
     }
     Ok(buffer)
 }
@@ -148,9 +162,7 @@ impl<'a> Writer<'a> {
 
     fn block(&mut self, block: &Block, list_depth: usize) {
         match block {
-            Block::Heading {
-                level, inlines, ..
-            } => {
+            Block::Heading { level, inlines, .. } => {
                 let style = format!("Heading{}", (*level).clamp(1, 6));
                 let properties = format!(
                     "<w:pStyle w:val=\"{style}\"/><w:keepNext/><w:spacing w:before=\"240\" w:after=\"120\"/>"
@@ -159,7 +171,9 @@ impl<'a> Writer<'a> {
                 self.paragraph(&properties, &runs);
             }
             Block::Paragraph { inlines, style, .. } => {
-                let mut properties = String::from("<w:spacing w:before=\"0\" w:after=\"120\" w:line=\"276\" w:lineRule=\"auto\"/>");
+                let mut properties = String::from(
+                    "<w:spacing w:before=\"0\" w:after=\"120\" w:line=\"276\" w:lineRule=\"auto\"/>",
+                );
                 if style.align != Align::Left {
                     properties.push_str(&format!("<w:jc w:val=\"{}\"/>", style.align.as_str()));
                 }
@@ -203,7 +217,9 @@ impl<'a> Writer<'a> {
                 let properties = "<w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"BFBFBF\"/></w:pBdr><w:spacing w:before=\"120\" w:after=\"120\"/>";
                 self.paragraph(properties, "");
             }
-            Block::Callout { kind, blocks, fill, .. } => {
+            Block::Callout {
+                kind, blocks, fill, ..
+            } => {
                 let shade = fill.map(|color| color.hex()).unwrap_or_else(|| match kind {
                     CalloutKind::Quote => "F2F4F7".to_string(),
                     _ => "FFF8E1".to_string(),
@@ -365,10 +381,7 @@ impl<'a> Writer<'a> {
              </w:tblCellMar></w:tblPr><w:tblGrid>"
         ));
         for width in &widths {
-            out.push_str(&format!(
-                "<w:gridCol w:w=\"{}\"/>",
-                Self::twips(*width)
-            ));
+            out.push_str(&format!("<w:gridCol w:w=\"{}\"/>", Self::twips(*width)));
         }
         out.push_str("</w:tblGrid>");
         self.body.push_str(&out);
@@ -403,10 +416,8 @@ impl<'a> Writer<'a> {
                         covered[row_index + extra][column + index] = true;
                     }
                 }
-                let mut properties = format!(
-                    "<w:tcW w:w=\"{}\" w:type=\"dxa\"/>",
-                    Self::twips(width)
-                );
+                let mut properties =
+                    format!("<w:tcW w:w=\"{}\" w:type=\"dxa\"/>", Self::twips(width));
                 if span > 1 {
                     properties.push_str(&format!("<w:gridSpan w:val=\"{span}\"/>"));
                 }
@@ -448,7 +459,8 @@ impl<'a> Writer<'a> {
                 let id = format!("rId{}", self.next_relationship);
                 self.next_relationship += 1;
                 self.media.insert(figure.asset, id.clone());
-                self.media_parts.push((asset.file_name(), asset.data.clone()));
+                self.media_parts
+                    .push((asset.file_name(), asset.data.clone()));
                 id
             }
         };
@@ -756,7 +768,10 @@ mod tests {
             "word/_rels/document.xml.rels",
         ] {
             let xml = part(&rendered.bytes, name);
-            assert!(xml.starts_with("<?xml"), "{name} must have an XML declaration");
+            assert!(
+                xml.starts_with("<?xml"),
+                "{name} must have an XML declaration"
+            );
             // Well-formedness: every part parses as XML with quick-xml.
             let mut reader = quick_xml::Reader::from_str(&xml);
             let mut buffer = Vec::new();

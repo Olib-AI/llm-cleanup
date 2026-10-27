@@ -882,15 +882,20 @@ version = "0.3.1"
 dependencies = [
  "cleanup-core",
  "cleanup-formats",
+ "cleanup-rules",
  "docx-rs",
+ "flate2",
  "pulldown-cmark",
+ "quick-xml 0.42.0",
  "thiserror 2.0.21",
+ "zip 9.1.0",
 ]
 
 [[package]]
 name = "cleanup-core"
 version = "0.3.1"
 dependencies = [
+ "flate2",
  "serde",
  "thiserror 2.0.21",
  "unicode-segmentation",

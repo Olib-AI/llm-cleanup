@@ -46,9 +46,7 @@ fn render_block(
     used_assets: &mut Vec<usize>,
 ) {
     match block {
-        Block::Heading {
-            level, inlines, ..
-        } => {
+        Block::Heading { level, inlines, .. } => {
             let hashes = "#".repeat((*level).clamp(1, 6) as usize);
             let text = render_inlines(inlines, false);
             if !text.trim().is_empty() {
@@ -285,7 +283,13 @@ fn html_cell(cell: &cleanup_core::doc::Cell, tag: &str, doc: &Doc) -> String {
             Block::Figure(figure) => doc
                 .assets
                 .get(figure.asset)
-                .map(|asset| format!("![{}](assets/{})", escape_alt(&figure.alt), asset.file_name()))
+                .map(|asset| {
+                    format!(
+                        "![{}](assets/{})",
+                        escape_alt(&figure.alt),
+                        asset.file_name()
+                    )
+                })
                 .unwrap_or_default(),
             _ => escape_html(&block.plain_text()),
         };
@@ -444,13 +448,11 @@ mod tests {
         let mut table = Table::default();
         let mut merged = Cell::paragraph("span");
         merged.colspan = 2;
-        table
-            .headers
-            .push(Row {
-                cells: vec![Cell::paragraph("A"), Cell::paragraph("B")],
-                header: true,
-                fill: None,
-            });
+        table.headers.push(Row {
+            cells: vec![Cell::paragraph("A"), Cell::paragraph("B")],
+            header: true,
+            fill: None,
+        });
         table.rows.push(Row {
             cells: vec![merged],
             header: false,
@@ -465,8 +467,7 @@ mod tests {
     #[test]
     fn unicode_survives_untouched() {
         let mut doc = Doc::new(PageSpec::default());
-        doc.blocks
-            .push(paragraph("∑ ∫ ≠ ≈ ± αβγ → ← 日本語"));
+        doc.blocks.push(paragraph("∑ ∫ ≠ ≈ ± αβγ → ← 日本語"));
         let text = String::from_utf8(render(&doc).bytes).expect("utf8");
         assert!(text.contains("∑ ∫ ≠ ≈ ± αβγ → ← 日本語"));
     }

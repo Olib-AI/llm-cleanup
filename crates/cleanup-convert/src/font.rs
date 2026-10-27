@@ -180,7 +180,6 @@ impl Cmap {
     }
 }
 
-
 pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16> {
     let bytes = data
         .get(offset..offset + 2)
@@ -201,4 +200,3 @@ pub(crate) fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
         .ok_or_else(|| ConvertError::Failed("truncated embedded font".into()))?;
     Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
-

@@ -68,7 +68,10 @@ pub fn extract_layout(bytes: &[u8]) -> Result<PdfLayoutReport> {
             }
         }
         if data.is_empty() {
-            warnings.push(format!("page {}: no readable content stream", page_index + 1));
+            warnings.push(format!(
+                "page {}: no readable content stream",
+                page_index + 1
+            ));
         } else {
             let mut interpreter = Interpreter {
                 pdf: &pdf,
@@ -79,7 +82,14 @@ pub fn extract_layout(bytes: &[u8]) -> Result<PdfLayoutReport> {
                 unsupported: &mut unsupported_fragments,
             };
             let state = GraphicsState::new(IDENTITY);
-            interpreter.run(&data, entry.resources.as_ref(), &state, &fonts, &mut geom, 0);
+            interpreter.run(
+                &data,
+                entry.resources.as_ref(),
+                &state,
+                &fonts,
+                &mut geom,
+                0,
+            );
         }
         layout.pages.push(geom.into_page());
     }
@@ -856,10 +866,7 @@ impl<'a> Interpreter<'a> {
             let left = x0.min(x1);
             let width = (x1 - x0).abs();
             let top = self.page_height - y0 - size * 0.8 - gs.rise * scale;
-            let bold = fonts
-                .get(&font_name)
-                .map(|font| font.bold)
-                .unwrap_or(false);
+            let bold = fonts.get(&font_name).map(|font| font.bold).unwrap_or(false);
             let italic = fonts
                 .get(&font_name)
                 .map(|font| font.italic)
@@ -914,7 +921,8 @@ impl<'a> Interpreter<'a> {
                 }
             }
         }
-        if stroke && path.segments.is_empty()
+        if stroke
+            && path.segments.is_empty()
             && let Some((x0, y0, x1, y1)) = path.bbox
         {
             // A stroked rectangle (`re … S`) has no path segments; emit its four edges as
@@ -1043,7 +1051,14 @@ impl<'a> Interpreter<'a> {
                 let fonts = fonts_for(self.pdf, form_resources.as_ref());
                 let mut state = gs.clone();
                 state.ctm = mul(matrix, gs.ctm);
-                self.run(&data, form_resources.as_ref(), &state, &fonts, geom, depth + 1);
+                self.run(
+                    &data,
+                    form_resources.as_ref(),
+                    &state,
+                    &fonts,
+                    geom,
+                    depth + 1,
+                );
             }
             _ => {}
         }
@@ -1108,9 +1123,10 @@ impl<'a> Interpreter<'a> {
                 return;
             };
             let Some(rgb) = to_rgb(kind, &decoded, width, height) else {
-                self.warnings
-                    .push("skipped an image whose samples were shorter than its header claims"
-                        .to_string());
+                self.warnings.push(
+                    "skipped an image whose samples were shorter than its header claims"
+                        .to_string(),
+                );
                 return;
             };
             let Some(png) = encode_png(width as u32, height as u32, &rgb) else {

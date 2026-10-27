@@ -245,7 +245,14 @@ pub fn analyze(layout: &LayoutDoc, options: &AnalyzeOptions) -> (Doc, Vec<String
     for index in 0..page_count {
         let page = &layout.pages[index];
         let lines = &mut page_lines[index];
-        blocks.extend(analyze_page(index, page, lines, layout, options, &mut warnings));
+        blocks.extend(analyze_page(
+            index,
+            page,
+            lines,
+            layout,
+            options,
+            &mut warnings,
+        ));
     }
 
     let blocks = stitch_tables(blocks, &mut warnings);
@@ -284,8 +291,16 @@ fn derive_page_spec(layout: &LayoutDoc) -> PageSpec {
     let Some(first) = layout.pages.first() else {
         return PageSpec::default();
     };
-    let width = if first.width > 1.0 { first.width } else { 612.0 };
-    let height = if first.height > 1.0 { first.height } else { 792.0 };
+    let width = if first.width > 1.0 {
+        first.width
+    } else {
+        612.0
+    };
+    let height = if first.height > 1.0 {
+        first.height
+    } else {
+        792.0
+    };
     let mut min_x = f32::MAX;
     let mut max_x = f32::MIN;
     let mut min_y = f32::MAX;
@@ -615,8 +630,8 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
                 .iter()
                 .map(|i| lines[*i].rect.bottom())
                 .fold(f32::MIN, f32::max);
-            let overlaps = line.rect.bottom() > group_top - avg_size
-                && line.rect.y < group_bottom + avg_size;
+            let overlaps =
+                line.rect.bottom() > group_top - avg_size && line.rect.y < group_bottom + avg_size;
             if overlaps {
                 target = Some(position);
                 break;
@@ -888,7 +903,10 @@ fn round_half(value: f32) -> f32 {
 
 fn heading_level(size: f32, bold: bool, sizes: &[f32]) -> u8 {
     let rounded = round_half(size);
-    if let Some(position) = sizes.iter().position(|candidate| (*candidate - rounded).abs() < 1.0) {
+    if let Some(position) = sizes
+        .iter()
+        .position(|candidate| (*candidate - rounded).abs() < 1.0)
+    {
         return (position as u8 + 1).clamp(1, 6);
     }
     // A bold-only heading sits below the sized hierarchy.
@@ -968,7 +986,11 @@ fn drop_marker_word(words: &mut Vec<Word>, text: &str) {
         .chars()
         .next()
         .is_some_and(|c| !c.is_alphanumeric());
-    let marker_is_number = text.trim_start().chars().next().is_some_and(|c| c.is_ascii_digit());
+    let marker_is_number = text
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit());
     if marker_is_symbol || marker_is_number {
         words.remove(0);
     }
@@ -1275,7 +1297,10 @@ fn detect_figures(
                 caption,
                 alt: format!(
                     "{}: {}x{} px, {}",
-                    asset.name, asset.width_px, asset.height_px, asset.kind.mime()
+                    asset.name,
+                    asset.width_px,
+                    asset.height_px,
+                    asset.kind.mime()
                 ),
                 display_size: Some(rect),
             },
@@ -1452,10 +1477,9 @@ fn build_table(
                 .map(|row| {
                     let y0 = ys[row];
                     let y1 = ys[row + 1];
-                    component
-                        .vertical
-                        .iter()
-                        .any(|(vx, vy0, vy1)| (vx - x).abs() <= 3.0 && *vy0 <= y0 + 2.0 && *vy1 >= y1 - 2.0)
+                    component.vertical.iter().any(|(vx, vy0, vy1)| {
+                        (vx - x).abs() <= 3.0 && *vy0 <= y0 + 2.0 && *vy1 >= y1 - 2.0
+                    })
                 })
                 .collect()
         })
@@ -1530,11 +1554,8 @@ fn build_table(
                 Align::Center => center_votes[column] += 1,
                 Align::Left => left_votes[column] += 1,
             }
-            let all_bold = !text_lines.is_empty()
-                && text_lines
-                    .iter()
-                    .flatten()
-                    .all(|word| word.bold);
+            let all_bold =
+                !text_lines.is_empty() && text_lines.iter().flatten().all(|word| word.bold);
             let header = row == 0 && (all_bold || row_count >= 3);
             cells.push(Cell {
                 blocks: blocks_from_text_lines(&text_lines),
@@ -1690,9 +1711,7 @@ fn stitch_tables(blocks: Vec<Block>, warnings: &mut Vec<String>) -> Vec<Block> {
                     if previous.headers.len() == current.headers.len()
                         && previous.column_count() == current.column_count()
                         && header_text(previous) == header_text(current));
-            if continuation
-                && let Some(Block::Table(previous)) = out.last_mut()
-            {
+            if continuation && let Some(Block::Table(previous)) = out.last_mut() {
                 let added = current.rows.len();
                 previous.rows.extend(current.rows.iter().cloned());
                 previous.pages.extend(current.pages.iter().copied());
@@ -1727,10 +1746,7 @@ fn header_text(table: &Table) -> String {
 fn merge_adjacent_lists(blocks: Vec<Block>) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     for block in blocks {
-        if let Block::List {
-            ordered, items, ..
-        } = &block
-        {
+        if let Block::List { ordered, items, .. } = &block {
             let ordered = *ordered;
             let joinable = matches!(out.last(), Some(Block::List { ordered: previous, .. }) if *previous == ordered);
             if joinable

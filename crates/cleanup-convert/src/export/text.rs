@@ -70,7 +70,11 @@ fn render_block(block: &Block, doc: &Doc, out: &mut String, warnings: &mut Vec<S
                     "-".to_string()
                 };
                 let prefix = format!("{indent}{marker} ");
-                let body = wrap(&text, WRAP.saturating_sub(prefix.len()), &" ".repeat(prefix.len()));
+                let body = wrap(
+                    &text,
+                    WRAP.saturating_sub(prefix.len()),
+                    &" ".repeat(prefix.len()),
+                );
                 for (line_index, line) in body.iter().enumerate() {
                     if line_index == 0 {
                         out.push_str(&prefix);
@@ -165,7 +169,8 @@ fn wrap(text: &str, width: usize, indent: &str) -> Vec<String> {
         let mut current = String::new();
         for word in paragraph.split_whitespace() {
             let extra = if current.is_empty() { 0 } else { 1 };
-            if !current.is_empty() && current.chars().count() + extra + word.chars().count() > width {
+            if !current.is_empty() && current.chars().count() + extra + word.chars().count() > width
+            {
                 lines.push(std::mem::take(&mut current));
                 current.push_str(indent);
                 current.push_str(word);
@@ -209,7 +214,10 @@ fn render_table(table: &Table) -> Vec<String> {
         occupancy.push(line);
         let mut cursor = 0usize;
         for cell in &row.cells {
-            let span = cell.colspan.max(1).min(columns.saturating_sub(cursor).max(1));
+            let span = cell
+                .colspan
+                .max(1)
+                .min(columns.saturating_sub(cursor).max(1));
             let single_line = cell.text().replace('\n', " ");
             let needed = single_line.chars().count().min(MAX_COLUMN);
             if span == 1 {
@@ -238,7 +246,10 @@ fn render_table(table: &Table) -> Vec<String> {
         let mut cells: Vec<(usize, usize, &Cell)> = Vec::new();
         let mut cursor = 0usize;
         for cell in &row.cells {
-            let span = cell.colspan.max(1).min(columns.saturating_sub(cursor).max(1));
+            let span = cell
+                .colspan
+                .max(1)
+                .min(columns.saturating_sub(cursor).max(1));
             cells.push((cursor, span, cell));
             cursor += span;
         }
@@ -324,11 +335,7 @@ fn pad(text: &str, width: usize, align: Align) -> String {
         Align::Right => format!("{}{text}", " ".repeat(padding)),
         Align::Center => {
             let left = padding / 2;
-            format!(
-                "{}{text}{}",
-                " ".repeat(left),
-                " ".repeat(padding - left)
-            )
+            format!("{}{text}{}", " ".repeat(left), " ".repeat(padding - left))
         }
     }
 }

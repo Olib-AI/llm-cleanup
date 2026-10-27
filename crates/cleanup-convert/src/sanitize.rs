@@ -60,7 +60,8 @@ impl SanitizeReport {
             .into_iter()
             .map(|(id, value)| (id.to_string(), value))
             .collect();
-        self.applied_by_rule.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        self.applied_by_rule
+            .sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     }
 }
 
@@ -162,11 +163,16 @@ fn sanitize_inlines(
         if replacement.contains(['\n', '\r']) {
             continue;
         }
-        if !on_char_boundary(&text, finding.range.start) || !on_char_boundary(&text, finding.range.end)
+        if !on_char_boundary(&text, finding.range.start)
+            || !on_char_boundary(&text, finding.range.end)
         {
             continue;
         }
-        edits.push((finding.range.clone(), replacement.clone(), finding.rule_id.clone()));
+        edits.push((
+            finding.range.clone(),
+            replacement.clone(),
+            finding.rule_id.clone(),
+        ));
     }
     if cx.level >= CleanupLevel::Standard {
         for (range, rule_id) in boilerplate_sentence_ranges(&text) {

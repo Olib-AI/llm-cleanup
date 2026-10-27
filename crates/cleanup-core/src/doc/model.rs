@@ -348,9 +348,9 @@ pub struct LayoutDoc {
 
 impl LayoutDoc {
     pub fn is_empty(&self) -> bool {
-        self.pages.iter().all(|page| {
-            page.runs.is_empty() && page.images.is_empty() && page.rules.is_empty()
-        })
+        self.pages
+            .iter()
+            .all(|page| page.runs.is_empty() && page.images.is_empty() && page.rules.is_empty())
     }
 }
 
@@ -554,7 +554,9 @@ impl Cell {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.blocks.iter().all(|block| block.plain_text().trim().is_empty())
+        self.blocks
+            .iter()
+            .all(|block| block.plain_text().trim().is_empty())
     }
 
     /// Text with paragraph breaks flattened to newlines; used by the table exporters.
@@ -663,7 +665,10 @@ impl Default for Table {
 impl Table {
     /// Total number of cells across header and body rows.
     pub fn cell_count(&self) -> usize {
-        self.headers.iter().map(|row| row.cells.len()).sum::<usize>()
+        self.headers
+            .iter()
+            .map(|row| row.cells.len())
+            .sum::<usize>()
             + self.rows.iter().map(|row| row.cells.len()).sum::<usize>()
     }
 
@@ -1078,10 +1083,7 @@ mod tests {
 
     #[test]
     fn image_kind_sniffs_headers() {
-        assert_eq!(
-            ImageKind::sniff(b"\x89PNG\r\n\x1a\n0000"),
-            ImageKind::Png
-        );
+        assert_eq!(ImageKind::sniff(b"\x89PNG\r\n\x1a\n0000"), ImageKind::Png);
         assert_eq!(ImageKind::sniff(&[0xFF, 0xD8, 0xFF, 0xE0]), ImageKind::Jpeg);
         assert_eq!(ImageKind::sniff(b"GIF89a"), ImageKind::Gif);
         assert_eq!(ImageKind::sniff(b"not an image"), ImageKind::Unknown);

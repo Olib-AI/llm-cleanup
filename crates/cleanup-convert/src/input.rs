@@ -34,8 +34,10 @@ pub(crate) fn build(from: FormatId, src: &[u8]) -> Result<(Doc, Vec<String>)> {
 /// PDF: spatial reconstruction, then layout analysis.
 pub(crate) fn pdf_layout(src: &[u8]) -> Result<(Doc, Vec<String>)> {
     let report = cleanup_formats::pdf::extract_layout(src)?;
-    let (mut doc, analysis_warnings) =
-        cleanup_core::doc::analyze(&report.layout, &cleanup_core::doc::AnalyzeOptions::default());
+    let (mut doc, analysis_warnings) = cleanup_core::doc::analyze(
+        &report.layout,
+        &cleanup_core::doc::AnalyzeOptions::default(),
+    );
     doc.info.source = SourceKind::Pdf;
     doc.info.page_count = report.page_count;
     let mut warnings = report.warnings;
@@ -282,8 +284,10 @@ fn parse_markdown_chunk(text: &str, doc: &mut Doc, warnings: &mut Vec<String>) {
             }
             Event::End(TagEnd::CodeBlock) => {
                 if let Some((language, buffer)) = state.code.take() {
-                    let mut lines: Vec<String> =
-                        buffer.lines().map(|line| line.trim_end().to_string()).collect();
+                    let mut lines: Vec<String> = buffer
+                        .lines()
+                        .map(|line| line.trim_end().to_string())
+                        .collect();
                     while lines.last().is_some_and(|line| line.is_empty()) {
                         lines.pop();
                     }
@@ -344,7 +348,9 @@ fn parse_markdown_chunk(text: &str, doc: &mut Doc, warnings: &mut Vec<String>) {
                     buffer.push_str(&text);
                 } else if let Some(table) = state.table.as_mut() {
                     let style = state.style.clone();
-                    table.current_cell.push(Inline::new(text.to_string(), style));
+                    table
+                        .current_cell
+                        .push(Inline::new(text.to_string(), style));
                 } else {
                     state
                         .inlines
@@ -355,7 +361,9 @@ fn parse_markdown_chunk(text: &str, doc: &mut Doc, warnings: &mut Vec<String>) {
                 let mut style = state.style.clone();
                 style.code = true;
                 if let Some(table) = state.table.as_mut() {
-                    table.current_cell.push(Inline::new(text.to_string(), style));
+                    table
+                        .current_cell
+                        .push(Inline::new(text.to_string(), style));
                 } else {
                     state.inlines.push(Inline::new(text.to_string(), style));
                 }
@@ -370,9 +378,7 @@ fn parse_markdown_chunk(text: &str, doc: &mut Doc, warnings: &mut Vec<String>) {
                         .current_cell
                         .push(Inline::new(" ", InlineStyle::default()));
                 } else {
-                    state
-                        .inlines
-                        .push(Inline::new(" ", InlineStyle::default()));
+                    state.inlines.push(Inline::new(" ", InlineStyle::default()));
                 }
             }
             Event::HardBreak => {
@@ -589,10 +595,7 @@ fn flush_list(items: &mut Vec<ListItem>, ordered: bool, doc: &mut Doc) {
 
 fn starts_ordered(line: &str) -> bool {
     let trimmed = line.trim_start();
-    let digits = trimmed
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .count();
+    let digits = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
     matches!(trimmed[digits..].chars().next(), Some('.') | Some(')'))
 }
 
@@ -831,8 +834,10 @@ impl HtmlState {
                 self.pre = false;
                 let text = std::mem::take(&mut self.code);
                 if !text.trim().is_empty() {
-                    let lines: Vec<String> =
-                        text.lines().map(|line| line.trim_end().to_string()).collect();
+                    let lines: Vec<String> = text
+                        .lines()
+                        .map(|line| line.trim_end().to_string())
+                        .collect();
                     doc.blocks.push(Block::Code {
                         lines,
                         anchor: None,
@@ -1201,7 +1206,11 @@ fn heading_from_style(value: &str) -> Option<u8> {
         return Some(1);
     }
     if let Some(rest) = value.strip_prefix("heading") {
-        return rest.trim().parse::<u8>().ok().map(|level| level.clamp(1, 6));
+        return rest
+            .trim()
+            .parse::<u8>()
+            .ok()
+            .map(|level| level.clamp(1, 6));
     }
     None
 }

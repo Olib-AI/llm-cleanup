@@ -420,10 +420,13 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
                 .with_context(|| format!("creating {}", assets.display()))?;
             for (name, data) in &converted.assets {
                 let path = assets.join(name);
-                atomic_write(&path, data)
-                    .with_context(|| format!("writing {}", path.display()))?;
+                atomic_write(&path, data).with_context(|| format!("writing {}", path.display()))?;
             }
-            println!("  {} image asset(s) written to {}", converted.assets.len(), assets.display());
+            println!(
+                "  {} image asset(s) written to {}",
+                converted.assets.len(),
+                assets.display()
+            );
         }
         println!(
             "{} → {}  ({} via {})",

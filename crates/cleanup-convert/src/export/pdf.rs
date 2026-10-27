@@ -232,9 +232,7 @@ impl<'a> Layout<'a> {
 
     fn block(&mut self, block: &Block, indent: f32) {
         match block {
-            Block::Heading {
-                level, inlines, ..
-            } => {
+            Block::Heading { level, inlines, .. } => {
                 let size = match level {
                     0 | 1 => 20.0,
                     2 => 16.0,
@@ -277,7 +275,13 @@ impl<'a> Layout<'a> {
                 let top = self.y - 3.0;
                 for line in lines {
                     self.ensure(CODE_SIZE * 1.4);
-                    self.show(line, CODE_SIZE, self.left() + indent + 8.0, self.y + CODE_SIZE, false);
+                    self.show(
+                        line,
+                        CODE_SIZE,
+                        self.left() + indent + 8.0,
+                        self.y + CODE_SIZE,
+                        false,
+                    );
                     self.y += CODE_SIZE * 1.4;
                 }
                 let height = (self.y - top + 3.0).max(CODE_SIZE * 1.4);
@@ -313,8 +317,14 @@ impl<'a> Layout<'a> {
                     return;
                 }
                 self.ensure(height + 8.0);
-                if self.draw_image(&asset, figure.asset, self.left() + indent, self.y, width, height)
-                {
+                if self.draw_image(
+                    &asset,
+                    figure.asset,
+                    self.left() + indent,
+                    self.y,
+                    width,
+                    height,
+                ) {
                     self.y += height + 5.0;
                     if let Some(caption) = &figure.caption {
                         self.flow(caption, 8.5, 11.5, indent);
@@ -450,7 +460,10 @@ impl<'a> Layout<'a> {
             lines.push(current);
         }
         for line in &mut lines {
-            while line.last().is_some_and(|(text, _, _)| text.trim().is_empty()) {
+            while line
+                .last()
+                .is_some_and(|(text, _, _)| text.trim().is_empty())
+            {
                 line.pop();
             }
         }
@@ -602,7 +615,13 @@ impl<'a> Layout<'a> {
                 self.fill_rect(x0, top, border, row_height, RULE);
             }
             self.y += row_height;
-            self.fill_rect(self.left() + indent, self.y - border, available, border, RULE);
+            self.fill_rect(
+                self.left() + indent,
+                self.y - border,
+                available,
+                border,
+                RULE,
+            );
         }
 
         let height = self.y - table_top;
@@ -689,8 +708,8 @@ impl<'a> Layout<'a> {
                 ));
                 continue;
             };
-            let mut object = format!("<< {dictionary} /Length {} >>\nstream\n", data.len())
-                .into_bytes();
+            let mut object =
+                format!("<< {dictionary} /Length {} >>\nstream\n", data.len()).into_bytes();
             object.extend_from_slice(&data);
             object.extend_from_slice(b"\nendstream");
             objects.push(object);

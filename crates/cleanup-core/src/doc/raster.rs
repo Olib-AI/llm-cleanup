@@ -109,12 +109,9 @@ pub fn decode_png(bytes: &[u8]) -> Option<RasterImage> {
     let mut idat: Vec<u8> = Vec::new();
     let mut seen_ihdr = false;
     while pos + 8 <= bytes.len() {
-        let length = u32::from_be_bytes([
-            bytes[pos],
-            bytes[pos + 1],
-            bytes[pos + 2],
-            bytes[pos + 3],
-        ]) as usize;
+        let length =
+            u32::from_be_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]])
+                as usize;
         let kind = &bytes[pos + 4..pos + 8];
         let data_start = pos + 8;
         let data_end = data_start.checked_add(length)?;
@@ -198,9 +195,8 @@ pub fn decode_png(bytes: &[u8]) -> Option<RasterImage> {
                     // Composite RGBA over white so the page background never turns black.
                     let alpha = u16::from(pixel[3]);
                     for channel_index in 0..3 {
-                        let value = (u16::from(pixel[channel_index]) * alpha
-                            + 255 * (255 - alpha))
-                            / 255;
+                        let value =
+                            (u16::from(pixel[channel_index]) * alpha + 255 * (255 - alpha)) / 255;
                         rgb.push(value as u8);
                     }
                 }
@@ -208,11 +204,7 @@ pub fn decode_png(bytes: &[u8]) -> Option<RasterImage> {
         }
         std::mem::swap(&mut previous, &mut current);
     }
-    Some(RasterImage {
-        width,
-        height,
-        rgb,
-    })
+    Some(RasterImage { width, height, rgb })
 }
 
 /// Width/height of a PNG from its IHDR chunk.
@@ -252,10 +244,8 @@ pub fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         if length < 2 {
             return None;
         }
-        let is_sof = (0xC0..=0xCF).contains(&marker)
-            && marker != 0xC4
-            && marker != 0xC8
-            && marker != 0xCC;
+        let is_sof =
+            (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
         if is_sof {
             if pos + 7 > bytes.len() {
                 return None;
