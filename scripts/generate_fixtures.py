@@ -74,11 +74,11 @@ FIXTURES = os.path.join(HERE, "tests", "fixtures")
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 REGULAR = os.path.join(FONT_DIR, "DejaVuSans.ttf")
 BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
-# Keep these aliases fixed: the committed corpus was generated with core-only
-# DejaVu fonts. Optional system packages must not change fixture bytes. Genuine
-# italic/bold-italic faces are exercised independently with base-14 fonts below.
-ITALIC = REGULAR
-BOLDITALIC = REGULAR
+# The core-only Debian font package does not contain oblique faces. Use the
+# standard PDF Helvetica obliques rather than labelling a regular face italic;
+# this also keeps generation independent of optional system font packages.
+ITALIC = "Helvetica-Oblique"
+BOLDITALIC = "Helvetica-BoldOblique"
 MONO = os.path.join(FONT_DIR, "DejaVuSansMono.ttf")
 MONO_BOLD = os.path.join(FONT_DIR, "DejaVuSansMono-Bold.ttf")
 
@@ -170,40 +170,17 @@ def register_fonts() -> None:
         ("Body-Bold", BOLD),
         ("Mono", MONO),
     ]
-    # Optional italic variants
-    if os.path.exists(BOLD):
-        fonts_to_register.append(("Body-Bold", BOLD))
     if os.path.exists(MONO_BOLD):
         fonts_to_register.append(("Mono-Bold", MONO_BOLD))
 
     for name, path in fonts_to_register:
         if not os.path.exists(path):
             raise SystemExit(f"missing font: {path} (install fonts-dejavu-core)")
-        try:
-            pdfmetrics.registerFont(TTFont(name, path))
-        except Exception:
-            pass  # already registered
+        pdfmetrics.registerFont(TTFont(name, path))
 
-    # Try italic variants if available
-    for name, path in [("Body-Italic", ITALIC), ("Body-BoldItalic", BOLDITALIC)]:
-        if os.path.exists(path):
-            try:
-                pdfmetrics.registerFont(TTFont(name, path))
-            except Exception:
-                pass
-        else:
-            # Fallback: map italic to regular
-            try:
-                pdfmetrics.registerFont(TTFont(name, REGULAR))
-            except Exception:
-                pass
-
-    try:
-        pdfmetrics.registerFontFamily(
-            "Body", normal="Body", bold="Body-Bold", italic="Body-Italic", boldItalic="Body-BoldItalic"
-        )
-    except Exception:
-        pass
+    pdfmetrics.registerFontFamily(
+        "Body", normal="Body", bold="Body-Bold", italic=ITALIC, boldItalic=BOLDITALIC
+    )
 
 
 def styles() -> dict[str, ParagraphStyle]:
@@ -226,13 +203,13 @@ def styles() -> dict[str, ParagraphStyle]:
             "Body", parent=base["BodyText"], fontName="Body", fontSize=10, leading=14,
         ),
         "body_italic": ParagraphStyle(
-            "BodyItalic", parent=base["BodyText"], fontName="Body-Italic", fontSize=10, leading=14,
+            "BodyItalic", parent=base["BodyText"], fontName=ITALIC, fontSize=10, leading=14,
         ),
         "body_bold": ParagraphStyle(
             "BodyBold", parent=base["BodyText"], fontName="Body-Bold", fontSize=10, leading=14,
         ),
         "body_bold_italic": ParagraphStyle(
-            "BodyBoldItalic", parent=base["BodyText"], fontName="Body-BoldItalic", fontSize=10, leading=14,
+            "BodyBoldItalic", parent=base["BodyText"], fontName=BOLDITALIC, fontSize=10, leading=14,
         ),
         "small": ParagraphStyle(
             "Small", parent=base["BodyText"], fontName="Body", fontSize=8, leading=10,
@@ -242,6 +219,12 @@ def styles() -> dict[str, ParagraphStyle]:
         ),
         "cell": ParagraphStyle(
             "Cell", parent=base["BodyText"], fontName="Body", fontSize=8.5, leading=11,
+        ),
+        # Paragraph styles override TableStyle's TEXTCOLOR and FONTNAME, so the
+        # merged-grid header needs its own genuinely white, bold text style.
+        "cell_header": ParagraphStyle(
+            "CellHeader", parent=base["BodyText"], fontName="Body-Bold", fontSize=8.5,
+            leading=11, textColor=colors.white,
         ),
         "cell_right": ParagraphStyle(
             "CellRight", parent=base["BodyText"], fontName="Body", fontSize=8.5,
@@ -434,7 +417,7 @@ def low_level_operators(canvas, doc) -> None:
     canvas.drawText(text)
     y -= 16
 
-    # 7. Extreme per-glyph positioning: each glyph gets its own Tm and a 0.20em
+    # 7. Per-glyph positioning: each glyph gets its own Tm and a 0.08em
     #    positive gap. This is character tracking, not a series of word boundaries.
     #    The real words below are still separated by literal space glyphs.
     text = canvas.beginText(0.75 * inch, y)
@@ -562,8 +545,8 @@ def kerning_and_typography(path: str) -> None:
     story.append(Spacer(1, 8))
     story.append(Paragraph("End of Kerning Fixture", s["h2"]))
     story.append(Paragraph(
-        "If any exported text contains spaced-out characters like \"t h i s\", "
-        "the extractor's glyph clustering is broken.",
+        "If exported prose inserts spaces between letters, the extractor's "
+        "glyph clustering is broken.",
         s["note"],
     ))
 
@@ -651,6 +634,55 @@ def kerning_and_typography(path: str) -> None:
 # 2. multi_page_tables.pdf  (NEW - replaces complex_tables semantic but more explicit)
 # ---------------------------------------------------------------------------
 
+BATCHED_GRID = [
+    ["Batch", "Units", "Net"],
+    ["ALPHA", "120", "$240"],
+    ["BETA", "230", "$460"],
+]
+
+
+class BatchedRectangleGrid(Flowable):
+    """A table whose cell rectangles share one PDF path and one stroke operator."""
+
+    def __init__(self):
+        super().__init__()
+        self.column_widths = [1.8 * inch, 1.4 * inch, 1.6 * inch]
+        self.row_height = 25
+        self.width = sum(self.column_widths)
+        self.height = len(BATCHED_GRID) * self.row_height
+        self.hAlign = "CENTER"
+
+    def draw(self):
+        c = self.canv
+        c.setFillColor(colors.HexColor("#2F3B4C"))
+        c.rect(0, self.height - self.row_height, self.width, self.row_height, stroke=0, fill=1)
+        c.setFillColor(colors.HexColor("#EDF1F7"))
+        c.rect(0, 0, self.width, self.row_height, stroke=0, fill=1)
+
+        path = c.beginPath()
+        for row in range(len(BATCHED_GRID)):
+            x = 0
+            y = self.height - (row + 1) * self.row_height
+            for width in self.column_widths:
+                path.rect(x, y, width, self.row_height)
+                x += width
+        c.setStrokeColor(colors.HexColor("#8A94A6"))
+        c.setLineWidth(0.5)
+        c.drawPath(path, stroke=1, fill=0)
+
+        for row, cells in enumerate(BATCHED_GRID):
+            c.setFont("Body-Bold" if row == 0 else "Body", 8.5)
+            c.setFillColor(colors.white if row == 0 else colors.black)
+            y = self.height - (row + 1) * self.row_height + 8
+            x = 0
+            for column, (value, width) in enumerate(zip(cells, self.column_widths)):
+                if row > 0 and column > 0:
+                    c.drawRightString(x + width - 6, y, value)
+                else:
+                    c.drawString(x + 6, y, value)
+                x += width
+
+
 def multi_page_tables(path: str) -> None:
     s = styles()
     story: list = [
@@ -724,7 +756,7 @@ def multi_page_tables(path: str) -> None:
         ],
     ]
     span_table = Table(
-        [[Paragraph(cell, s["cell"]) for cell in span_header]] + span_rows,
+        [[Paragraph(cell, s["cell_header"]) for cell in span_header]] + span_rows,
         colWidths=[0.9 * inch, 1.1 * inch, 1.1 * inch, 1.0 * inch, 1.0 * inch],
         rowHeights=[24, 24, 24, 32],
     )
@@ -754,6 +786,14 @@ def multi_page_tables(path: str) -> None:
         "The growth column is centered. These alignments must survive conversion.",
         s["body"],
     ))
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Batched rectangle grid", s["h2"]))
+    story.append(Paragraph(
+        "Each cell below is a separate rectangle; all nine borders are stroked in one path.",
+        s["body"],
+    ))
+    story.append(Spacer(1, 6))
+    story.append(BatchedRectangleGrid())
     build(path, story)
 
 
@@ -811,6 +851,45 @@ class InlineIcon(Flowable):
         )
 
 
+class VectorSample(Flowable):
+    """Vector rules and callout cards inside their own reserved layout area."""
+
+    def __init__(self):
+        super().__init__()
+        self.width = 6.3 * inch
+        self.height = 1.55 * inch
+        self.hAlign = "LEFT"
+
+    def draw(self):
+        c = self.canv
+        c.saveState()
+        c.setStrokeColor(colors.HexColor("#4A5568"))
+        c.setLineWidth(1.2)
+        c.line(0, self.height - 6, self.width, self.height - 6)
+        c.line(self.width - 12, self.height - 18, self.width - 12, self.height - 44)
+        c.setStrokeColor(colors.HexColor("#D9A400"))
+        c.setLineWidth(1)
+        for index in range(6):
+            x = 8 + index * 38
+            c.line(x, self.height - 22, x + 26, self.height - 22)
+
+        c.setFillColor(colors.HexColor("#FFF6DA"))
+        c.setStrokeColor(colors.HexColor("#D9A400"))
+        c.roundRect(0, 2, 3.9 * inch, 52, 6, stroke=1, fill=1)
+        c.setFillColor(colors.black)
+        c.setFont("Body", 9)
+        c.drawString(10, 34, "Callout: retention lifted 4.2 points")
+        c.drawString(10, 18, "This text sits inside a filled, stroked box.")
+
+        c.setFillColor(colors.HexColor("#E8F1FF"))
+        c.setStrokeColor(colors.HexColor("#3B82F6"))
+        c.roundRect(4.05 * inch, 2, 2.25 * inch, 52, 4, stroke=1, fill=1)
+        c.setFillColor(colors.black)
+        c.setFont("Body", 8)
+        c.drawString(4.05 * inch + 8, 26, "Inline figures follow this box.")
+        c.restoreState()
+
+
 CODE_LINES = [
     "def summarize(values):",
     "    total = sum(values)   # \u2211 over samples",
@@ -830,7 +909,7 @@ def rich_media_and_symbols(path: str) -> None:
     wrapped = (
         "Text wraps beside this figure rather than jumping below it. A reader that only "
         "concatenates content-stream strings will still find the sentence, but a reader that "
-        "tracks geometry must also keep the image placement and its measured DPI. " * 3
+        "tracks geometry must also keep the image placement and its measured DPI. " * 2
     )
     side_by_side = Table(
         [[
@@ -850,7 +929,7 @@ def rich_media_and_symbols(path: str) -> None:
         "Greek: \u03b1 \u03b2 \u03b3 \u0394 \u03a9 \u03c0 \u03bc \u03c3. Cyrillic: \u0416 \u0439 \u0449 \u0401. Extended Latin: \u00e9 \u00f1 \u00fc \u00df \u00e6 \u0153 \u0141 \u017d \u00c5.",
         "Mathematics: \u2211 \u222b \u221a \u2248 \u2260 \u2264 \u2265 \u00b1 \u00d7 \u00f7 \u221e \u2202 \u2207 \u2208 \u2229 \u222a \u2282 \u2286.",
         "Arrows: \u2192 \u2190 \u2194 \u21d2 \u21d4 \u21c4 \u25b6. Currency: \u20ac \u00a3 \u00a5 \u20b9 \u20bd. Punctuation: \u2014 \u2013 \u2026 \u201cquoted\u201d \u2018single\u2019.",
-        "Spanish: \u00bfdonde? \u00a1hola! Ligature-adjacent pairs: fi fl ffi ffl.",
+        "Spanish: \u00bfd\u00f3nde? \u00a1hola! Ligature-adjacent pairs: fi fl ffi ffl.",
         "Combining marks: e\u0301 a\u0308 n\u0303 (a decoder that drops non-ASCII bytes is obvious).",
         "Zero-width probe: a\u200bb\u200cc\ufeffd (ZWSP, ZWNJ, BOM) \u2014 sanitizer fodder.",
     ]
@@ -883,7 +962,9 @@ def rich_media_and_symbols(path: str) -> None:
         s["body"],
     ))
 
-    # Code block with math comments - keep together to avoid split across pages
+    # Start the next section on a fresh page: a fixed on-page decoration must
+    # never be painted over a code block that happened to spill onto that page.
+    story.append(PageBreak())
     from reportlab.platypus import Preformatted, KeepTogether
     code_block = [
         Paragraph("Code with Mathematical Comments", s["h2"]),
@@ -900,32 +981,29 @@ def rich_media_and_symbols(path: str) -> None:
     ]
     story.append(KeepTogether(code_block))
 
-    # Page 2 with inline/wrapped media + vector rules
-    story.append(PageBreak())
-    story.append(Spacer(1, 4.95 * inch))
-    story.append(Paragraph("Inline and wrapped media", s["h1"]))
-    story.append(side_by_side)
-    story.append(Spacer(1, 12))
-    story.append(InlineIcon(icon, "An inline 48x24 icon follows this sentence:"))
-    story.append(Paragraph("The icon above shares a baseline with the text, so it is an inline figure.", s["note"]))
-    story.append(Spacer(1, 10))
+    # The drawing is a flowable, not a page-number-dependent overlay. It has
+    # an explicit height, so neither prose nor the inline figure can collide
+    # with its rules or cards when the preceding content changes size.
+    story.append(Spacer(1, 8))
     story.append(Paragraph("Vector layer", s["h2"]))
     story.append(Paragraph(
-        "The page frame, header rule, vertical divider and dashed rule set are stroked "
-        "vector paths. The yellow and blue cards are filled rounded rectangles with text "
-        "on top; they must not leak into the prose as glyph soup.",
+        "The rules and divider are stroked vector paths. The yellow and blue cards "
+        "are filled shapes with text on top.",
         s["body"],
     ))
+    story.append(Spacer(1, 4))
+    story.append(VectorSample())
+    story.append(Spacer(1, 8))
     story.append(Paragraph("Currency symbols: \u20ac100 \u00a3500 \u00a51000 \u20b91000 \u20b95000 must all render.", s["body"]))
     story.append(Paragraph("Math: \u2211<sub>i=1</sub><sup>n</sup> x<sub>i</sub> \u2248 n\u00b7\u03bc \u00b1 3\u03c3, \u222b<sub>0</sub><sup>\u221e</sup> e<sup>-x</sup> dx = 1", s["body"]))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Inline and wrapped media", s["h1"]))
+    story.append(side_by_side)
+    story.append(Spacer(1, 8))
+    story.append(InlineIcon(icon, "An inline 48x24 icon follows this sentence:"))
+    story.append(Paragraph("The icon above shares a baseline with the text, so it is an inline figure.", s["note"]))
 
-    def decorated_page(canv, doc):
-        furniture(canv, doc, rules=(doc.page == 2), cards=(doc.page == 2))
-
-    build(
-        path, story, pagesize=LETTER, margin=0.75 * inch,
-        on_page=decorated_page,
-    )
+    build(path, story, pagesize=LETTER, margin=0.75 * inch)
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1210,7 @@ def rich_media(path: str) -> None:
     wrapped_text = (
         "Text wraps beside this figure rather than jumping below it. A reader that only "
         "concatenates content-stream strings will still find the sentence, but a reader that "
-        "tracks geometry must also keep the image placement and its measured DPI. " * 3
+        "tracks geometry must also keep the image placement and its measured DPI. " * 2
     )
     side_by_side = Table(
         [[
@@ -1161,6 +1239,8 @@ def rich_media(path: str) -> None:
         Spacer(1, 8),
         PlatypusImage(jpeg_large, width=3.0 * inch, height=1.75 * inch),
         Paragraph("Figure 2 \u2014 1200x700 JPEG block image.", s["note"]),
+        Spacer(1, 8),
+        Paragraph(ZERO_PROBE, s["small"]),
         PageBreak(),
         Spacer(1, 4.95 * inch),
         Paragraph("Inline and wrapped media", s["h1"]),
@@ -1255,6 +1335,7 @@ def manifest() -> dict:
                 },
                 "running_header": RUNNING_HEADER,
                 "numeric_cells": ["$57,600", "1,200", "921"],
+                "batched_grid": BATCHED_GRID,
             },
             "rich_media_and_symbols.pdf": {
                 "image_dimensions": [[900, 500], [1200, 700], [320, 180], [48, 24]],
@@ -1292,6 +1373,7 @@ def manifest() -> dict:
                 },
                 "running_header": RUNNING_HEADER,
                 "numeric_cells": ["$57,600", "1,200", "921"],
+                "batched_grid": BATCHED_GRID,
             },
             "rich_media.pdf": {
                 "image_dimensions": [[900, 500], [1200, 700], [320, 180], [48, 24]],

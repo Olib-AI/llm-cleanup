@@ -4232,6 +4232,34 @@ mod tests {
     }
 
     #[test]
+    fn batched_rectangles_keep_each_fill_and_stroked_edge() {
+        let content = b"1 0 0 rg 10 700 20 10 re 50 700 20 10 re f\n\
+            0 0 0 RG 10 600 20 10 re 40 600 20 10 re 80 600 m 90 600 l S\n\
+            100 600 m 110 600 l 110 610 l s";
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".to_vec(),
+            stream_body("", content, false),
+        ];
+        let report = extract_layout(&assemble_pdf(&objects, 1, None)).unwrap();
+        let page = &report.layout.pages[0];
+        // The fills were painted together but have a 20pt gap between them.
+        assert_eq!(page.fills.len(), 2, "{:?}", page.fills);
+        assert_eq!(page.fills[0].rect, cleanup_core::doc::Rect::new(10.0, 82.0, 20.0, 10.0));
+        assert_eq!(page.fills[1].rect, cleanup_core::doc::Rect::new(50.0, 82.0, 20.0, 10.0));
+        // Two rectangles contribute eight edges; the extra line and the implicitly
+        // closed triangle contribute one and three more respectively.
+        assert_eq!(page.rules.len(), 12, "{:?}", page.rules);
+        for x in [10.0, 30.0, 40.0, 60.0] {
+            assert!(page.rules.iter().any(|rule| {
+                rule.axis == cleanup_core::doc::Axis::Vertical
+                    && (rule.rect.center_x() - x).abs() < 0.01
+            }), "missing vertical edge at {x}: {:?}", page.rules);
+        }
+    }
+
+    #[test]
     fn compressed_text_and_zero_width_explicit_spaces_remain_separate_words() {
         let objects = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
