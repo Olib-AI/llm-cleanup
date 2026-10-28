@@ -390,8 +390,10 @@ impl PageGeometry {
 /// Read once from the font dictionary, `/FontDescriptor` and the name, so that every glyph the
 /// font shows carries the same family, weight, italic flag and metrics. Nothing downstream
 /// re-guesses a style from a name.
-struct FontInfo {
-    profile: FontProfile,
+#[derive(Debug, Clone)]
+pub(super) struct FontInfo {
+    pub(super) profile: FontProfile,
+    pub(super) vertical: bool,
     metrics: FontMetrics,
     /// PostScript name with the subset tag stripped, e.g. `DejaVuSans-Bold`.
     canonical: String,
@@ -414,7 +416,7 @@ impl FontInfo {
     /// Use declared widths, then the font's missing/default width. Base-14 AFM
     /// widths apply only when the PDF did not supply its own metrics. Translate
     /// the font's encoding to WinAnsi before indexing those tables.
-    fn known_width_em(&self, code: u32) -> Option<f32> {
+    pub(super) fn known_width_em(&self, code: u32) -> Option<f32> {
         let base_width = || {
             let text = self.profile.decode.get(&code)?;
             let mut chars = text.chars();
@@ -446,7 +448,7 @@ impl FontInfo {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 struct FontMetrics {
     first_char: i32,
     widths: Vec<Option<f32>>,
@@ -467,7 +469,7 @@ impl FontMetrics {
     }
 }
 
-fn fonts_for(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, FontInfo> {
+pub(super) fn fonts_for(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, FontInfo> {
     let mut fonts: BTreeMap<String, FontInfo> = BTreeMap::new();
     let Some(resources) = resources else {
         return fonts;
@@ -582,6 +584,9 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
 
     FontInfo {
         profile,
+        vertical: dict_get(dict, "Encoding")
+            .and_then(as_name)
+            .is_some_and(|name| name.ends_with("-V")),
         metrics,
         canonical,
         family,
@@ -1106,10 +1111,10 @@ impl<'a> Interpreter<'a> {
             // A stroked rectangle (`re … S`) has no path segments; emit its four edges as
             // rules so the table detector can still see the grid.
             let thickness = gs.line_width.max(0.3);
-            let left = x0;
-            let right = x1;
-            let top = self.page_height - y1;
-            let bottom = self.page_height - y0;
+            let left = x0 - self.page_left;
+            let right = x1 - self.page_left;
+            let top = self.page_top - y1;
+            let bottom = self.page_top - y0;
             geom.rules.push(RuleSegment {
                 rect: Rect::new(left, top, (right - left).max(0.0), thickness),
                 axis: Axis::Horizontal,
