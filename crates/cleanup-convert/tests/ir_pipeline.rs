@@ -855,8 +855,8 @@ fn kerning_fixture_has_no_spaced_out_words() {
                     output.bytes.starts_with(b"%PDF-"),
                     "PDF output is not a PDF"
                 );
-                let report = cleanup_formats::pdf::extract_layout(&output.bytes)
-                    .expect("PDF output parses");
+                let report =
+                    cleanup_formats::pdf::extract_layout(&output.bytes).expect("PDF output parses");
                 let (doc, _warnings) = analyze(&report.layout, &AnalyzeOptions::default());
                 doc.plain_text()
             }
