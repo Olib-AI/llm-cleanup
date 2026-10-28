@@ -57,9 +57,14 @@ Reported at every level, and scrubbed at **Aggressive**:
 - **Unsupported stream filters** (e.g. `LZWDecode`, `JBIG2Decode`, `JPXDecode` content)
   leave the affected stream untouched.
 - **Digital signatures** are reported: any cleaned copy necessarily stops validating.
-- Converting a PDF **to** Markdown/text/DOCX is extractive (reading-order prose only;
-  layout and images are not reconstructed). Keep “Same as input” / PDF output to
-  preserve the document exactly.
+- Converting a PDF **to** Markdown/text/DOCX goes through the document IR (see
+  `DOCUMENT_IR.md`): geometry, headings, lists, tables with spans, columns, fonts/colours
+  and embedded images *are* reconstructed. That conversion is still a re-render into a new
+  container, so it is lossy by definition — choose “Same as input” / PDF output when the
+  requirement is that the original layout be preserved exactly. A PDF→PDF conversion is an
+  identity operation; cleaning a PDF is the native byte-splice path described above, which
+  keeps the page tree, fonts and image XObjects byte-identical and only rewrites prose
+  operands (`native_pdf_clean_keeps_geometry_fonts_and_images` proves this in CI).
 
 A ready-made fixture is in `samples/pdf/report.pdf` (Flate content, split `TJ` runs, an
 embedded image, an AI-stamped Info dictionary and AI XMP):

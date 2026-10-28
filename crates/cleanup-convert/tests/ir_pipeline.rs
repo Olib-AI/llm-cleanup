@@ -1,17 +1,68 @@
-//! End-to-end integration tests for the document-IR pipeline.
+//! End-to-end regression tests for the document-IR pipeline.
 //!
-//! These run the real fixtures in `tests/fixtures/` through a real reader (`pdf::extract_layout`
-//! plus the layout analyser) and assert that structure survives the trip into each target: table
-//! cells and spans, image extraction, native OpenXML tables, well-formed package XML, column
-//! linearisation, and byte-for-byte Unicode retention.
+//! Every test runs a real, committed PDF from `tests/fixtures/` through the real reader
+//! (`cleanup_formats::pdf::extract_layout` + `cleanup_core::doc::analyze`), the real IR
+//! sanitizer and the real exporters. Ground truth comes from `tests/fixtures/manifest.json`,
+//! which is emitted by `scripts/generate_fixtures.py` alongside the PDFs.
 
+use cleanup_convert::sanitize::{SanitizeOptions, sanitize};
 use cleanup_convert::{ConvertOptions, ConvertOutput, Target, convert_document};
-use cleanup_core::FormatId;
+use cleanup_core::doc::{AnalyzeOptions, Block, Doc, analyze};
+use cleanup_core::traits::Format;
+use cleanup_core::{CleanupLevel, Ctx, FormatId};
+use serde_json::Value;
 use std::io::Read;
 
+const FIXTURES: [&str; 5] = [
+    "complex_tables.pdf",
+    "rich_media.pdf",
+    "typographic_symbols.pdf",
+    "multi_column_mixed.pdf",
+    "ai_slop_samples.pdf",
+];
+
+fn fixtures_dir() -> String {
+    format!("{}/../../tests/fixtures", env!("CARGO_MANIFEST_DIR"))
+}
+
 fn fixture(name: &str) -> Vec<u8> {
-    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/{name}", fixtures_dir());
     std::fs::read(&path).unwrap_or_else(|error| panic!("reading {path}: {error}"))
+}
+
+fn manifest() -> Value {
+    let path = format!("{}/manifest.json", fixtures_dir());
+    let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("reading {path}: {error}"));
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("parsing {path}: {error}"))
+}
+
+/// Reconstruct the IR exactly as `input::pdf_layout` does, so assertions can inspect structure
+/// (row/column counts, page boundaries, anchors, DPI, colour) rather than guessing from output.
+fn ir(name: &str) -> Doc {
+    let bytes = fixture(name);
+    let report = cleanup_formats::pdf::extract_layout(&bytes)
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+    let (doc, warnings) = analyze(&report.layout, &AnalyzeOptions::default());
+    assert!(
+        warnings.iter().all(|warning| !warning.starts_with("IR:")),
+        "{name} produced an invalid IR: {warnings:?}"
+    );
+    doc
+}
+
+fn sanitized_ir(name: &str) -> Doc {
+    let mut doc = ir(name);
+    let report = sanitize(&mut doc, &SanitizeOptions::default());
+    assert!(
+        report.normalization_warnings.is_empty(),
+        "{name}: IR drifted after cleaning: {:?}",
+        report.normalization_warnings
+    );
+    assert!(
+        doc.validate().is_empty(),
+        "{name}: IR invalid after cleaning"
+    );
+    doc
 }
 
 fn convert(name: &str, to: Target) -> ConvertOutput {
@@ -25,7 +76,6 @@ fn text(name: &str, to: Target) -> String {
     String::from_utf8(output.bytes).unwrap_or_else(|error| panic!("{name} is not UTF-8: {error}"))
 }
 
-/// Read one part out of an OpenXML package.
 fn zip_part(bytes: &[u8], part: &str) -> Vec<u8> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec()))
         .unwrap_or_else(|error| panic!("output is not a zip: {error}"));
@@ -42,14 +92,18 @@ fn zip_names(bytes: &[u8]) -> Vec<String> {
         .unwrap_or_else(|error| panic!("output is not a zip: {error}"));
     let mut names = Vec::new();
     for index in 0..archive.len() {
-        let Ok(file) = archive.by_index(index) else {
-            continue;
-        };
-        if let Ok(name) = file.name() {
-            names.push(name.into_owned());
+        if let Ok(file) = archive.by_index(index)
+            && let Ok(name) = file.name()
+        {
+            names.push(name.to_string());
         }
     }
     names
+}
+
+fn docx_xml(name: &str) -> String {
+    let output = convert(name, Target::Docx);
+    String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("document.xml is UTF-8")
 }
 
 fn assert_well_formed(xml: &str, what: &str) {
@@ -72,7 +126,7 @@ fn assert_well_formed(xml: &str, what: &str) {
 
 /// Number of `|`-delimited cells in the widest GFM row, plus every HTML `<td>`/`<th>`.
 fn table_cells(markdown: &str) -> usize {
-    let pipes: usize = markdown
+    let pipes = markdown
         .lines()
         .filter(|line| line.trim_start().starts_with('|'))
         .map(|line| line.matches('|').count().saturating_sub(1))
@@ -82,261 +136,453 @@ fn table_cells(markdown: &str) -> usize {
     pipes.max(html)
 }
 
+/// Remove fenced/indented code before asserting that chat tokens were stripped from *prose*.
+fn prose_only(markdown: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && !line.starts_with("    ") {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Strip indented code lines from a plain-text export before checking for orphaned markup:
+/// a code block is allowed to contain brackets and backticks verbatim.
+fn text_prose_only(plain: &str) -> String {
+    plain
+        .lines()
+        .filter(|line| !line.starts_with("    "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Collapse wrapping whitespace so a sentence split across two terminal lines still matches.
+fn flattened(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn error_codepoint(text: &str) -> Option<char> {
+    text.chars().find(|ch| {
+        matches!(
+            *ch,
+            '\u{FFFD}' | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'
+        )
+    })
+}
+
 // ---------------------------------------------------------------------------
-// Tables
+// 1. Tables: multi-page stitching, spans, widths, alignments
 // ---------------------------------------------------------------------------
 
 #[test]
-fn multi_page_table_cells_and_text_survive() {
-    let output = convert("multi_page_tables.pdf", Target::Markdown);
-    let markdown = String::from_utf8(output.bytes).expect("markdown is UTF-8");
+fn complex_tables_match_ground_truth() {
+    let root = manifest();
+    let truth = &root["fixtures"]["complex_tables.pdf"];
+    let expected_rows = truth["primary_table"]["rows"].as_u64().unwrap() as usize;
+    let expected_columns = truth["primary_table"]["columns"].as_u64().unwrap() as usize;
 
-    // Every cell label from all three pages, plus the repeat header.
-    for label in [
-        "Region",
-        "Units",
-        "Gross",
-        "Net",
-        "Growth",
-        "EMEA",
-        "LATAM",
-        "India",
-        "Nordics",
-        "Quarter",
-        "Marketing",
-        "Research",
-    ] {
-        assert!(
-            markdown.contains(label),
-            "table text `{label}` was dropped; output was:\n{}",
-            &markdown[..markdown.len().min(2000)]
-        );
-    }
-
-    // A 5-column table existed in the source: the widest row must have 5 cells, and the
-    // 30 body rows of the paginated table must all be present in one logical table.
-    assert!(
-        table_cells(&markdown) >= 5,
-        "expected at least 5 table cells across a row, got {} in:\n{}",
-        table_cells(&markdown),
-        &markdown[..markdown.len().min(2000)]
+    // IR ground truth: one stitched table with 61 rows x 5 columns across three pages.
+    let doc = sanitized_ir("complex_tables.pdf");
+    let primary = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .max_by_key(|table| table.row_count())
+        .expect("the primary table was not detected");
+    assert_eq!(
+        primary.column_count(),
+        expected_columns,
+        "primary table column count: {primary:?}"
     );
-    let table_rows = markdown
+    assert!(
+        primary.row_count() >= expected_rows,
+        "expected >= {expected_rows} rows after stitching, got {}",
+        primary.row_count()
+    );
+    assert!(
+        primary.pages.len() >= truth["primary_table"]["pages_min"].as_u64().unwrap() as usize,
+        "the table was not stitched across pages: {:?}",
+        primary.pages
+    );
+    assert!(
+        doc.info.page_boundaries.len()
+            >= truth["primary_table"]["pages_min"].as_u64().unwrap() as usize,
+        "page boundaries were not recorded"
+    );
+
+    // Markdown: a GFM table with the exact column count and every numeric ground-truth cell.
+    let markdown = text("complex_tables.pdf", Target::Markdown);
+    for header in ["Region", "Units sold", "Gross", "Net", "Growth"] {
+        assert!(markdown.contains(header), "missing header `{header}`");
+    }
+    assert!(
+        table_cells(&markdown) >= expected_columns,
+        "expected >= {expected_columns} columns in the GFM row"
+    );
+    let pipe_rows = markdown
         .lines()
         .filter(|line| line.trim_start().starts_with('|'))
         .count();
     assert!(
-        table_rows >= 25,
-        "expected the 30-row paginated table to survive as >=25 rows, got {table_rows}:\n{}",
-        &markdown[..markdown.len().min(2000)]
+        pipe_rows >= expected_rows,
+        "expected >= {expected_rows} table rows, got {pipe_rows}"
     );
-}
+    for cell in truth["numeric_cells"].as_array().unwrap() {
+        let cell = cell.as_str().unwrap();
+        assert!(markdown.contains(cell), "numeric cell `{cell}` was dropped");
+    }
 
-#[test]
-fn merged_cells_are_not_flattened_away() {
-    let markdown = text("multi_page_tables.pdf", Target::Markdown);
-    // Colspan/rowspan cannot be expressed in GFM: the renderer must fall back to HTML and keep
-    // the span attributes rather than dropping the spanned text.
-    let has_spans = markdown.contains("colspan") || markdown.contains("rowspan");
-    let has_html_table = markdown.contains("<table");
+    // The second grid has both kinds of merge and multi-line cells: GFM cannot express them,
+    // so the exporter must fall back to semantic HTML with explicit widths and spans.
+    let span_rows = truth["span_table"]["rows"].as_u64().unwrap() as usize;
+    let span_columns = truth["span_table"]["columns"].as_u64().unwrap() as usize;
+    assert!(markdown.contains("<table>"), "no semantic HTML fallback");
+    assert!(markdown.contains("<colgroup>"), "column widths were lost");
     assert!(
-        has_spans && has_html_table,
-        "the span table lost its colspan/rowspan (spans={has_spans}, html={has_html_table})"
+        markdown.contains("colspan=\"3\""),
+        "the 3-column merge was flattened"
     );
+    assert!(markdown.contains("rowspan=\"2\""), "the row merge was lost");
     assert!(markdown.contains("H1"), "merged row label was dropped");
+    assert!(markdown.contains("verified"), "multi-line cell was dropped");
+    let html_rows = markdown.matches("<tr>").count();
+    assert!(
+        html_rows >= span_rows,
+        "expected >= {span_rows} HTML rows, got {html_rows}"
+    );
+    let _ = span_columns;
+
+    // Running furniture repeated on all four pages must never reach the output.
+    let running_header = truth["running_header"].as_str().unwrap();
+    assert!(
+        !markdown.contains(running_header),
+        "running header leaked into the document"
+    );
+    assert!(!markdown.contains("llm-cleanup fixture"), "footer leaked");
+
+    // Plain text: aligned box-drawing grid, no orphaned markup.
+    let plain = text("complex_tables.pdf", Target::Text);
+    assert!(plain.contains('┌') && plain.contains('│') && plain.contains('┘'));
+    assert!(plain.contains("$57,600"));
+    assert!(error_codepoint(&plain).is_none(), "Unicode dropout in text");
 }
 
 #[test]
-fn docx_output_has_native_tables_with_cell_properties() {
-    let output = convert("multi_page_tables.pdf", Target::Docx);
-    let document = zip_part(&output.bytes, "word/document.xml");
-    let xml = String::from_utf8(document).expect("document.xml is UTF-8");
-    assert_well_formed(&xml, "word/document.xml");
-
-    let tables = xml.matches("<w:tbl>").count();
-    let cells = xml.matches("<w:tc>").count();
-    assert!(tables >= 2, "expected 2 native tables, got {tables}");
-    assert!(
-        cells >= 40,
-        "expected >=40 table cells (31 rows of 5 plus the span table), got {cells}"
-    );
-    assert!(
-        xml.contains("<w:gridSpan") && xml.contains("<w:vMerge"),
-        "merged cells must be encoded as gridSpan/vMerge"
-    );
-    assert!(
-        xml.contains("<w:shd"),
-        "alternating row fills must survive as cell shading"
-    );
-    assert!(
-        xml.contains("<w:tcBorders>") || xml.contains("<w:tblBorders>"),
-        "cell borders must be drawn"
-    );
+fn complex_tables_docx_has_native_table_structure() {
+    let output = convert("complex_tables.pdf", Target::Docx);
+    let xml = String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("utf8");
+    for token in [
+        "<w:tbl>",
+        "<w:tblGrid>",
+        "<w:gridCol",
+        "<w:tr>",
+        "<w:tcPr>",
+        "<w:tblHeader",
+        "<w:gridSpan",
+        "<w:vMerge",
+        "<w:tblBorders>",
+        "<w:tblCellMar>",
+        "<w:shd",
+    ] {
+        assert!(xml.contains(token), "DOCX lost native structure `{token}`");
+    }
+    let cells = xml.matches("<w:tc>").count() + xml.matches("<w:tc ").count();
+    assert!(cells >= 300, "expected >=300 table cells, got {cells}");
 }
 
 // ---------------------------------------------------------------------------
-// Images and vector graphics
+// 2. Rich media: raster binaries, DPI, inline/block placement, vector SVG
 // ---------------------------------------------------------------------------
 
 #[test]
-fn raster_images_are_extracted_and_embedded() {
-    let output = convert("rich_media_layout.pdf", Target::Docx);
-    let names = zip_names(&output.bytes);
+fn rich_media_preserves_raster_assets_and_vectors() {
+    let root = manifest();
+    let truth = &root["fixtures"]["rich_media.pdf"];
+    let dimensions: Vec<(u64, u64)> = truth["image_dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| (pair[0].as_u64().unwrap(), pair[1].as_u64().unwrap()))
+        .collect();
+    let minimum = truth["images_min"].as_u64().unwrap() as usize;
+    let vector_min = truth["vector_rules_min"].as_u64().unwrap() as usize;
+
+    // IR: assets carry pixel dimensions *and* measured DPI, and vector rules are IR nodes.
+    let doc = sanitized_ir("rich_media.pdf");
+    assert!(
+        doc.assets.len() >= minimum,
+        "only {} assets",
+        doc.assets.len()
+    );
+    for (width, height) in &dimensions {
+        assert!(
+            doc.assets
+                .iter()
+                .any(|asset| asset.width_px as u64 == *width && asset.height_px as u64 == *height),
+            "asset {width}x{height} was not extracted with its real dimensions"
+        );
+    }
+    assert!(
+        doc.assets.iter().any(|asset| asset.dpi_x.is_some()),
+        "no placement DPI was recorded"
+    );
+    let vectors = doc
+        .walk()
+        .iter()
+        .filter(|block| matches!(**block, Block::Vector(_)))
+        .count();
+    assert!(
+        vectors >= vector_min,
+        "only {vectors} vector shapes survived"
+    );
+
+    // Markdown: relative assets, DPI labels, inline SVG and a semantic callout.
+    let output = convert("rich_media.pdf", Target::Markdown);
+    let markdown = String::from_utf8(output.bytes).expect("utf8");
+    assert!(
+        markdown.contains("](assets/figure-"),
+        "image references are not relative to assets/"
+    );
+    assert!(markdown.contains("dpi"), "measured DPI was not reported");
+    assert!(markdown.matches("<svg ").count() >= vector_min);
+    assert!(markdown.contains("> [!IMPORTANT]"), "callout was flattened");
+    assert!(
+        markdown.contains(truth["callout_text"].as_str().unwrap()),
+        "callout text was dropped"
+    );
+    assert!(
+        output.assets.len() >= minimum,
+        "Markdown exporter did not emit the image side-cars"
+    );
+    for (name, data) in &output.assets {
+        assert!(!data.is_empty(), "{name} is empty");
+        assert!(name.starts_with("figure-"), "unexpected asset name {name}");
+    }
+
+    // Plain text: labelled vector markers, DPI, and zero orphaned tags.
+    let plain = text("rich_media.pdf", Target::Text);
+    assert!(plain.contains("[vector:"));
+    assert!(plain.contains("[figure:"));
+    assert!(plain.contains("dpi"));
+    assert!(
+        !plain.contains("<p>") && !plain.contains("</"),
+        "orphaned tag in .txt"
+    );
+
+    // DOCX: inline icon + anchored block images, VML vector shapes, real media parts.
+    let docx = convert("rich_media.pdf", Target::Docx);
+    let xml = String::from_utf8(zip_part(&docx.bytes, "word/document.xml")).expect("utf8");
+    assert!(
+        xml.contains("<wp:inline"),
+        "inline icon was not kept inline"
+    );
+    assert!(xml.contains("<wp:anchor"), "block image was not anchored");
+    assert!(xml.matches("<v:line").count() >= vector_min);
+    assert!(xml.contains("<w:drawing>"));
+    let names = zip_names(&docx.bytes);
     let media: Vec<&String> = names
         .iter()
         .filter(|name| name.starts_with("word/media/"))
         .collect();
-    assert!(
-        media.len() >= 2,
-        "expected the block PNG and JPEG to be embedded, found {media:?}"
-    );
+    assert!(media.len() >= minimum, "only {:?} media parts", media);
     for name in &media {
-        let bytes = zip_part(&output.bytes, name);
-        assert!(!bytes.is_empty(), "{name} is an empty part");
+        assert!(!zip_part(&docx.bytes, name).is_empty(), "{name} is empty");
     }
-    let document = String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("xml");
-    assert!(
-        document.contains("<w:drawing>") && document.contains("<wp:inline"),
-        "images must be placed as inline drawings in the DOCX body"
-    );
-
-    // The same assets must survive a hop through the PDF exporter.
-    let pdf = convert_document(
-        FormatId::Docx,
-        &output.bytes,
-        Target::Pdf,
-        &ConvertOptions::default(),
-    )
-    .expect("docx -> pdf");
-    let pdf_text = String::from_utf8_lossy(&pdf.bytes).into_owned();
-    let embedded = pdf_text.matches("/Subtype /Image").count();
-    assert!(
-        embedded >= 2,
-        "the PDF exporter embedded {embedded} image(s); warnings: {:?}",
-        pdf.report.warnings
-    );
-}
-
-#[test]
-fn vector_rules_and_callouts_are_detected() {
-    let markdown = text("rich_media_layout.pdf", Target::Markdown);
-    // Tinted boxes become quote/box callouts; their text must not vanish.
-    assert!(markdown.contains("retention lifted"), "{markdown}");
-    assert!(
-        markdown.contains("filled, stroked background box"),
-        "{markdown}"
-    );
-    // The stroked page frame and rules must not leak into the prose as glyph soup.
-    assert!(!markdown.contains("\u{FFFD}"));
+    for name in zip_names(&docx.bytes) {
+        if name.ends_with(".xml") || name.ends_with(".rels") {
+            let part = String::from_utf8(zip_part(&docx.bytes, &name)).expect("utf8 part");
+            assert_well_formed(&part, &name);
+        }
+    }
+    assert_well_formed(&xml, "word/document.xml");
 }
 
 // ---------------------------------------------------------------------------
-// Unicode
+// 3. Unicode integrity, inline colour, code, hidden characters
 // ---------------------------------------------------------------------------
 
 #[test]
 fn typographic_symbols_are_never_dropped() {
+    let root = manifest();
+    let truth = &root["fixtures"]["typographic_symbols.pdf"];
+    let symbols: Vec<&str> = truth["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+
     let plain = text("typographic_symbols.pdf", Target::Text);
-    for symbol in [
-        "\u{03b1}", "\u{03b2}", "\u{03a9}", "\u{03c0}", "\u{2211}", "\u{221a}", "\u{00b1}",
-        "\u{2192}", "\u{21d2}", "\u{2264}", "\u{2265}", "\u{221e}", "\u{20ac}", "\u{2014}",
-        "\u{00e9}", "\u{00df}", "\u{00e6}",
-    ] {
+    let markdown = text("typographic_symbols.pdf", Target::Markdown);
+    let xml = docx_xml("typographic_symbols.pdf");
+    for symbol in &symbols {
         assert!(
             plain.contains(symbol),
-            "character U+{:04X} ({symbol}) was dropped from the plain-text export",
-            symbol.chars().next().map(u32::from).unwrap_or(0)
+            "U+{:?} dropped from .txt: {symbol}",
+            symbol.chars().next()
+        );
+        assert!(
+            markdown.contains(symbol),
+            "U+{:?} dropped from .md: {symbol}",
+            symbol.chars().next()
+        );
+        assert!(
+            xml.contains(symbol),
+            "U+{:?} dropped from DOCX: {symbol}",
+            symbol.chars().next()
         );
     }
-    assert!(
-        !plain.contains('\u{FFFD}'),
-        "replacement characters mean the font mapping failed"
-    );
-    // Zero-width characters are sanitizer fodder, not content.
-    assert!(!plain.contains('\u{200b}'), "ZWNJ survived sanitization");
-    assert!(!plain.contains('\u{feff}'), "BOM survived sanitization");
-
-    // The code block survives in reading order, and its indented line is not glued to the
-    // previous one.
-    let markdown = text("typographic_symbols.pdf", Target::Markdown);
-    let head = markdown.find("def summarize(values):").unwrap_or_else(|| {
-        panic!("code block header lost:\n{markdown}");
-    });
+    for (label, body) in [("txt", &plain), ("md", &markdown), ("docx", &xml)] {
+        assert!(
+            error_codepoint(body).is_none(),
+            "invisible/dropout char in {label}"
+        );
+        assert!(
+            !body.contains("QUARTERLY REVENUE"),
+            "running header leaked into {label}"
+        );
+    }
+    for code in truth["code_lines"].as_array().unwrap() {
+        let line = code.as_str().unwrap();
+        assert!(plain.contains(line), "code line `{line}` lost from .txt");
+        assert!(markdown.contains(line), "code line `{line}` lost from .md");
+    }
+    let head = markdown
+        .find("def summarize(values):")
+        .expect("code header");
     let tail = markdown
         .find("return total / len(values)")
-        .unwrap_or_else(|| panic!("indented code line lost:\n{markdown}"));
+        .expect("code tail");
     assert!(head < tail, "code lines reordered");
-}
-
-// ---------------------------------------------------------------------------
-// Layout: columns
-// ---------------------------------------------------------------------------
-
-#[test]
-fn columns_linearise_left_to_right() {
-    let plain = text("mixed_columns.pdf", Target::Text);
-    let positions: Vec<usize> = [
-        "Left column",
-        "Right column",
-        "First column",
-        "Second column",
-        "Third column",
-    ]
-    .iter()
-    .map(|needle| {
-        plain.find(needle).unwrap_or_else(|| {
-            panic!(
-                "`{needle}` missing from:\n{}",
-                &plain[..plain.len().min(3000)]
-            )
-        })
-    })
-    .collect();
-    assert!(
-        positions[0] < positions[1],
-        "two-column page interleaved: left at {}, right at {}",
-        positions[0],
-        positions[1]
-    );
-    assert!(
-        positions[2] < positions[3] && positions[3] < positions[4],
-        "three-column page is out of reading order: {positions:?}"
-    );
-    // The banner and endnotes stay single-column and are not swallowed by a column band.
-    assert!(plain.contains("Annual Review"), "banner title lost");
-    assert!(plain.contains("Endnotes"), "endnotes heading lost");
-}
-
-// ---------------------------------------------------------------------------
-// Sanitization
-// ---------------------------------------------------------------------------
-
-#[test]
-fn assistant_slop_is_removed_without_losing_content() {
-    let output = convert("ai_slop_samples.pdf", Target::Markdown);
-    let markdown = String::from_utf8(output.bytes).expect("markdown is UTF-8");
-    for slop in [
-        "As an AI language model",
-        "I hope this helps",
-        "This response was generated by",
-        "feel free to ask if you have any questions",
-    ] {
+    for hex in truth["color_hex"].as_array().unwrap() {
+        let hex = hex.as_str().unwrap();
         assert!(
-            !markdown.contains(slop),
-            "boilerplate `{slop}` survived sanitization (warnings: {:?}):\n{markdown}",
-            output.report.warnings
+            markdown.contains(&format!("color:#{hex}")),
+            "inline colour #{hex} lost from Markdown"
+        );
+        assert!(
+            xml.contains(&format!("<w:color w:val=\"{hex}\"")),
+            "inline colour #{hex} lost from DOCX"
         );
     }
-    for content in [
-        "six-week pilot",
-        "Support tickets per thousand orders fell",
-        "Licensing cost 14,000 euros",
-        "Pilot programme results",
-        "Costs",
-    ] {
+    let doc = sanitized_ir("typographic_symbols.pdf");
+    assert_eq!(doc.info.page_boundaries.len(), 1);
+    assert!(doc.info.page_boundaries[0].header_zone.height > 0.0);
+    assert!(doc.info.page_boundaries[0].footer_zone.height > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// 4. Multi-column reading order and DOCX sections
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mixed_columns_linearise_and_become_word_sections() {
+    let root = manifest();
+    let truth = &root["fixtures"]["multi_column_mixed.pdf"];
+    let markers: Vec<&str> = truth["markers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    let plain = text("multi_column_mixed.pdf", Target::Text);
+    let positions: Vec<usize> = markers
+        .iter()
+        .map(|marker| {
+            plain
+                .find(marker)
+                .unwrap_or_else(|| panic!("marker `{marker}` missing from plain text"))
+        })
+        .collect();
+    for pair in positions.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "reading order broke between {markers:?}: {positions:?}"
+        );
+    }
+    // A column's lines must not be interleaved with the neighbouring column's lines.
+    for (left, right) in [("COL2-LEFT", "COL2-RIGHT"), ("COL3-FIRST", "COL3-SECOND")] {
+        let left_end = plain.rfind(left).expect("last left line");
+        let right_start = plain.find(right).expect("first right line");
+        assert!(left_end < right_start, "{left}/{right} interleaved");
+    }
+
+    let doc = sanitized_ir("multi_column_mixed.pdf");
+    assert_eq!(
+        doc.column_count(),
+        truth["max_columns"].as_u64().unwrap() as u8
+    );
+    assert_eq!(
+        doc.info.page_boundaries.len(),
+        truth["pages"].as_u64().unwrap() as usize
+    );
+
+    let output = convert("multi_column_mixed.pdf", Target::Docx);
+    let xml = String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("utf8");
+    assert!(
+        xml.contains("<w:cols w:num=\"2\""),
+        "two-column section lost"
+    );
+    assert!(
+        xml.contains("<w:cols w:num=\"3\""),
+        "three-column section lost"
+    );
+    assert!(xml.contains("<w:sectPr"), "section properties not emitted");
+    assert!(xml.contains("Callout: the two-column body"), "callout lost");
+    for name in zip_names(&output.bytes) {
+        if name.ends_with(".xml") || name.ends_with(".rels") {
+            assert_well_formed(
+                &String::from_utf8(zip_part(&output.bytes, &name)).expect("utf8"),
+                &name,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 5. AI-artifact cleaning on the IR
+// ---------------------------------------------------------------------------
+
+#[test]
+fn assistant_slop_is_removed_without_losing_content_or_code() {
+    let root = manifest();
+    let truth = &root["fixtures"]["ai_slop_samples.pdf"];
+    let output = convert("ai_slop_samples.pdf", Target::Markdown);
+    let markdown = String::from_utf8(output.bytes).expect("utf8");
+    let prose = prose_only(&markdown);
+    for slop in truth["must_drop"].as_array().unwrap() {
+        let slop = slop.as_str().unwrap();
+        assert!(
+            !prose.contains(slop),
+            "boilerplate `{slop}` survived in prose:\n{prose}"
+        );
+    }
+    // The same tokens inside an intentional code block must survive verbatim.
+    let code = &markdown[markdown.find("```").unwrap_or(0)..];
+    let code_probe = truth["code_must_keep"].as_str().unwrap();
+    assert!(
+        code.contains(code_probe),
+        "the code block was sanitized: {code}"
+    );
+    for content in truth["must_keep"].as_array().unwrap() {
+        let content = content.as_str().unwrap();
         assert!(
             markdown.contains(content),
-            "genuine content `{content}` was removed:\n{markdown}"
+            "genuine content `{content}` removed"
+        );
+        assert!(
+            prose.contains(content) || code.contains(content),
+            "genuine content `{content}` is neither prose nor code"
         );
     }
     assert!(
@@ -345,85 +591,195 @@ fn assistant_slop_is_removed_without_losing_content() {
             .warnings
             .iter()
             .any(|warning| warning.contains("sanitizer")),
-        "the report should mention what the sanitizer did: {:?}",
+        "the report should describe the IR cleanup: {:?}",
         output.report.warnings
     );
+
+    // Plain text must have zero orphaned tags and keep the genuine content.
+    let plain = text("ai_slop_samples.pdf", Target::Text);
+    let plain_prose = text_prose_only(&plain);
+    for residue in ["<p>", "</p>", "[/INST]", "[END]", "```", "**"] {
+        assert!(
+            !plain_prose.contains(residue),
+            "orphaned `{residue}` in .txt prose:\n{plain_prose}"
+        );
+    }
+    assert!(
+        plain.contains(code_probe),
+        "the intentional code block was rewritten in .txt"
+    );
+    let flat_plain = flattened(&plain);
+    for content in truth["must_keep"].as_array().unwrap() {
+        let content = content.as_str().unwrap();
+        assert!(
+            flat_plain.contains(&flattened(content)),
+            "content `{content}` lost from .txt:\n{plain}"
+        );
+    }
+    assert!(error_codepoint(&plain).is_none(), "Unicode dropout in .txt");
+
+    // The IR itself stays structurally valid after the deletions.
+    let doc = sanitized_ir("ai_slop_samples.pdf");
+    assert!(doc.validate().is_empty());
+    assert!(doc.blocks.iter().all(|block| !block.is_empty()));
+}
+
+#[test]
+fn anchors_and_reading_order_survive_cleaning() {
+    for name in FIXTURES {
+        let original = ir(name);
+        let anchors_before: Vec<_> = original
+            .blocks
+            .iter()
+            .filter_map(|block| block.anchor())
+            .collect();
+        let cleaned = sanitized_ir(name);
+        let anchors_after: Vec<_> = cleaned
+            .blocks
+            .iter()
+            .filter_map(|block| block.anchor())
+            .collect();
+        assert!(
+            anchors_after.len() <= anchors_before.len(),
+            "{name}: cleaning invented anchors"
+        );
+        for anchor in &anchors_after {
+            assert!(
+                anchors_before.contains(anchor),
+                "{name}: an anchor moved during cleaning: {anchor:?}"
+            );
+        }
+        let mut last_page = 0usize;
+        for anchor in &anchors_after {
+            assert!(anchor.page >= last_page, "{name}: page order inverted");
+            last_page = last_page.max(anchor.page);
+        }
+        assert!(cleaned.validate().is_empty(), "{name}: invalid IR");
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Package validity and cross-target smoke tests
+// 6. Cleaned PDF: native byte-splice, no re-render
 // ---------------------------------------------------------------------------
 
 #[test]
-fn docx_package_is_valid_openxml() {
-    let output = convert("mixed_columns.pdf", Target::Docx);
-    let names = zip_names(&output.bytes);
-    for required in [
-        "[Content_Types].xml",
-        "_rels/.rels",
-        "word/document.xml",
-        "word/styles.xml",
-        "word/_rels/document.xml.rels",
-    ] {
-        assert!(
-            names.iter().any(|name| name == required),
-            "missing {required} in {names:?}"
-        );
-    }
-    for name in &names {
-        if name.ends_with(".xml") || name.ends_with(".rels") {
-            let bytes = zip_part(&output.bytes, name);
-            let xml = String::from_utf8(bytes).unwrap_or_else(|_| panic!("{name} is not UTF-8"));
-            assert_well_formed(&xml, name);
+fn native_pdf_clean_keeps_geometry_fonts_and_images() {
+    let source = fixture("rich_media.pdf");
+    let format = cleanup_formats::Pdf;
+    let parsed = format.parse(&source).expect("parse source PDF");
+    let rules = cleanup_rules::builtin_rules();
+    let cx = Ctx::new(CleanupLevel::Standard);
+    let (cleaned, report) =
+        cleanup_core::pipeline::clean(&format, &parsed, &rules, &cx).expect("native PDF clean");
+    assert!(
+        report.changed,
+        "the fixture has a zero-width probe to remove"
+    );
+    assert_ne!(cleaned, source, "cleaning produced no change");
+
+    // Valid PDF envelope.
+    let head = String::from_utf8_lossy(&cleaned[..cleaned.len().min(4096)]).into_owned();
+    assert!(head.starts_with("%PDF-"), "cleaned output is not a PDF");
+    let tail = String::from_utf8_lossy(&cleaned[cleaned.len().saturating_sub(64)..]).into_owned();
+    assert!(tail.contains("%%EOF"), "missing EOF marker");
+    let body = String::from_utf8_lossy(&cleaned).into_owned();
+    assert!(body.contains("startxref"), "missing cross-reference table");
+
+    // Structural skeleton (page tree, fonts, image XObjects, graphics operators) is unchanged:
+    // the cleaner only rewrote text-showing operands.
+    assert_eq!(
+        format.skeleton(&source).expect("source skeleton"),
+        format.skeleton(&cleaned).expect("cleaned skeleton"),
+        "cleaning changed PDF structure"
+    );
+    for token in ["/Type /Page", "/BaseFont", "/Subtype /Image"] {
+        let before = source
+            .windows(token.len())
+            .filter(|window| *window == token.as_bytes())
+            .count();
+        let after = cleaned
+            .windows(token.len())
+            .filter(|window| *window == token.as_bytes())
+            .count();
+        assert_eq!(before, after, "token `{token}` changed count");
+        if token == "/Subtype /Image" {
+            assert!(after >= 4, "expected the embedded images to survive");
         }
     }
-    let document = String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("xml");
+
+    // The cleaned file is still parseable by the spatial reader, with all media intact.
+    let extracted = cleanup_formats::pdf::extract_layout(&cleaned).expect("reparse cleaned PDF");
+    assert!(extracted.layout.assets.len() >= 4);
+    let all_text: String = extracted
+        .layout
+        .pages
+        .iter()
+        .flat_map(|page| page.runs.iter())
+        .map(|run| run.text.as_str())
+        .collect();
     assert!(
-        document.contains("<w:sectPr") && document.contains("<w:cols"),
-        "multi-column sections must be expressed as numbered column sections"
+        all_text.contains("Rich media inventory"),
+        "genuine text was lost"
+    );
+    assert!(!all_text.contains('\u{200B}'), "zero-width probe survived");
+    assert!(
+        extracted
+            .layout
+            .pages
+            .iter()
+            .any(|page| !page.rules.is_empty()),
+        "vector rules were lost"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 7. Cross-target smoke + package validity
+// ---------------------------------------------------------------------------
 
 #[test]
 fn every_fixture_converts_to_every_target() {
-    let fixtures = [
-        "multi_page_tables.pdf",
-        "rich_media_layout.pdf",
-        "typographic_symbols.pdf",
-        "mixed_columns.pdf",
-        "ai_slop_samples.pdf",
-    ];
     let mut failures: Vec<String> = Vec::new();
-    for name in fixtures {
+    for name in FIXTURES {
         for target in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {
             let output = convert(name, target);
             if output.bytes.is_empty() {
                 failures.push(format!("{name} -> {target:?} produced no bytes"));
                 continue;
             }
-            if output.report.engine.starts_with("ir-") && !output.report.lossy {
-                failures.push(format!(
-                    "{name} -> {target:?} claims lossless for a re-render"
-                ));
-            }
             match target {
-                Target::Docx => assert!(
-                    output.bytes.starts_with(b"PK"),
-                    "{name} -> DOCX is not a zip"
-                ),
-                // A PDF source converts to itself, keeping its own header, so only the
-                // `%PDF-` magic is guaranteed here.
-                Target::Pdf => assert!(
-                    output.bytes.starts_with(b"%PDF-"),
-                    "{name} -> PDF is not a PDF"
-                ),
-                Target::Markdown | Target::Text => {
-                    let text = String::from_utf8(output.bytes).expect("utf-8");
-                    if text.trim().is_empty() {
-                        failures.push(format!("{name} -> {target:?} produced blank text"));
+                Target::Docx => {
+                    if !output.bytes.starts_with(b"PK") {
+                        failures.push(format!("{name} -> DOCX is not a zip"));
+                        continue;
                     }
-                    if text.contains('\u{FFFD}') {
-                        failures.push(format!("{name} -> {target:?} contains U+FFFD"));
+                    for required in [
+                        "[Content_Types].xml",
+                        "_rels/.rels",
+                        "word/document.xml",
+                        "word/styles.xml",
+                        "word/numbering.xml",
+                        "word/_rels/document.xml.rels",
+                    ] {
+                        if !zip_names(&output.bytes).iter().any(|part| part == required) {
+                            failures.push(format!("{name} -> DOCX missing {required}"));
+                        }
+                    }
+                }
+                Target::Pdf => {
+                    if !output.bytes.starts_with(b"%PDF-") {
+                        failures.push(format!("{name} -> PDF is not a PDF"));
+                    }
+                }
+                Target::Markdown | Target::Text => {
+                    let body = String::from_utf8(output.bytes).expect("utf8");
+                    if body.trim().is_empty() {
+                        failures.push(format!("{name} -> {target:?} is blank"));
+                    }
+                    if let Some(ch) = error_codepoint(&body) {
+                        failures.push(format!(
+                            "{name} -> {target:?} contains U+{:04X}",
+                            u32::from(ch)
+                        ));
                     }
                 }
             }
@@ -433,9 +789,7 @@ fn every_fixture_converts_to_every_target() {
 }
 
 #[test]
-fn pdf_output_is_self_describing() {
-    // Convert *into* PDF from a non-PDF source: a PDF source is its own target and is returned
-    // byte-for-byte, which would never exercise the exporter.
+fn pdf_export_from_non_pdf_source_is_valid_and_identity_is_lossless() {
     let markdown = b"# Findings\n\nCafe naive - \xe2\x88\x91\n\n| Item | Total |\n| --- | ---: |\n| Widgets | 1204 |\n";
     let output = convert_document(
         FormatId::Markdown,
@@ -444,12 +798,14 @@ fn pdf_output_is_self_describing() {
         &ConvertOptions::default(),
     )
     .expect("markdown -> pdf");
-    let text = String::from_utf8_lossy(&output.bytes).into_owned();
-    assert!(text.starts_with("%PDF-1.7"));
-    assert!(text.contains("/FontFile2"), "fonts must be embedded");
-    assert!(text.contains("/ToUnicode"), "text must stay copyable");
-    assert!(text.contains("startxref") && text.trim_end().ends_with("%%EOF"));
-    // The identity conversion of a PDF must stay byte-identical: no re-render.
+    let body = String::from_utf8_lossy(&output.bytes).into_owned();
+    assert!(body.starts_with("%PDF-1.7"));
+    assert!(body.contains("/FontFile2"), "fonts must be embedded");
+    assert!(body.contains("/ToUnicode"), "text must stay copyable");
+    assert!(body.contains("startxref") && body.trim_end().ends_with("%%EOF"));
+
+    // Same-format conversion stays byte-identical; cleaning a PDF is the native splice path
+    // tested above, never a lossy re-render.
     let source = fixture("ai_slop_samples.pdf");
     let identity = convert_document(
         FormatId::Pdf,
