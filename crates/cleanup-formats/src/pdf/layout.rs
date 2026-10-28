@@ -328,7 +328,8 @@ struct PathState {
 
 impl PathState {
     fn move_to(&mut self, point: (f32, f32)) {
-        self.subpath_bounds.push((point.0, point.1, point.0, point.1));
+        self.subpath_bounds
+            .push((point.0, point.1, point.0, point.1));
         self.current = Some(point);
         self.start = Some(point);
     }
@@ -343,7 +344,8 @@ impl PathState {
             *x1 = x1.max(point.0);
             *y1 = y1.max(point.1);
         } else {
-            self.subpath_bounds.push((point.0, point.1, point.0, point.1));
+            self.subpath_bounds
+                .push((point.0, point.1, point.0, point.1));
         }
         self.current = Some(point);
     }

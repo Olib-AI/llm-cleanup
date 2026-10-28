@@ -4246,16 +4246,26 @@ mod tests {
         let page = &report.layout.pages[0];
         // The fills were painted together but have a 20pt gap between them.
         assert_eq!(page.fills.len(), 2, "{:?}", page.fills);
-        assert_eq!(page.fills[0].rect, cleanup_core::doc::Rect::new(10.0, 82.0, 20.0, 10.0));
-        assert_eq!(page.fills[1].rect, cleanup_core::doc::Rect::new(50.0, 82.0, 20.0, 10.0));
+        assert_eq!(
+            page.fills[0].rect,
+            cleanup_core::doc::Rect::new(10.0, 82.0, 20.0, 10.0)
+        );
+        assert_eq!(
+            page.fills[1].rect,
+            cleanup_core::doc::Rect::new(50.0, 82.0, 20.0, 10.0)
+        );
         // Two rectangles contribute eight edges; the extra line and the implicitly
         // closed triangle contribute one and three more respectively.
         assert_eq!(page.rules.len(), 12, "{:?}", page.rules);
         for x in [10.0, 30.0, 40.0, 60.0] {
-            assert!(page.rules.iter().any(|rule| {
-                rule.axis == cleanup_core::doc::Axis::Vertical
-                    && (rule.rect.center_x() - x).abs() < 0.01
-            }), "missing vertical edge at {x}: {:?}", page.rules);
+            assert!(
+                page.rules.iter().any(|rule| {
+                    rule.axis == cleanup_core::doc::Axis::Vertical
+                        && (rule.rect.center_x() - x).abs() < 0.01
+                }),
+                "missing vertical edge at {x}: {:?}",
+                page.rules
+            );
         }
     }
 
