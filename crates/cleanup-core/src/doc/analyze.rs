@@ -190,7 +190,11 @@ fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
         let mut placed = false;
         if let Some(line) = lines.last_mut() {
             let tolerance = (line.font_size.max(run.font_size) * 0.45).max(1.5);
-            if (line.center_y() - run.rect.center_y()).abs() <= tolerance {
+            // Words on one baseline belong to one line, unless the gap between them is a
+            // column gutter: merging across a gutter would interleave the reading order.
+            let gap = run.rect.x - line.rect.right();
+            let split = (line.font_size.max(run.font_size) * 1.6).max(8.0);
+            if (line.center_y() - run.rect.center_y()).abs() <= tolerance && gap <= split {
                 for word in split_run_into_words(run) {
                     line.words.push(word);
                 }
@@ -615,29 +619,20 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
         }
     }
 
-    let mut row_groups: Vec<Vec<usize>> = Vec::new();
+    let band_bottoms: Vec<f32> = bands.iter().map(|(_, bottom, _)| *bottom).collect();
+
+    // Columnar lines are grouped by the vertical band they sit in, so a two-column body under
+    // a full-width banner stays one sliced stack and reads column by column.
+    let mut banded: Vec<(usize, Vec<usize>)> = Vec::new();
     for index in columnar {
-        let line = &lines[index];
-        let mut target: Option<usize> = None;
-        for (position, group) in row_groups.iter().enumerate() {
-            let group_top = group
-                .iter()
-                .map(|i| lines[*i].rect.y)
-                .fold(f32::MAX, f32::min);
-            let group_bottom = group
-                .iter()
-                .map(|i| lines[*i].rect.bottom())
-                .fold(f32::MIN, f32::max);
-            let overlaps =
-                line.rect.bottom() > group_top - avg_size && line.rect.y < group_bottom + avg_size;
-            if overlaps {
-                target = Some(position);
-                break;
-            }
-        }
-        match target {
-            Some(position) => row_groups[position].push(index),
-            None => row_groups.push(vec![index]),
+        let center = lines[index].rect.center_y();
+        let band = band_bottoms
+            .iter()
+            .filter(|bottom| **bottom <= center)
+            .count();
+        match banded.iter_mut().find(|(current, _)| *current == band) {
+            Some((_, group)) => group.push(index),
+            None => banded.push((band, vec![index])),
         }
     }
 
@@ -658,8 +653,8 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
         });
     }
 
-    for group in row_groups {
-        let mut by_column: Vec<Vec<usize>> = vec![Vec::new(); column_spans.len()];
+    for (_, group) in banded {
+        let mut by_column: Vec<(usize, Vec<usize>)> = Vec::new();
         for index in group {
             let line = &lines[index];
             let mut chosen = 0usize;
@@ -678,22 +673,21 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
                     chosen = position;
                 }
             }
-            by_column[chosen].push(index);
+            match by_column.iter_mut().find(|(position, _)| *position == chosen) {
+                Some((_, column_lines)) => column_lines.push(index),
+                None => by_column.push((chosen, vec![index])),
+            }
         }
-        by_column.retain(|column| !column.is_empty());
-        if by_column.is_empty() {
-            continue;
-        }
+        by_column.sort_by_key(|(position, _)| *position);
         let mut columns: Vec<SliceColumn> = Vec::new();
         let mut top = f32::MAX;
         let mut bottom = f32::MIN;
-        for mut column_lines in by_column {
+        for (position, mut column_lines) in by_column {
             column_lines.sort_by(|a, b| {
                 compare_f32(lines[*a].rect.y, lines[*b].rect.y)
                     .then(compare_f32(lines[*a].rect.x, lines[*b].rect.x))
             });
-            let mut x0 = f32::MAX;
-            let mut x1 = f32::MIN;
+            let (mut x0, mut x1) = column_spans[position];
             for index in &column_lines {
                 x0 = x0.min(lines[*index].rect.x);
                 x1 = x1.max(lines[*index].rect.right());
@@ -706,6 +700,9 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
                 x1,
             });
         }
+        if columns.is_empty() {
+            continue;
+        }
         let left = columns.iter().map(|c| c.x0).fold(f32::MAX, f32::min);
         let right = columns.iter().map(|c| c.x1).fold(f32::MIN, f32::max);
         slices.push(Slice {
@@ -713,6 +710,7 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
             columns,
         });
     }
+
     slices.sort_by(|a, b| compare_f32(a.rect.y, b.rect.y).then(compare_f32(a.rect.x, b.rect.x)));
     slices
 }
@@ -1464,6 +1462,46 @@ fn build_table(
     if xs.len() < 2 || ys.len() < 2 {
         return None;
     }
+    // An open table (rules only between columns, no closing border) stops short of its own
+    // text: the outermost rule is an inner boundary, so extend the grid over the words.
+    let mut xs = xs;
+    let search = Rect::new(
+        bounds.x - 60.0,
+        bounds.y,
+        bounds.width + 120.0,
+        bounds.height,
+    );
+    let mut text_right = f32::MIN;
+    for line in lines {
+        for word in &line.words {
+            if search.contains(word.rect.center_x(), word.rect.center_y()) {
+                text_right = text_right.max(word.rect.right());
+            }
+        }
+    }
+    if text_right.is_finite() && text_right > *xs.last().unwrap_or(&bounds.x) + 2.0 {
+        xs.push(text_right + 2.0);
+    }
+    let ruled_left = component
+        .horizontal
+        .iter()
+        .map(|(_, x0, _)| *x0)
+        .fold(f32::MAX, f32::min);
+    let ruled_right = component
+        .horizontal
+        .iter()
+        .map(|(_, _, x1)| *x1)
+        .fold(f32::MIN, f32::max);
+    let ruled_top = component
+        .vertical
+        .iter()
+        .map(|(_, y0, _)| *y0)
+        .fold(f32::MAX, f32::min);
+    let ruled_bottom = component
+        .vertical
+        .iter()
+        .map(|(_, _, y1)| *y1)
+        .fold(f32::MIN, f32::max);
     let column_count = xs.len() - 1;
     let row_count = ys.len() - 1;
     if column_count > 40 || row_count > 400 {
@@ -1475,8 +1513,8 @@ fn build_table(
         .map(|x| {
             (0..row_count)
                 .map(|row| {
-                    let y0 = ys[row];
-                    let y1 = ys[row + 1];
+                    let y0 = ys[row].max(ruled_top);
+                    let y1 = ys[row + 1].min(ruled_bottom).max(y0);
                     component.vertical.iter().any(|(vx, vy0, vy1)| {
                         (vx - x).abs() <= 3.0 && *vy0 <= y0 + 2.0 && *vy1 >= y1 - 2.0
                     })
@@ -1489,8 +1527,8 @@ fn build_table(
         .map(|y| {
             (0..column_count)
                 .map(|column| {
-                    let x0 = xs[column];
-                    let x1 = xs[column + 1];
+                    let x0 = xs[column].max(ruled_left);
+                    let x1 = xs[column + 1].min(ruled_right).max(x0);
                     component.horizontal.iter().any(|(hy, hx0, hx1)| {
                         (hy - y).abs() <= 3.0 && *hx0 <= x0 + 2.0 && *hx1 >= x1 - 2.0
                     })
