@@ -259,7 +259,7 @@ mod tests {
         let mut glyphs = Vec::new();
         let mut pen = x;
         for ch in text.chars() {
-            let advance = if ch == ' ' { size * 0.318 } else { size * 0.55 };
+            let advance = if ch == ' ' { size * 0.30 } else { size * 0.55 };
             glyphs.push(glyph(&ch.to_string(), pen, baseline, size, advance));
             pen += advance;
         }
