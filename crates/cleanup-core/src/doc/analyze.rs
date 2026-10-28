@@ -156,8 +156,8 @@ impl Line {
         self.bold = bold;
         self.italic = italic;
         self.mono = mono;
-        let mono = self.mono;
-        assign_spaces(&mut self.words, mono);
+        let tracking = self.mono;
+        assign_spaces(&mut self.words, tracking);
     }
 
     fn text(&self) -> String {
