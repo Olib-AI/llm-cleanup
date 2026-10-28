@@ -59,7 +59,12 @@ Reported at every level, and scrubbed at **Aggressive**:
 - **Digital signatures** are reported: any cleaned copy necessarily stops validating.
 - Converting a PDF **to** Markdown/text/DOCX goes through the document IR (see
   `DOCUMENT_IR.md`): geometry, headings, lists, tables with spans, columns, fonts/colours
-  and embedded images *are* reconstructed. That conversion is still a re-render into a new
+  and embedded images *are* reconstructed. Text is not streamed: the reader emits one
+  `Glyph` per character code with its advance box and exact baseline, `Tc`/`Tw`/`Tz` and
+  `TJ` displacements folded into that advance, and `doc::cluster` turns glyphs into whole
+  words before anything else looks at them. That is what keeps
+  `[(Kerning)-40(TJ)] TJ` as `KerningTJ` rather than the `K e r n i n g T J` that a
+  per-chunk tokeniser produces. That conversion is still a re-render into a new
   container, so it is lossy by definition — choose “Same as input” / PDF output when the
   requirement is that the original layout be preserved exactly. A PDF→PDF conversion is an
   identity operation; cleaning a PDF is the native byte-splice path described above, which

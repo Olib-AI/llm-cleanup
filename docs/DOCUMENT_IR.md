@@ -72,14 +72,27 @@ Key invariants:
 
 ## IR shape
 
-`cleanup_core::doc` is split into three layers:
+`cleanup_core::doc` is split into five layers:
 
-* `model` — raw page geometry (`LayoutDoc`, `TextRun`, `RuleSegment`, `FillRect`,
+* `model` — raw page geometry (`LayoutDoc`, `Glyph`, `TextRun`, `RuleSegment`, `FillRect`,
   `ImagePlacement`) and the interpreted IR (`Doc`, `Block`, `Inline`, `Table`, `Row`,
   `Cell`, `Figure`, `VectorShape`, `PageBoundary`, `Callout`, `Columns`). Raw geometry is
   what the PDF reader produces; the IR is what everything downstream consumes.
-  `InlineStyle` carries bold/italic/underline/strike/code plus an optional RGB colour and
-  link target; `Figure.inline` distinguishes a baseline icon from an anchored block image.
+  `InlineStyle` carries bold/italic/underline/strike/code plus an optional RGB colour, a
+  link target and the source typography (family, weight, size); `Figure.inline`
+  distinguishes a baseline icon from an anchored block image.
+* `cluster` — glyph → word reconstruction. The reader emits one `Glyph` per character code
+  (advance box, baseline, font style, the font's own space advance); this module is the only
+  place that decides where a word ends. A word break needs a gap wider than half the font's
+  space advance, so `Tc` tracking, `Tz` scaling and `TJ` kerning (all of which are folded into
+  the advance, leaving a gap of zero) never split a word, while a `TJ` word gap
+  (`-200`…`-300`, i.e. 0.2–0.3 em) always does. A style change splits the *run* without
+  inserting a space, which is what lets one word carry two fonts.
+* `fontmap` — one interpretation of a font name: subset tags (`ABCDEF+`) stripped, style words
+  (`-BoldOblique`, `,Italic`, `-Bd`) removed from the family, metric-compatible aliases folded
+  (`ArialMT`/`NimbusSans`/`LiberationSans` → `Helvetica`), weight on the `100..=900` scale from
+  the name / `/FontWeight` / `/StemV` / `ForceBold`, and the AFM advance tables that keep an
+  unembedded base-14 face measurable.
 * `analyze` — pure, deterministic layout analysis. It is unit-tested against synthetic
   `LayoutDoc`s, so the hard geometry rules are testable without a PDF.
 * `png` — a small PNG encoder (for extracted raster XObjects) and decoder (for embedding
@@ -100,12 +113,42 @@ Key invariants:
 | --- | --- |
 | `cleanup-core/src/doc/model.rs` | The IR types. `LayoutDoc`/`PageLayout`/`TextRun`/`RuleSegment`/`FillRect`/`ImagePlacement` are the raw geometry; `Doc`/`Block`/`Table`/`Cell`/`Figure`/`VectorShape`/`PageBoundary`/`Callout` are the interpreted structure. Every block keeps an `Option<Anchor>`; `Doc::normalize`/`validate` enforce the invariants. |
 | `cleanup-core/src/doc/raster.rs` | Dependency-free PNG encode/decode and PNG/JPEG dimension probing, so an extracted raster needs no image crate. |
+| `cleanup-core/src/doc/cluster.rs` | Glyph → word clustering with the geometry/space-advance rule, plus `gap_spaces`, the one function that turns a measured gap back into blank characters. Unit-tested without a PDF. |
+| `cleanup-core/src/doc/fontmap.rs` | Font-name normalisation: subset tags, style words, metric-compatible aliases, the `100..=900` weight scale from `/FontWeight`/`/StemV`/`ForceBold`, and the AFM advance tables for unembedded base-14 faces. |
 | `cleanup-core/src/doc/analyze.rs` | Pure `LayoutDoc → (Doc, Vec<String>)`: words→lines, column bands, headings, lists, code, callouts, captions, rule-cluster tables (with merged cells, alignment voting and internal-separator validation), vector shapes with inline SVG, cross-page table stitching, running furniture, page boundaries and placement DPI. |
 | `cleanup-formats/src/pdf/layout.rs` | The spatial PDF reader: text state (`Tc`/`Tw`/`Tz`/`TL`/`Ts`), `Tm`/`Td`/`TD`/`T*`, paths, clipping, Form XObjects, images (JPEG passthrough, otherwise PNG), `/Rotate` warnings. |
 | `cleanup-convert/src/input.rs` | Readers for Markdown (pulldown-cmark), HTML and DOCX (quick-xml), plain text, and PDF (via the two modules above). `input::build` is the single entry point. |
 | `cleanup-convert/src/sanitize.rs` | The only mutation point: shared rule catalogue over block text, typography-preserving filtering, header/footer-zone removal, chat-token/wrapper-quote/repetition cleanup, block-level boilerplate removal, and `Doc::normalize`. |
 | `cleanup-convert/src/export/{markdown,text,docx,pdf}.rs` | One renderer per target; each is `&Doc → Rendered`. |
 | `cleanup-convert/src/lib.rs` | `convert_document` wires reader → sanitizer → exporter and returns bytes, side-car assets and a report. |
+
+## Words, spaces and lines
+
+A PDF has no words: it has glyphs, advances and a set of registers that change those advances.
+The pipeline therefore reconstructs text in three explicit steps, and each step has exactly one
+job.
+
+1. **Glyphs (reader).** `Tj`, every `TJ` element, `'` and `"` all funnel into one emitter that
+   appends a `Glyph` with the *advance box* (`x`, `advance`), the exact baseline
+   (`page_height − (trm · (pen, rise))`), the declared font style, and the natural space advance
+   of the font. `Tc`/`Tw`/`Tz` and `TJ` displacements are folded into the advance, which is why
+   a tracked or kerned glyph still ends exactly where the next one starts.
+2. **Words (cluster).** Glyphs are bucketed by baseline and ordered left to right, then joined
+   while the gap to the previous advance box stays at or below half the font's space advance.
+   A blank glyph is an unconditional separator; its advance is consumed and re-synthesised
+   later. Results are whole words (`Kerning`, not `K e r n i n g`, and not `Kern ing`).
+3. **Lines and gaps (analyze).** Words are grouped into lines by baseline (never by box centre,
+   which drifts when a 8pt and a 14pt run share a line), and every gap is turned back into
+   blank characters: `0` when the boxes touch, one when they do not, and — for monospaced lines
+   — as many as the font's own advance accounts for, so a four-space indent stays four spaces.
+   Only then are lines clustered into headings, paragraphs, list items, code blocks and table
+   cells.
+
+Regressions in any of the three steps have a signature: extra spaces between letters
+(`t h i s`), missing spaces where words were separated by a `TJ` gap (`KerningTJarray`), or a
+"word" that is really two columns interleaved. `tests/fixtures/kerning_and_typography.pdf`
+covers all three: its third page is drawn with raw `TJ` arrays, `Tc`/`Tw` registers and one
+`Tm` per glyph, and the integration suite asserts the exact sentences come back.
 
 ## Reading-order and grid heuristics worth remembering
 

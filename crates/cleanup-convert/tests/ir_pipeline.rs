@@ -805,7 +805,11 @@ fn kerning_fixture_has_no_spaced_out_words() {
         let body = match target {
             Target::Docx => {
                 let output = convert("kerning_and_typography.pdf", Target::Docx);
-                String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("docx xml")
+                let xml =
+                    String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("docx xml");
+                // Check the *visible* text, not the markup: a raw-XML scan would pass simply
+                // because `<w:t>` tags sit between the characters it is looking for.
+                docx_body_text(&xml)
             }
             Target::Pdf => {
                 // PDF text is not directly readable; skip text check, just verify it converts
@@ -847,6 +851,32 @@ fn kerning_fixture_has_no_spaced_out_words() {
     );
 }
 
+/// Pull the visible text out of `word/document.xml`, paragraph by paragraph.
+///
+/// Concatenating the `<w:t>` runs of one paragraph is exactly what a reader shows, so a
+/// word split into several runs (`Kern` + `ing`) is glued back and a *space between letters*
+/// would stay visible. Paragraphs are separated so two adjacent paragraphs cannot accidentally
+/// satisfy a sentinel.
+fn docx_body_text(xml: &str) -> String {
+    let mut out = String::new();
+    for paragraph in xml.split("</w:p>") {
+        let mut rest = paragraph;
+        while let Some(start) = rest.find("<w:t") {
+            let Some(open) = rest[start..].find('>') else {
+                break;
+            };
+            let text_start = start + open + 1;
+            let Some(end) = rest[text_start..].find("</w:t>") else {
+                break;
+            };
+            out.push_str(&rest[text_start..text_start + end]);
+            rest = &rest[text_start + end + "</w:t>".len()..];
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn contains_spaced_out(text: &str) -> bool {
     // Detect \b(\w\s){3,}\w\b  - 3+ single-char tokens separated by single spaces
     let mut in_word = false;
@@ -874,6 +904,171 @@ fn contains_spaced_out(text: &str) -> bool {
         }
     }
     false
+}
+
+/// The low-level page (page 3) is drawn with `TJ` arrays, `Tc`/`Tw` registers and one `Tm`
+/// per glyph. Each line must come back with its words intact and its spaces exactly where the
+/// geometry puts them: a reader that emits one token per showing operator turns
+/// "Kerning TJ array keeps words whole" into "Kern ing TJ array keeps words whole", and one
+/// that ignores `TJ` word gaps turns it into "KerningTJarray keepswordswhole".
+#[test]
+fn low_level_operators_reconstruct_exact_words() {
+    let root = manifest();
+    let sentinels: Vec<String> = root["fixtures"]["kerning_and_typography.pdf"]
+        ["low_level_sentinels"]
+        .as_array()
+        .expect("manifest lists the low-level sentinels")
+        .iter()
+        .map(|value| value.as_str().expect("sentinel is a string").to_string())
+        .collect();
+    assert!(
+        sentinels.len() >= 6,
+        "the fixture must cover TJ, Tc, Tw and per-glyph Tm: {sentinels:?}"
+    );
+
+    let docx = convert("kerning_and_typography.pdf", Target::Docx);
+    let docx_xml =
+        String::from_utf8(zip_part(&docx.bytes, "word/document.xml")).expect("docx xml");
+    let exports = [
+        (
+            "markdown",
+            text("kerning_and_typography.pdf", Target::Markdown),
+        ),
+        ("text", text("kerning_and_typography.pdf", Target::Text)),
+        ("docx", docx_body_text(&docx_xml)),
+    ];
+    for (label, body) in exports {
+        let visible = flattened(&body);
+        for sentinel in &sentinels {
+            assert!(
+                visible.contains(sentinel.as_str()),
+                "{label} lost the sentence {sentinel:?}\n---\n{visible}\n---"
+            );
+        }
+    }
+
+    // The IR itself must expose the words, not the showing operators.
+    let doc = ir("kerning_and_typography.pdf");
+    let text = doc.plain_text();
+    assert!(text.contains("Kerning TJ array keeps words whole"), "{text}");
+    assert!(
+        text.contains("Word gap from geometry alone"),
+        "a TJ word gap (no space character) must become a space: {text}"
+    );
+    assert!(
+        !text.contains("KerningTJarray"),
+        "TJ word gaps were dropped: {text}"
+    );
+}
+
+/// Font metadata comes from the PDF dictionary, not from a guess: family, weight, monospace
+/// flag, space advance and (critically) the exact baseline every box is anchored to.
+#[test]
+fn typography_metadata_is_recovered_from_the_font_dictionary() {
+    let bytes = fixture("kerning_and_typography.pdf");
+    let report = cleanup_formats::pdf::extract_layout(&bytes).expect("extract layout");
+    assert_eq!(report.layout.pages.len(), 3, "the low-level page is missing");
+    let runs: Vec<&cleanup_core::doc::TextRun> = report
+        .layout
+        .pages
+        .iter()
+        .flat_map(|page| page.runs.iter())
+        .collect();
+    assert!(!runs.is_empty());
+
+    // Subset prefixes are stripped and the style is lifted off the family.
+    for run in &runs {
+        assert!(
+            !run.font_name.starts_with("AAAAAA+"),
+            "subset tag survived: {}",
+            run.font_name
+        );
+        assert!(!run.font_family.is_empty(), "run {:?} has no family", run.text);
+        assert!((100..=900).contains(&run.font_weight));
+    }
+
+    let bold = runs
+        .iter()
+        .find(|run| run.text.starts_with("Bold") && run.bold)
+        .expect("the bold body line");
+    assert_eq!(bold.font_family, "DejaVuSans");
+    assert!(bold.font_weight >= 700, "weight {}", bold.font_weight);
+    assert!(!bold.italic);
+
+    let mono = runs
+        .iter()
+        .find(|run| run.mono && run.font_name.contains("Mono"))
+        .expect("a monospaced run");
+    assert!(mono.font_name.contains("DejaVuSansMono"));
+    // DejaVu Sans Mono's space is 0.6 em, and the reader must know that.
+    assert!(
+        (mono.space_width - 0.6 * mono.font_size).abs() < 0.1 * mono.font_size,
+        "mono space advance {} for size {}",
+        mono.space_width,
+        mono.font_size
+    );
+
+    // Boxes come from the font descriptor's ascent/descent, so height tracks the size and
+    // three sizes really do share one baseline on the mixed-size line.
+    let small = runs
+        .iter()
+        .find(|run| run.text == "small")
+        .expect("the 8pt run");
+    let large = runs
+        .iter()
+        .find(|run| run.text == "large")
+        .expect("the 14pt run");
+    assert!(
+        (small.font_size - 8.0).abs() < 0.6,
+        "small is {:?}pt",
+        small.font_size
+    );
+    assert!(
+        (large.font_size - 14.0).abs() < 0.6,
+        "large is {:?}pt",
+        large.font_size
+    );
+    assert!(
+        (small.baseline - large.baseline).abs() < 0.5,
+        "boxes on one baseline drifted: {} vs {}",
+        small.baseline,
+        large.baseline
+    );
+    assert!(large.rect.height > small.rect.height);
+
+    // Colours are structural and must survive as RGB, not as a boolean.
+    let hexes: Vec<String> = runs.iter().map(|run| run.color.hex()).collect();
+    assert!(
+        hexes.iter().any(|hex| hex == "C53030") && hexes.iter().any(|hex| hex == "2B6CB0"),
+        "coloured runs lost their RGB values: {hexes:?}"
+    );
+}
+
+/// DOCX run properties carry the typography the IR recorded: real family, real weight and the
+/// source size in half-points. A bold line must be *one* `<w:b/>` run, never a run per letter.
+#[test]
+fn docx_runs_carry_font_family_weight_and_size() {
+    let xml = docx_xml("kerning_and_typography.pdf");
+    assert_well_formed(&xml, "kerning document.xml");
+    assert!(
+        xml.contains("w:ascii=\"DejaVuSans\""),
+        "the embedded family was not mapped onto w:rFonts"
+    );
+    assert!(xml.contains("<w:b/>"), "bold weight produced no w:b");
+    // 14pt -> 28 half-points, 8pt -> 16.
+    assert!(
+        xml.contains("w:sz w:val=\"28\""),
+        "the 14pt run lost its size"
+    );
+    assert!(
+        xml.contains("w:sz w:val=\"16\""),
+        "the 8pt run lost its size"
+    );
+    let body = docx_body_text(&xml);
+    assert!(
+        body.contains("Bold weight body text for emphasis and headings."),
+        "bold line split into fragments: {body}"
+    );
 }
 
 #[test]

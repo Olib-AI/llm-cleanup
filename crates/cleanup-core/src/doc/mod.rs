@@ -5,13 +5,16 @@
 //! only, which is what stops layout from collapsing at the conversion boundary.
 
 pub mod analyze;
+pub mod cluster;
+pub mod fontmap;
 pub mod model;
 pub mod raster;
 
 pub use analyze::{AnalyzeOptions, analyze};
+pub use cluster::words_from_glyphs;
 pub use model::{
     Align, Anchor, Axis, Block, CalloutKind, Cell, Column, ColumnSpec, Divider, Doc, DocInfo,
-    Figure, FillRect, ImageAsset, ImageKind, ImagePlacement, Inline, InlineStyle, LayoutDoc,
+    Figure, FillRect, Glyph, ImageAsset, ImageKind, ImagePlacement, Inline, InlineStyle, LayoutDoc,
     ListItem, PageBoundary, PageLayout, PageSpec, ParagraphStyle, Rect, Rgb, Row, RuleSegment,
     SourceKind, Table, TableBorders, TextRun, VectorKind, VectorShape, inlines_text,
     normalize_spaces,

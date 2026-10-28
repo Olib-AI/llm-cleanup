@@ -53,6 +53,42 @@ struct Word {
     italic: bool,
     mono: bool,
     color: Option<Rgb>,
+    /// Font family this word was set in, alias-folded (`Helvetica`, `DejaVuSans`).
+    font_family: String,
+    /// Weight in the `100..=900` scale.
+    font_weight: u16,
+    /// Baseline y in page space.
+    baseline: f32,
+    /// Advance of a space in this word's font, in points. Drives the word-gap threshold.
+    space_width: f32,
+    /// Spaces to emit *before* this word when the line is rebuilt: `0` glues the word to its
+    /// predecessor (a kerning or style split), `1` is an ordinary word gap, and a monospaced
+    /// line can carry the indentation width. This is the field that keeps "Kerning" from
+    /// becoming "K e r n i n g" and keeps "if n <= 1:" from becoming "if n < = 1:".
+    spaces_before: u16,
+}
+
+impl Word {
+    fn from_run(run: &TextRun, text: String, rect: Rect, spaces_before: u16) -> Word {
+        Word {
+            text,
+            rect,
+            font_size: run.font_size,
+            bold: run.bold,
+            italic: run.italic,
+            mono: run.mono,
+            color: if run.color == Rgb::BLACK {
+                None
+            } else {
+                Some(run.color)
+            },
+            font_family: run.font_family.clone(),
+            font_weight: run.font_weight,
+            baseline: run.baseline,
+            space_width: run.space_width.max(0.5),
+            spaces_before,
+        }
+    }
 }
 
 /// A visual line: the words that share a baseline.
@@ -65,6 +101,9 @@ struct Line {
     bold: bool,
     italic: bool,
     mono: bool,
+    /// Baseline y the line was assembled on. Grouping compares this (never the box centre,
+    /// which drifts with mixed font sizes) so two baselines never merge.
+    baseline: f32,
     consumed: bool,
 }
 
@@ -78,6 +117,7 @@ impl Line {
             bold: run.bold,
             italic: run.italic,
             mono: run.mono,
+            baseline: run.baseline,
             consumed: false,
         };
         line.finish();
@@ -92,15 +132,18 @@ impl Line {
         let mut rect = self.words[0].rect;
         let mut weight = 0usize;
         let mut size_sum = 0.0f32;
+        let mut baseline_sum = 0.0f32;
         for word in &self.words {
             rect = rect.union(&word.rect);
             let chars = word.text.chars().count().max(1);
             weight += chars;
             size_sum += word.font_size * chars as f32;
+            baseline_sum += word.baseline * chars as f32;
         }
         self.rect = rect;
         if weight > 0 {
             self.font_size = size_sum / weight as f32;
+            self.baseline = baseline_sum / weight as f32;
         }
         let mut bold = true;
         let mut italic = true;
@@ -113,13 +156,17 @@ impl Line {
         self.bold = bold;
         self.italic = italic;
         self.mono = mono;
+        let mono = self.mono;
+        assign_spaces(&mut self.words, mono);
     }
 
     fn text(&self) -> String {
         let mut out = String::new();
         for (index, word) in self.words.iter().enumerate() {
             if index > 0 {
-                out.push(' ');
+                for _ in 0..word.spaces_before.min(MAX_GAP_SPACES) {
+                    out.push(' ');
+                }
             }
             out.push_str(&word.text);
         }
@@ -139,164 +186,136 @@ impl Line {
     }
 }
 
+/// Upper bound on the blanks a single word gap may expand to. A table gutter or a stray
+/// absolutely-positioned run can sit hundreds of points away; letting that become 60 spaces
+/// would push the rest of the line off the page of every text target.
+const MAX_GAP_SPACES: u16 = 12;
+
+/// Give every word after the first the gap its geometry implies.
+///
+/// Words that touch (a kerning split, a style change inside a word) get `0` and are glued
+/// back together; words separated by more than half the font's space advance get one blank,
+/// or as many blanks as a monospaced font's own advance accounts for.
+fn assign_spaces(words: &mut [Word], mono: bool) {
+    if words.is_empty() {
+        return;
+    }
+    for index in 1..words.len() {
+        let (previous, current) = words.split_at_mut(index);
+        let previous_rect = previous[index - 1].rect;
+        let current_word = &mut current[0];
+        current_word.spaces_before = crate::doc::cluster::gap_spaces(
+            previous_rect,
+            current_word.rect,
+            current_word.space_width,
+            mono || current_word.mono,
+        );
+    }
+    words[0].spaces_before = 0;
+}
+
 fn compare_f32(a: f32, b: f32) -> Ordering {
     a.partial_cmp(&b).unwrap_or(Ordering::Equal)
 }
 
-#[allow(dead_code)]
-fn canonical_font_family(name: &str) -> String {
-    if let Some(plus) = name.find('+') {
-        let prefix = &name[..plus];
-        if prefix.len() == 6 && prefix.chars().all(|c| c.is_ascii_uppercase()) {
-            return name[plus + 1..].to_string();
-        }
-    }
-    name.to_string()
-}
-
-/// Detect spaced-out kerning artifact: every word is a single character followed by space,
-/// e.g. "t h i s   i s". Returns true when 3+ consecutive single-char words appear.
-fn is_spaced_out(words: &[Word]) -> bool {
-    if words.len() < 4 {
-        return false;
-    }
-    let mut run = 0usize;
-    for word in words {
-        if word.text.chars().count() == 1
-            && word
-                .text
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_alphanumeric())
-        {
-            run += 1;
-            if run >= 3 {
-                return true;
-            }
-        } else {
-            run = 0;
-        }
-    }
-    false
-}
-
 fn split_run_into_words(run: &TextRun) -> Vec<Word> {
-    // The spatial reader already emits word-level TextRuns (glyph clustering in layout.rs).
-    // If this run already is a single word (no whitespace), return it directly with
-    // its precise bounding box instead of distributing width evenly.
+    // The spatial reader already emits word-level TextRuns (glyph clustering in `cluster`).
+    // A run without whitespace therefore *is* the word, with its exact advance box.
     if !run.text.contains(char::is_whitespace) {
         if run.text.trim().is_empty() {
             return Vec::new();
         }
-        return vec![Word {
-            text: run.text.clone(),
-            rect: run.rect,
-            font_size: run.font_size,
-            bold: run.bold,
-            italic: run.italic,
-            mono: run.mono,
-            color: if run.color == Rgb::BLACK {
-                None
-            } else {
-                Some(run.color)
-            },
-        }];
+        return vec![Word::from_run(run, run.text.clone(), run.rect, 0)];
     }
-    // Multi-word run: split on whitespace but preserve proportional spacing by
-    // using character-count weighting rather than even distribution.
+    // A run that still contains blanks (a non-PDF reader, or a test fixture) is split here.
+    // The width is apportioned by character count and the gaps between the pieces are marked
+    // as real word gaps, so the line reconstruction keeps them.
     let chars: Vec<char> = run.text.chars().collect();
     let total = chars.len().max(1) as f32;
     let width = run.rect.width.max(0.0);
-    let mut words: Vec<Word> = Vec::new();
-    let mut start: Option<usize> = None;
     let height = run.rect.height.max(run.font_size * 0.9);
-    let mut push = |from: usize, to: usize| {
-        let text: String = chars[from..to].iter().collect();
-        if text.trim().is_empty() {
-            return;
-        }
-        // Use character-count proportional width
-        let x = run.rect.x + width * (from as f32 / total);
-        let w = width * ((to - from) as f32 / total);
-        words.push(Word {
-            text: text.trim().to_string(),
-            rect: Rect::new(x, run.rect.y, w.max(0.0), height),
-            font_size: run.font_size,
-            bold: run.bold,
-            italic: run.italic,
-            mono: run.mono,
-            color: if run.color == Rgb::BLACK {
-                None
-            } else {
-                Some(run.color)
-            },
-        });
-    };
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
     for (index, ch) in chars.iter().enumerate() {
         if ch.is_whitespace() {
             if let Some(from) = start.take() {
-                push(from, index);
+                spans.push((from, index));
             }
         } else if start.is_none() {
             start = Some(index);
         }
     }
     if let Some(from) = start {
-        push(from, chars.len());
+        spans.push((from, chars.len()));
     }
-
-    // Safety net: if we produced spaced-out artifacts, collapse them back.
-    // This catches any remaining per-glyph emission that slipped through.
-    if is_spaced_out(&words) {
-        let collapsed = words
-            .iter()
-            .map(|w| w.text.as_str())
-            .collect::<Vec<_>>()
-            .join("");
-        let collapsed = collapsed.replace(' ', "");
-        if !collapsed.is_empty() {
-            return vec![Word {
-                text: collapsed,
-                rect: run.rect,
-                font_size: run.font_size,
-                bold: run.bold,
-                italic: run.italic,
-                mono: run.mono,
-                color: if run.color == Rgb::BLACK {
-                    None
-                } else {
-                    Some(run.color)
-                },
-            }];
+    let mut words: Vec<Word> = Vec::new();
+    for (from, to) in spans {
+        let text: String = chars[from..to].iter().collect();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
         }
+        let x = run.rect.x + width * (from as f32 / total);
+        let w = width * ((to - from) as f32 / total);
+        words.push(Word::from_run(
+            run,
+            trimmed.to_string(),
+            Rect::new(x, run.rect.y, w.max(0.0), height),
+            if words.is_empty() { 0 } else { 1 },
+        ));
     }
-
     words
+}
+
+/// Append the words of one line to a paragraph, turning the line break into a word gap.
+///
+/// The first word of a wrapped line has no gap of its own (`spaces_before == 0`, because it
+/// starts the line); once it follows another line it needs exactly one space, or the two
+/// lines would run together as "…endstart…".
+fn append_line_words(target: &mut Vec<Word>, words: &[Word]) {
+    let start = target.len();
+    target.extend(words.iter().cloned());
+    if start > 0
+        && let Some(word) = target.get_mut(start)
+    {
+        word.spaces_before = word.spaces_before.max(1);
+    }
+}
+
+/// Re-join a word hyphenated across a line break: drop the hyphen and glue the next line's
+/// first word onto it, so the paragraph keeps one continuous token and no stray space.
+fn join_hyphenated(previous: &mut Word, next: &Word) {
+    previous.text.pop();
+    previous.text.push_str(&next.text);
+    previous.rect = previous.rect.union(&next.rect);
 }
 
 fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
     let mut runs: Vec<&TextRun> = page.runs.iter().filter(|run| !run.is_blank()).collect();
     runs.sort_by(|a, b| {
-        compare_f32(a.rect.center_y(), b.rect.center_y()).then(compare_f32(a.rect.x, b.rect.x))
+        compare_f32(a.baseline, b.baseline).then(compare_f32(a.rect.x, b.rect.x))
     });
     let mut lines: Vec<Line> = Vec::new();
     for run in runs {
         let mut placed = false;
         if let Some(line) = lines.last_mut() {
-            let tolerance = (line.font_size.max(run.font_size) * 0.45).max(1.5);
             // Words on one baseline belong to one line, unless the gap between them is a
             // column gutter: merging across a gutter would interleave the reading order.
             // A *negative* gap means this run starts behind the line's current right edge —
             // the paint order returned to the other column. That must open a new line too,
             // otherwise `left-1, right-1, left-2` becomes one interleaved line.
+            let tolerance = (line.font_size.max(run.font_size) * 0.35).max(1.0);
             let gap = run.rect.x - line.rect.right();
             let split = (line.font_size.max(run.font_size) * 1.6).max(8.0);
             let min_gap = -(line.font_size.max(run.font_size) * 0.35).max(1.5);
-            if (line.center_y() - run.rect.center_y()).abs() <= tolerance
+            if (line.baseline - run.baseline).abs() <= tolerance
                 && gap >= min_gap
                 && gap <= split
             {
-                for word in split_run_into_words(run) {
+                let words = split_run_into_words(run);
+                // Only the first run of a line starts it; later runs keep the gap the reader
+                // measured, so a glued fragment stays glued and a word gap stays one space.
+                for word in words {
                     line.words.push(word);
                 }
                 line.finish();
@@ -308,7 +327,9 @@ fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
         }
     }
     lines.retain(|line| !line.is_blank());
-    lines.sort_by(|a, b| compare_f32(a.rect.y, b.rect.y).then(compare_f32(a.rect.x, b.rect.x)));
+    lines.sort_by(|a, b| {
+        compare_f32(a.rect.y, b.rect.y).then(compare_f32(a.rect.x, b.rect.x))
+    });
     lines
 }
 
@@ -1212,7 +1233,7 @@ fn take_list(indices: &[usize], lines: &mut [Line], start: usize) -> (Block, usi
                 item_text.push(' ');
             }
             item_text.push_str(&next_text);
-            item_words.extend(next_words);
+            append_line_words(&mut item_words, &next_words);
             lines[next_index].consumed = true;
             cursor += 1;
         }
@@ -1241,7 +1262,15 @@ fn take_code(indices: &[usize], lines: &mut [Line], start: usize) -> (Block, usi
     let mut anchor_rect = lines[indices[start]].rect;
     let anchor_page = lines[indices[start]].page;
     let base_x = lines[indices[start]].rect.x;
-    let char_width = (lines[indices[start]].font_size * 0.6).max(1.0);
+    // Indentation is a multiple of the *font's own* advance, not a guessed `0.6 em`: a
+    // monospaced face reports its real space width, so a four-space indent round-trips as
+    // four spaces instead of drifting to three or five.
+    let char_width = lines[indices[start]]
+        .words
+        .first()
+        .map(|word| word.space_width)
+        .filter(|width| *width > 0.5)
+        .unwrap_or((lines[indices[start]].font_size * 0.6).max(1.0));
     while cursor < indices.len() {
         let index = indices[cursor];
         let line = &lines[index];
@@ -1303,16 +1332,15 @@ fn take_paragraph(
                     .next()
                     .is_some_and(|c| c.is_lowercase())
             {
-                previous_word.text.pop();
-                previous_word.text.push_str(&first_word.text);
-                words.extend(line.words.iter().skip(1).cloned());
+                join_hyphenated(previous_word, &first_word);
+                append_line_words(&mut words, &line.words[1.min(line.words.len())..]);
                 rect = rect.union(&line.rect);
                 lines[index].consumed = true;
                 cursor += 1;
                 continue;
             }
         }
-        words.extend(line.words.iter().cloned());
+        append_line_words(&mut words, &line.words);
         rect = rect.union(&line.rect);
         lines[index].consumed = true;
         cursor += 1;
@@ -1331,28 +1359,37 @@ fn take_paragraph(
 fn inlines_from_words(words: &[Word]) -> Vec<Inline> {
     let mut inlines: Vec<Inline> = Vec::new();
     let mut current: Option<(InlineStyle, String)> = None;
-    for word in words {
+    // Blanks are carried *between* runs rather than inside them: an emphasis span must wrap
+    // whole words, and `**bold **` is not valid GFM. The gap comes from the geometry the
+    // reader measured, so a run split by kerning (zero gap) is glued with no space at all.
+    let mut pending_spaces: u16 = 0;
+    for (index, word) in words.iter().enumerate() {
         let style = InlineStyle {
             bold: word.bold,
             italic: word.italic,
             code: word.mono,
             color: word.color,
+            font_family: Some(word.font_family.clone()),
+            font_weight: Some(word.font_weight),
+            size_pt: Some(word.font_size),
             ..InlineStyle::default()
         };
+        if index > 0 {
+            pending_spaces = pending_spaces.max(word.spaces_before.min(MAX_GAP_SPACES));
+        }
         match current.as_mut() {
             Some((existing, text)) if *existing == style => {
-                if !text.is_empty() {
-                    text.push(' ');
-                }
+                push_spaces(text, pending_spaces);
+                pending_spaces = 0;
                 text.push_str(&word.text);
             }
             _ => {
                 if let Some((existing, text)) = current.take() {
                     inlines.push(Inline::new(text, existing));
-                    // A style change does not delete the space between two words. Keep the
-                    // separator as its own plain run so a coloured/bold span never inherits a
-                    // leading space (which would break Markdown's emphasis parsing).
-                    inlines.push(Inline::plain(" "));
+                }
+                if pending_spaces > 0 {
+                    inlines.push(Inline::plain(" ".repeat(usize::from(pending_spaces))));
+                    pending_spaces = 0;
                 }
                 current = Some((style, word.text.clone()));
             }
@@ -1365,6 +1402,12 @@ fn inlines_from_words(words: &[Word]) -> Vec<Inline> {
         inlines.push(Inline::plain(String::new()));
     }
     inlines
+}
+
+fn push_spaces(text: &mut String, count: u16) {
+    for _ in 0..count {
+        text.push(' ');
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2030,6 +2073,9 @@ fn words_in_rect(lines: &[Line], rect: &Rect) -> Vec<Vec<Word>> {
         .into_iter()
         .map(|(_, mut words)| {
             words.sort_by(|a, b| compare_f32(a.rect.x, b.rect.x));
+            if let Some(first) = words.first_mut() {
+                first.spaces_before = 0;
+            }
             words
         })
         .collect()
@@ -2060,8 +2106,14 @@ fn blocks_from_text_lines(text_lines: &[Vec<Word>]) -> Vec<Block> {
         if words.is_empty() {
             continue;
         }
+        // A cell is its own text box: the first word never carries the gap that separated the
+        // cell from the grid line, or every table cell would open with a blank.
+        let mut words = words.clone();
+        if let Some(first) = words.first_mut() {
+            first.spaces_before = 0;
+        }
         blocks.push(Block::Paragraph {
-            inlines: inlines_from_words(words),
+            inlines: inlines_from_words(&words),
             anchor: None,
             style: ParagraphStyle::default(),
         });
@@ -2141,17 +2193,15 @@ fn merge_adjacent_lists(blocks: Vec<Block>) -> Vec<Block> {
 mod tests {
     use super::*;
 
+    /// A run with a consistent family/weight/metrics, so the tests exercise the same
+    /// [`TextRun`] shape the PDF reader produces.
     fn run(text: &str, x: f32, y: f32, size: f32) -> TextRun {
-        TextRun {
-            text: text.to_string(),
-            rect: Rect::new(x, y, text.chars().count() as f32 * size * 0.5, size),
-            font_size: size,
-            font_name: "Test".to_string(),
-            bold: false,
-            italic: false,
-            mono: false,
-            color: Rgb::BLACK,
-        }
+        TextRun::new(
+            text,
+            Rect::new(x, y, text.chars().count() as f32 * size * 0.5, size),
+            size,
+            "Test",
+        )
     }
 
     fn page_of(runs: Vec<TextRun>) -> LayoutDoc {
@@ -2165,6 +2215,62 @@ mod tests {
                 images: Vec::new(),
             }],
             assets: Vec::new(),
+        }
+    }
+
+    fn run_at(text: &str, x: f32, y: f32, size: f32, width: f32) -> TextRun {
+        TextRun::new(text, Rect::new(x, y, width, size), size, "Test")
+    }
+
+    /// Runs that touch are one word; runs separated by a real space advance are two words.
+    ///
+    /// This is the regression that matters most: `<=` arrives as two separate `Tj` calls in
+    /// most PDFs, and the old reconstruction inserted a blank between *every* pair of runs,
+    /// turning `if n <= 1:` into `if n < = 1:`.
+    #[test]
+    fn glued_runs_reconstruct_without_extra_spaces() {
+        let runs = vec![
+            run_at("if", 72.0, 100.0, 10.0, 11.0),
+            run_at("n", 86.0, 100.0, 10.0, 6.0),
+            run_at("<", 92.0, 100.0, 10.0, 6.0),
+            run_at("=", 98.0, 100.0, 10.0, 6.0),
+            run_at("1:", 107.0, 100.0, 10.0, 11.0),
+        ];
+        let (doc, _warnings) = analyze(&page_of(runs), &AnalyzeOptions::default());
+        let text = doc.plain_text();
+        assert!(
+            text.contains("if n <= 1:"),
+            "glued runs gained spaces: {text:?}"
+        );
+        assert!(
+            !text.contains("if n < = 1:"),
+            "the kerning split was spaced out: {text:?}"
+        );
+    }
+
+    /// A style change inside a word splits the run but must not insert a space.
+    #[test]
+    fn style_split_inside_a_word_keeps_the_word_whole() {
+        let mut first = run_at("Ty", 72.0, 100.0, 10.0, 11.0);
+        first.bold = false;
+        let mut second = run_at("po", 83.0, 100.0, 10.0, 11.0);
+        second.bold = true;
+        second.font_weight = 700;
+        let mut third = run_at("graphy", 94.0, 100.0, 10.0, 33.0);
+        third.bold = true;
+        third.font_weight = 700;
+        let (doc, _warnings) = analyze(&page_of(vec![first, second, third]), &AnalyzeOptions::default());
+        let text = doc.plain_text();
+        assert_eq!(text.trim(), "Typography", "{text:?}");
+        // The emphasis must cover whole fragments, never single characters.
+        let Block::Paragraph { inlines, .. } = &doc.blocks[0] else {
+            panic!("expected a paragraph, got {:?}", doc.blocks);
+        };
+        for inline in inlines {
+            assert!(
+                inline.text.trim().chars().count() >= 2,
+                "emphasis wrapped a fragment: {inline:?}"
+            );
         }
     }
 
