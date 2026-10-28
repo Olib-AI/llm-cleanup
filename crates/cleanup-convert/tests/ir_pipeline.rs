@@ -836,8 +836,9 @@ fn kerning_fixture_has_no_spaced_out_words() {
     // Check that mixed font sizes on same baseline didn't interleave or corrupt
     let plain = text("kerning_and_typography.pdf", Target::Text);
     assert!(
-        !plain.contains("t h i s") && !plain.contains("H e l l o"),
-        "plain text has kerning corruption"
+        !contains_spaced_out(&plain),
+        "plain text has kerning corruption: {:?}",
+        &plain[..plain.len().min(1200)]
     );
 }
 

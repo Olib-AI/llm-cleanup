@@ -991,6 +991,10 @@ def complex_tables(path: str) -> None:
     multi_page_tables(path)
 
 
+INVISIBLE = "a\u200bb\u200cc\ufeffd"
+INVISIBLE_HEX = ["200b", "200c", "feff"]
+ZERO_PROBE = f"Zero-width probe: a\u200bb\u200cc\ufeffd (ZWSP, ZWNJ, BOM) \u2014 must be removed during cleaning."
+
 def rich_media(path: str) -> None:
     """Legacy: original rich_media fixture without symbols."""
     s = styles()
@@ -1018,6 +1022,8 @@ def rich_media(path: str) -> None:
     ]))
 
     story: list = [
+        Paragraph(f"Zero-width probe: a\u200bb\u200cc\ufeffd \u2014 sanitizer must remove", s["note"]),
+
         Paragraph("Rich media inventory", s["title"]),
         Paragraph(
             "Two high-resolution raster assets and one inline icon are embedded verbatim. "
