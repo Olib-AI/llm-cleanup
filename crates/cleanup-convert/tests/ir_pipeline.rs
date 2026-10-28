@@ -13,12 +13,17 @@ use cleanup_core::{CleanupLevel, Ctx, FormatId};
 use serde_json::Value;
 use std::io::Read;
 
-const FIXTURES: [&str; 5] = [
+const FIXTURES: [&str; 9] = [
+    "kerning_and_typography.pdf",
+    "multi_page_tables.pdf",
+    "rich_media_and_symbols.pdf",
+    "multi_column_newsletter.pdf",
+    "ai_slop_samples.pdf",
+    // Legacy fixtures for backward compat
     "complex_tables.pdf",
     "rich_media.pdf",
     "typographic_symbols.pdf",
     "multi_column_mixed.pdf",
-    "ai_slop_samples.pdf",
 ];
 
 fn fixtures_dir() -> String {
@@ -786,6 +791,150 @@ fn every_fixture_converts_to_every_target() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Kerning fixture: no spaced-out words like "t h i s" may appear in any export.
+#[test]
+fn kerning_fixture_has_no_spaced_out_words() {
+    for target in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {
+        let body = match target {
+            Target::Docx => {
+                let output = convert("kerning_and_typography.pdf", Target::Docx);
+                String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("docx xml")
+            }
+            Target::Pdf => {
+                // PDF text is not directly readable; skip text check, just verify it converts
+                let output = convert("kerning_and_typography.pdf", Target::Pdf);
+                assert!(output.bytes.starts_with(b"%PDF-"), "PDF output is not a PDF");
+                continue;
+            }
+            _ => text("kerning_and_typography.pdf", target),
+        };
+        // Regex for spaced-out: 3+ consecutive single-char words e.g. "t h i s"
+        // We check for the pattern \b(\w\s){3,}\w\b in the flattened text
+        let spaced = contains_spaced_out(&body);
+        assert!(
+            !spaced,
+            "kerning_and_typography.pdf -> {target:?} contains spaced-out characters: {}", &body[..body.len().min(500)]
+        );
+        // Also verify natural sentences survived intact
+        for sentinel in [
+            "The quick brown fox",
+            "Kerning test",
+            "Mixed sizes on same baseline",
+        ] {
+            assert!(
+                body.contains(sentinel) || flattened(&body).contains(sentinel),
+                "sentinel '{sentinel}' lost in {target:?}"
+            );
+        }
+    }
+    // Check that mixed font sizes on same baseline didn't interleave or corrupt
+    let plain = text("kerning_and_typography.pdf", Target::Text);
+    assert!(
+        !plain.contains("t h i s") && !plain.contains("H e l l o"),
+        "plain text has kerning corruption"
+    );
+}
+
+fn contains_spaced_out(text: &str) -> bool {
+    // Detect \b(\w\s){3,}\w\b  - 3+ single-char tokens separated by single spaces
+    let mut run = 0usize;
+    let mut in_word = false;
+    for ch in text.chars() {
+        if ch.is_alphanumeric() && !in_word {
+            in_word = true;
+        } else if ch == ' ' && in_word {
+            // Check if previous word was single char
+            // Simplified: count consecutive "X " patterns where X is single alnum
+            in_word = false;
+            // Look back: if we had "X " where X is single char, increment run
+            // This is approximated by scanning words
+            continue;
+        } else if ch.is_whitespace() {
+            in_word = false;
+        } else if !ch.is_alphanumeric() {
+            in_word = false;
+            run = 0;
+        }
+    }
+    // More precise: split into words and check for consecutive single-char words
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut consecutive_single = 0;
+    for word in &words {
+        if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+            consecutive_single += 1;
+            if consecutive_single >= 4 {
+                return true;
+            }
+        } else {
+            consecutive_single = 0;
+        }
+    }
+    false
+}
+
+#[test]
+fn new_fixtures_have_valid_ir_and_convert() {
+    for name in [
+        "kerning_and_typography.pdf",
+        "multi_page_tables.pdf",
+        "rich_media_and_symbols.pdf",
+        "multi_column_newsletter.pdf",
+    ] {
+        let doc = ir(name);
+        assert!(!doc.blocks.is_empty(), "{name}: no blocks recovered");
+        assert!(doc.validate().is_empty(), "{name}: IR invalid: {:?}", doc.validate());
+        for target in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {
+            let output = convert(name, target);
+            assert!(!output.bytes.is_empty(), "{name} -> {target:?} empty");
+        }
+    }
+}
+
+#[test]
+fn multi_page_tables_match_new_ground_truth() {
+    let root = manifest();
+    let truth = &root["fixtures"]["multi_page_tables.pdf"];
+    let expected_rows = truth["primary_table"]["rows"].as_u64().unwrap() as usize;
+    let expected_columns = truth["primary_table"]["columns"].as_u64().unwrap() as usize;
+    let doc = sanitized_ir("multi_page_tables.pdf");
+    let primary = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .max_by_key(|table| table.row_count())
+        .expect("primary table not detected");
+    assert_eq!(primary.column_count(), expected_columns);
+    assert!(primary.row_count() >= expected_rows, "rows {} < expected {}", primary.row_count(), expected_rows);
+    let markdown = text("multi_page_tables.pdf", Target::Markdown);
+    assert!(markdown.contains("Region"));
+    assert!(!markdown.contains("QUARTERLY REVENUE"), "running header leaked");
+}
+
+#[test]
+fn rich_media_and_symbols_preserves_unicode_and_images() {
+    let markdown = text("rich_media_and_symbols.pdf", Target::Markdown);
+    for symbol in ["\u{03b1}", "\u{2211}", "\u{20ac}", "\u{2192}"] {
+        assert!(markdown.contains(symbol), "symbol {symbol} lost");
+    }
+    let plain = text("rich_media_and_symbols.pdf", Target::Text);
+    assert!(plain.contains("[figure:") || plain.contains("figure-"));
+    assert!(error_codepoint(&plain).is_none());
+}
+
+#[test]
+fn multi_column_newsletter_linearises_correctly() {
+    let plain = text("multi_column_newsletter.pdf", Target::Text);
+    for marker in ["BANNER-ONE", "COL2-LEFT", "COL2-RIGHT", "ENDNOTES"] {
+        assert!(plain.contains(marker), "marker {marker} missing");
+    }
+    let banner_pos = plain.find("BANNER-ONE").unwrap();
+    let col2_left = plain.find("COL2-LEFT").unwrap();
+    assert!(banner_pos < col2_left, "BANNER-ONE should precede columns");
 }
 
 #[test]

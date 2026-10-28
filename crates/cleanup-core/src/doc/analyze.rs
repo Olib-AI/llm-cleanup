@@ -143,7 +143,61 @@ fn compare_f32(a: f32, b: f32) -> Ordering {
     a.partial_cmp(&b).unwrap_or(Ordering::Equal)
 }
 
+/// Canonicalize a font name by stripping PDF subset prefix e.g. "ABCDEF+Helvetica" -> "Helvetica".
+fn canonical_font_family(name: &str) -> String {
+    if let Some(plus) = name.find('+') {
+        let prefix = &name[..plus];
+        if prefix.len() == 6 && prefix.chars().all(|c| c.is_ascii_uppercase()) {
+            return name[plus + 1..].to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// Detect spaced-out kerning artifact: every word is a single character followed by space,
+/// e.g. "t h i s   i s". Returns true when 3+ consecutive single-char words appear.
+fn is_spaced_out(words: &[Word]) -> bool {
+    if words.len() < 4 {
+        return false;
+    }
+    let mut run = 0usize;
+    for word in words {
+        if word.text.chars().count() == 1 && word.text.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+            run += 1;
+            if run >= 3 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
 fn split_run_into_words(run: &TextRun) -> Vec<Word> {
+    // The spatial reader already emits word-level TextRuns (glyph clustering in layout.rs).
+    // If this run already is a single word (no whitespace), return it directly with
+    // its precise bounding box instead of distributing width evenly.
+    if !run.text.contains(char::is_whitespace) {
+        if run.text.trim().is_empty() {
+            return Vec::new();
+        }
+        return vec![Word {
+            text: run.text.clone(),
+            rect: run.rect,
+            font_size: run.font_size,
+            bold: run.bold,
+            italic: run.italic,
+            mono: run.mono,
+            color: if run.color == Rgb::BLACK {
+                None
+            } else {
+                Some(run.color)
+            },
+        }];
+    }
+    // Multi-word run: split on whitespace but preserve proportional spacing by
+    // using character-count weighting rather than even distribution.
     let chars: Vec<char> = run.text.chars().collect();
     let total = chars.len().max(1) as f32;
     let width = run.rect.width.max(0.0);
@@ -152,13 +206,14 @@ fn split_run_into_words(run: &TextRun) -> Vec<Word> {
     let height = run.rect.height.max(run.font_size * 0.9);
     let mut push = |from: usize, to: usize| {
         let text: String = chars[from..to].iter().collect();
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return;
         }
+        // Use character-count proportional width
         let x = run.rect.x + width * (from as f32 / total);
         let w = width * ((to - from) as f32 / total);
         words.push(Word {
-            text,
+            text: text.trim().to_string(),
             rect: Rect::new(x, run.rect.y, w.max(0.0), height),
             font_size: run.font_size,
             bold: run.bold,
@@ -183,6 +238,29 @@ fn split_run_into_words(run: &TextRun) -> Vec<Word> {
     if let Some(from) = start {
         push(from, chars.len());
     }
+
+    // Safety net: if we produced spaced-out artifacts, collapse them back.
+    // This catches any remaining per-glyph emission that slipped through.
+    if is_spaced_out(&words) {
+        let collapsed = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join("");
+        let collapsed = collapsed.replace(' ', "");
+        if !collapsed.is_empty() {
+            return vec![Word {
+                text: collapsed,
+                rect: run.rect,
+                font_size: run.font_size,
+                bold: run.bold,
+                italic: run.italic,
+                mono: run.mono,
+                color: if run.color == Rgb::BLACK {
+                    None
+                } else {
+                    Some(run.color)
+                },
+            }];
+        }
+    }
+
     words
 }
 
