@@ -47,6 +47,29 @@
         "rowspan_min": 1
       }
     },
+    "kerning_and_typography.pdf": {
+      "code_lines": [
+        "def fibonacci(n):",
+        "return fibonacci(n-1)"
+      ],
+      "color_hex": [
+        "C53030",
+        "2B6CB0"
+      ],
+      "invisible_codepoints": [
+        "200b",
+        "200c",
+        "feff"
+      ],
+      "pages_min": 3,
+      "sentinels": [
+        "The quick brown fox jumps over the lazy dog",
+        "Kerning test: AVATAR WAVE To",
+        "Typography: fi fl ff ffi ffl ligatures",
+        "Mixed sizes on same baseline",
+        "Natural word spacing must survive"
+      ]
+    },
     "multi_column_mixed.pdf": {
       "markers": [
         "BANNER-ONE",
@@ -62,6 +85,43 @@
       ],
       "max_columns": 3,
       "pages": 4
+    },
+    "multi_column_newsletter.pdf": {
+      "markers": [
+        "BANNER-ONE",
+        "COL2-LEFT",
+        "COL2-RIGHT",
+        "COL3-FIRST",
+        "COL3-SECOND",
+        "COL3-THIRD",
+        "BANNER-TWO",
+        "COL2-REPEAT-LEFT",
+        "COL2-REPEAT-RIGHT",
+        "ENDNOTES"
+      ],
+      "max_columns": 3,
+      "pages": 4
+    },
+    "multi_page_tables.pdf": {
+      "numeric_cells": [
+        "$57,600",
+        "1,200",
+        "921"
+      ],
+      "primary_table": {
+        "columns": 5,
+        "header_rows": 1,
+        "pages_min": 3,
+        "rows": 61
+      },
+      "running_header": "QUARTERLY REVENUE — INTERNAL",
+      "span_table": {
+        "colspan_min": 1,
+        "columns": 5,
+        "multiline_cells_min": 2,
+        "rows": 4,
+        "rowspan_min": 1
+      }
     },
     "rich_media.pdf": {
       "callout_text": "retention lifted 4.2 points",
@@ -84,6 +144,100 @@
         ]
       ],
       "images_min": 4,
+      "vector_rules_min": 3
+    },
+    "rich_media_and_symbols.pdf": {
+      "callout_text": "retention lifted 4.2 points",
+      "code_lines": [
+        "def summarize(values):",
+        "return total / len(values)"
+      ],
+      "color_hex": [
+        "C53030",
+        "2B6CB0"
+      ],
+      "image_dimensions": [
+        [
+          900,
+          500
+        ],
+        [
+          1200,
+          700
+        ],
+        [
+          320,
+          180
+        ],
+        [
+          48,
+          24
+        ]
+      ],
+      "images_min": 4,
+      "symbols": [
+        "α",
+        "β",
+        "γ",
+        "Δ",
+        "Ω",
+        "π",
+        "μ",
+        "σ",
+        "Ж",
+        "й",
+        "щ",
+        "Ё",
+        "é",
+        "ñ",
+        "ü",
+        "ß",
+        "æ",
+        "œ",
+        "Ł",
+        "Ž",
+        "Å",
+        "∑",
+        "∫",
+        "√",
+        "≈",
+        "≠",
+        "≤",
+        "≥",
+        "±",
+        "×",
+        "÷",
+        "∞",
+        "∂",
+        "∇",
+        "∈",
+        "∩",
+        "∪",
+        "⊂",
+        "⊆",
+        "→",
+        "←",
+        "↔",
+        "⇒",
+        "⇔",
+        "⇄",
+        "▶",
+        "€",
+        "£",
+        "¥",
+        "₹",
+        "₽",
+        "—",
+        "–",
+        "…",
+        "“quoted”",
+        "‘single’",
+        "¿dónde?",
+        "¡hola!",
+        "é",
+        "ä",
+        "ñ"
+      ],
       "vector_rules_min": 3
     },
     "typographic_symbols.pdf": {

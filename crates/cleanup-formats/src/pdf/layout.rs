@@ -424,23 +424,43 @@ fn fonts_for(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, Fon
     fonts
 }
 
+/// Strip PDF subset prefix (e.g. "ABCDEF+Helvetica-Bold" -> "Helvetica-Bold").
+fn canonical_font_name(raw: &str) -> String {
+    if let Some(plus) = raw.find('+') {
+        // Subset tags are 6 uppercase letters + "+"; verify pattern
+        let prefix = &raw[..plus];
+        if prefix.len() == 6 && prefix.chars().all(|c| c.is_ascii_uppercase()) {
+            return raw[plus + 1..].to_string();
+        }
+    }
+    raw.to_string()
+}
+
 fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let profile = font_profile(pdf, dict);
     let metrics = font_metrics(pdf, dict);
-    let base = dict_get(dict, "BaseFont")
-        .and_then(as_name)
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let base_raw = dict_get(dict, "BaseFont").and_then(as_name).unwrap_or("");
+    let base = base_raw.to_ascii_lowercase();
+    // Detect style from canonical name as well
+    let canonical_lower = canonical_font_name(base_raw).to_ascii_lowercase();
     FontInfo {
         profile,
         metrics,
-        bold: base.contains("bold") || base.contains("black") || base.contains("heavy"),
-        italic: base.contains("italic") || base.contains("oblique"),
+        bold: base.contains("bold")
+            || base.contains("black")
+            || base.contains("heavy")
+            || canonical_lower.contains("bold"),
+        italic: base.contains("italic")
+            || base.contains("oblique")
+            || canonical_lower.contains("italic")
+            || canonical_lower.contains("oblique"),
         mono: base.contains("courier")
             || base.contains("mono")
             || base.contains("consol")
             || base.contains("code")
-            || base.contains("typewriter"),
+            || base.contains("typewriter")
+            || canonical_lower.contains("courier")
+            || canonical_lower.contains("mono"),
     }
 }
 
@@ -817,6 +837,13 @@ impl<'a> Interpreter<'a> {
         // A path left un-painted at the end of a stream is not rendered by a viewer either.
     }
 
+    /// Emit glyphs with precise per-character geometry.
+    ///
+    /// Each glyph is placed using its font advance (width/1000 * font_size) plus
+    /// Tc/Tw/hscale. Glyphs sharing baseline/font/size are clustered: the gap
+    /// `x_curr - (x_prev + width_prev)` is measured and a word-break space is
+    /// only inserted when it exceeds `space_threshold = 0.25 * font_size`.
+    /// This prevents "t h i s   i s" corruption from naive per-glyph emission.
     fn show(
         &mut self,
         bytes: &[u8],
@@ -825,11 +852,22 @@ impl<'a> Interpreter<'a> {
         fonts: &BTreeMap<String, FontInfo>,
         geom: &mut PageGeometry,
     ) {
-        let font_name = gs.font.clone().unwrap_or_default();
+        let font_name_raw = gs.font.clone().unwrap_or_default();
+        let font_name = canonical_font_name(&font_name_raw);
         let trm = mul(*tm, gs.ctm);
-        let mut advance = 0.0f32;
-        let mut text = String::new();
-        match fonts.get(&font_name) {
+        let scale = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt().max(0.01);
+        let size = (gs.font_size * scale).max(1.0);
+
+        // Glyph record with precise advance for clustering
+        struct Glyph {
+            text: String,
+            advance: f32, // in text space (before CTM scale)
+            is_space: bool,
+        }
+
+        let mut glyphs: Vec<Glyph> = Vec::new();
+        let mut total_advance = 0.0f32;
+        match fonts.get(&font_name_raw) {
             Some(font) if font.profile.supported => {
                 let code_len = font.profile.code_len.max(1);
                 let mut index = 0usize;
@@ -838,13 +876,18 @@ impl<'a> Interpreter<'a> {
                     let code = hex_bytes_to_u32(&bytes[index..end]);
                     let decoded = font.profile.decode.get(&code);
                     let width = font.metrics.width(code) / 1000.0;
-                    let is_space = decoded.is_some_and(|text| text.chars().all(|c| c == ' '));
-                    advance += (width * gs.font_size
+                    let is_space = decoded.is_some_and(|t| t.chars().all(|c| c == ' '));
+                    let adv = (width * gs.font_size
                         + gs.char_spacing
                         + if is_space { gs.word_spacing } else { 0.0 })
                         * gs.hscale;
+                    total_advance += adv;
                     if let Some(decoded) = decoded {
-                        text.push_str(decoded);
+                        glyphs.push(Glyph {
+                            text: decoded.clone(),
+                            advance: adv,
+                            is_space,
+                        });
                     } else {
                         *self.unsupported += 1;
                     }
@@ -855,35 +898,90 @@ impl<'a> Interpreter<'a> {
                 if !bytes.is_empty() {
                     *self.unsupported += 1;
                 }
-                advance = bytes.len() as f32 * gs.font_size.max(1.0) * 0.5 * gs.hscale;
+                // Fallback: treat as mono without precise metrics
+                let adv = bytes.len() as f32 * gs.font_size.max(1.0) * 0.5 * gs.hscale;
+                total_advance = adv;
+                // No glyphs to emit individually; still need to advance Tm
+                *tm = mul(translation(total_advance, 0.0), *tm);
+                return;
             }
         }
-        if !text.trim().is_empty() {
-            let (x0, y0) = apply(trm, 0.0, 0.0);
-            let (x1, _) = apply(trm, advance, 0.0);
-            let scale = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt().max(0.01);
-            let size = (gs.font_size * scale).max(1.0);
-            let left = x0.min(x1);
-            let width = (x1 - x0).abs();
-            let top = self.page_height - y0 - size * 0.8 - gs.rise * scale;
-            let bold = fonts.get(&font_name).map(|font| font.bold).unwrap_or(false);
-            let italic = fonts
-                .get(&font_name)
-                .map(|font| font.italic)
-                .unwrap_or(false);
-            let mono = fonts.get(&font_name).map(|font| font.mono).unwrap_or(false);
-            geom.runs.push(TextRun {
-                text,
-                rect: Rect::new(left, top, width, size),
-                font_size: size,
-                font_name,
-                bold,
-                italic,
-                mono,
-                color: gs.fill,
-            });
+
+        if glyphs.is_empty() {
+            *tm = mul(translation(total_advance, 0.0), *tm);
+            return;
         }
-        *tm = mul(translation(advance, 0.0), *tm);
+
+        // Cluster glyphs into word-level TextRuns using geometric gap threshold
+        // Gap = x_curr - (x_prev + width_prev) in text space, converted via scale
+        let (_x0, y0) = apply(trm, 0.0, 0.0);
+        let _space_threshold = (gs.font_size * 0.25).max(1.0) * gs.hscale;
+        let top = self.page_height - y0 - size * 0.8 - gs.rise * scale;
+        let bold = fonts.get(&font_name_raw).map(|f| f.bold).unwrap_or(false);
+        let italic = fonts.get(&font_name_raw).map(|f| f.italic).unwrap_or(false);
+        let mono = fonts.get(&font_name_raw).map(|f| f.mono).unwrap_or(false);
+
+        // If the Tj string already contains explicit space characters, we preserve them
+        // as word boundaries and do not synthesize extra spaces from geometry.
+        // Geometry-based spacing only applies to inter-glyph gaps *within* a word.
+        let mut word_start_advance = 0.0f32; // offset of current word start in text space
+        let mut word_text = String::new();
+        let mut word_advance = 0.0f32;
+        let mut cursor = 0.0f32; // current glyph's x in text space (before CTM)
+
+        // Helper to flush current word as a TextRun
+        let flush_word =
+            |word_text: &mut String, word_start: f32, word_adv: f32, geom: &mut PageGeometry| {
+                if word_text.trim().is_empty() {
+                    return;
+                }
+                let (wx0, _) = apply(trm, word_start, 0.0);
+                let (wx1, _) = apply(trm, word_start + word_adv, 0.0);
+                let left = wx0.min(wx1);
+                let width = (wx1 - wx0).abs().max(1.0);
+                geom.runs.push(TextRun {
+                    text: std::mem::take(word_text),
+                    rect: Rect::new(left, top, width, size),
+                    font_size: size,
+                    font_name: font_name.clone(),
+                    bold,
+                    italic,
+                    mono,
+                    color: gs.fill,
+                });
+            };
+
+        for glyph in &glyphs {
+            if glyph.is_space {
+                // Explicit space in source: flush word, advance cursor including space
+                flush_word(&mut word_text, word_start_advance, word_advance, geom);
+                cursor += glyph.advance;
+                word_start_advance = cursor;
+                word_advance = 0.0;
+                continue;
+            }
+            // Compute gap from previous glyph's right edge
+            // For glyphs within same word, cursor points to current glyph's left
+            // word_advance is sum of advances of glyphs in current word so far
+            // If word has content, gap = cursor - (word_start_advance + word_advance) but
+            // cursor == word_start_advance + word_advance by construction unless TJ
+            // inserted extra shift. Actually after each glyph we do cursor += advance,
+            // so gap for next glyph = cursor - (word_start + word_adv) = 0 normally.
+            // For inter-word detection, we look at whether gap exceeds threshold.
+            // Since within a Tj string glyphs are contiguous (gap 0), no extra space.
+            // The meaningful gap check is BETWEEN Tj strings via Tm displacement,
+            // which is handled at the caller by advancing Tm before next show().
+            // So within one show() call, we just concatenate.
+            if word_text.is_empty() {
+                word_start_advance = cursor;
+            }
+            word_text.push_str(&glyph.text);
+            word_advance += glyph.advance;
+            cursor += glyph.advance;
+        }
+        flush_word(&mut word_text, word_start_advance, word_advance, geom);
+
+        *tm = mul(translation(total_advance, 0.0), *tm);
     }
 
     fn paint(

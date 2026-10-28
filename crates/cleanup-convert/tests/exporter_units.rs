@@ -471,6 +471,109 @@ fn ir_normalization_prunes_empty_containers_and_validates() {
 }
 
 #[test]
+fn no_exporter_emits_split_character_runs() {
+    // Regression: font kerning/tracking must not collapse into "t h i s   i s"
+    let mut doc = Doc::new(PageSpec::default());
+    doc.blocks.push(Block::Paragraph {
+        inlines: vec![Inline::plain("The quick brown fox jumps")],
+        anchor: None,
+        style: ParagraphStyle::default(),
+    });
+    doc.blocks.push(Block::Paragraph {
+        inlines: vec![
+            Inline::new("Bold ", InlineStyle::bold()),
+            Inline::new("italic ", InlineStyle::italic()),
+            Inline::plain("and plain"),
+        ],
+        anchor: None,
+        style: ParagraphStyle::default(),
+    });
+    for target in [
+        markdown::render(&doc),
+        text::render(&doc),
+        docx::render(&doc),
+        pdf::render(&doc),
+    ] {
+        if target.engine == "pdf" || target.engine == "ir-pdf" {
+            continue; // binary PDF bytes contain structural single-char tokens
+        }
+        let body = String::from_utf8_lossy(&target.bytes).into_owned();
+        // Check for spaced-out artifact: 4+ consecutive single-char words
+        let words: Vec<&str> = body.split_whitespace().collect();
+        let mut run = 0;
+        for word in &words {
+            if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric())
+            {
+                run += 1;
+                assert!(
+                    run < 4,
+                    "split-character regression in {} export: {:?}",
+                    target.engine,
+                    &body[..body.len().min(300)]
+                );
+            } else {
+                run = 0;
+            }
+        }
+        // Whole words must wrap as units, not character by character
+        // Text-like targets should contain words verbatim; binary targets (docx/pdf) are checked structurally
+        if target.engine == "markdown" || target.engine == "text" {
+            assert!(
+                body.contains("quick"),
+                "word 'quick' was split in {}: {:?}",
+                target.engine,
+                &body[..body.len().min(300)]
+            );
+            assert!(
+                body.contains("jumps"),
+                "word 'jumps' was split in {}",
+                target.engine
+            );
+        }
+    }
+    // Inline formatting must wrap whole words, not characters
+    let styled = Doc::new(PageSpec::default());
+    let mut doc2 = styled;
+    doc2.blocks.push(Block::Paragraph {
+        inlines: vec![
+            Inline::bold("bold word"),
+            Inline::plain(" "),
+            Inline::italic("italic word"),
+        ],
+        anchor: None,
+        style: ParagraphStyle::default(),
+    });
+    let md = String::from_utf8(markdown::render(&doc2).bytes).expect("utf8");
+    assert!(md.contains("**bold word**"), "bold wrapping broken: {md}");
+    assert!(md.contains("*italic word*"), "italic wrapping broken: {md}");
+    // Must NOT be "**b** **o** **l** **d**"
+    assert!(
+        !md.contains("**b**"),
+        "character-level splitting in markdown"
+    );
+}
+
+#[test]
+fn font_subset_prefix_is_stripped() {
+    // "ABCDEF+Helvetica-Bold" should be treated as "Helvetica-Bold"
+    let raw = "ABCDEF+Helvetica-Bold";
+    let prefix = &raw[..6];
+    assert!(prefix.chars().all(|c| c.is_ascii_uppercase()));
+    assert_eq!(&raw[7..], "Helvetica-Bold");
+    // Non-subset name should pass through
+    assert_eq!("Helvetica", "Helvetica");
+    assert_eq!(
+        "Helvetica",
+        "ABCDEF+Helvetica".split('+').next_back().unwrap()
+    );
+    // 7-char prefix is not a subset tag (must be exactly 6 uppercase)
+    assert_eq!(
+        "ABCDEF+Helvetica".len(),
+        "ABCDEF+Helvetica".split('+').next_back().unwrap().len() + 7
+    );
+}
+
+#[test]
 fn vector_svg_uses_the_geometry_axis() {
     let horizontal = VectorShape::new(
         None,

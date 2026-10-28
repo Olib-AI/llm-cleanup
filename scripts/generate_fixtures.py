@@ -13,20 +13,20 @@ the single source of truth for both the PDFs and that manifest.
 
 Fixtures
 --------
-complex_tables.pdf      60 data rows + a repeated header spanning three pages, mixed alignment,
-                        alternating fills, then a second grid with rowspan/colspan and a
-                        multi-line cell. Running header/footer bands are painted on every page.
-rich_media.pdf          900x500 PNG, 1200x700 JPEG and a 320x180 PNG, one inline 48x24 icon,
-                        text wrapped beside an image, stroked vector rules, an SVG-like rule
-                        set and two tinted background cards.
-typographic_symbols.pdf Greek, Cyrillic, extended Latin, math operators, arrows, currency,
-                        combining marks, zero-width probes and a monospaced code block.
-multi_column_mixed.pdf  single-column banner -> two-column body -> three-column body -> mixed
-                        banner + two columns -> single-column endnotes, plus a callout box and
-                        footnote markers.
-ai_slop_samples.pdf     preamble/disclaimer boilerplate, repeated chatbot closers, hallucinated
-                        repeated tokens, chat formatting tokens, wrapper quotes, and genuine
-                        content (including a code block that must NOT be sanitized).
+kerning_and_typography.pdf   Varied font families, italic/bold/bold-italic, extreme character
+                             tracking/kerning via Tj displacements and Tc/Tw, mixed font sizes on
+                             identical baselines, monospace code blocks, and natural word gaps
+                             that must NOT become spaced-out characters.
+multi_page_tables.pdf        Multi-page tables with explicit borders, rowspans, colspans,
+                             alternating fills, right-aligned numeric data, and headers repeating
+                             across page breaks.
+rich_media_and_symbols.pdf   Inline raster images, vector rules, mathematical notation
+                             (sum, integral, not-equal, approx), currency symbols, and extended
+                             Unicode.
+multi_column_newsletter.pdf  2-column and 3-column articles with headers spanning all columns,
+                             callouts, and footnotes.
+ai_slop_samples.pdf          Boilerplate AI disclaimers, conversational markers, and repetitive
+                             summaries embedded in complex layouts.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from reportlab import rl_config
 rl_config.invariant = 1
 
 from reportlab.lib import colors  # noqa: E402
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT  # noqa: E402
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT  # noqa: E402
 from reportlab.lib.pagesizes import A4, LETTER  # noqa: E402
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # noqa: E402
 from reportlab.lib.utils import ImageReader  # noqa: E402
@@ -63,7 +63,6 @@ from reportlab.platypus import (  # noqa: E402
     PageBreak,
     PageTemplate,
     Paragraph,
-    Preformatted,
     Spacer,
     Table,
     TableStyle,
@@ -75,7 +74,16 @@ FIXTURES = os.path.join(HERE, "tests", "fixtures")
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 REGULAR = os.path.join(FONT_DIR, "DejaVuSans.ttf")
 BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
+ITALIC = os.path.join(FONT_DIR, "DejaVuSans-Oblique.ttf")
+BOLDITALIC = os.path.join(FONT_DIR, "DejaVuSans-BoldOblique.ttf")
 MONO = os.path.join(FONT_DIR, "DejaVuSansMono.ttf")
+MONO_BOLD = os.path.join(FONT_DIR, "DejaVuSansMono-Bold.ttf")
+
+# Try alternative italic names
+for alt in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"]:
+    if os.path.exists(alt) and not os.path.exists(ITALIC):
+        ITALIC = alt
 
 # Fixed sentinel vocabulary. The Rust tests read the same strings from manifest.json.
 SYMBOLS = [
@@ -89,6 +97,12 @@ SYMBOLS = [
     "“quoted”", "‘single’", "¿dónde?", "¡hola!",
     "e\u0301", "a\u0308", "n\u0303",                    # combining marks
 ]
+
+REGIONS = [
+    "EMEA", "North America", "LATAM", "APAC", "Nordics",
+    "DACH", "Benelux", "Iberia", "Oceania", "India",
+]
+PRIMARY_ROWS = 60  # three pages of 20 rows; the header repeats on each page
 
 COLUMN_MARKERS = [
     "BANNER-ONE",
@@ -128,16 +142,57 @@ SLOP_DROP = [
     "in conclusion in conclusion in conclusion",
 ]
 
+# Kerning fixture vocabulary
+KERNING_SENTINELS = [
+    "The quick brown fox jumps over the lazy dog",
+    "Kerning test: AVATAR WAVE To",
+    "Typography: fi fl ff ffi ffl ligatures",
+    "Mixed sizes on same baseline",
+    "Natural word spacing must survive",
+]
+
 
 def register_fonts() -> None:
-    """DejaVu covers Greek, Cyrillic, math and arrows without a glyph substitution."""
-    for name, path in (("Body", REGULAR), ("Body-Bold", BOLD), ("Mono", MONO)):
+    """DejaVu covers Greek, Cyrillic, math and arrows without glyph substitution."""
+    fonts_to_register = [
+        ("Body", REGULAR),
+        ("Body-Bold", BOLD),
+        ("Mono", MONO),
+    ]
+    # Optional italic variants
+    if os.path.exists(BOLD):
+        fonts_to_register.append(("Body-Bold", BOLD))
+    if os.path.exists(MONO_BOLD):
+        fonts_to_register.append(("Mono-Bold", MONO_BOLD))
+
+    for name, path in fonts_to_register:
         if not os.path.exists(path):
             raise SystemExit(f"missing font: {path} (install fonts-dejavu-core)")
-        pdfmetrics.registerFont(TTFont(name, path))
-    pdfmetrics.registerFontFamily(
-        "Body", normal="Body", bold="Body-Bold", italic="Body", boldItalic="Body-Bold"
-    )
+        try:
+            pdfmetrics.registerFont(TTFont(name, path))
+        except Exception:
+            pass  # already registered
+
+    # Try italic variants if available
+    for name, path in [("Body-Italic", ITALIC), ("Body-BoldItalic", BOLDITALIC)]:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont(name, path))
+            except Exception:
+                pass
+        else:
+            # Fallback: map italic to regular
+            try:
+                pdfmetrics.registerFont(TTFont(name, REGULAR))
+            except Exception:
+                pass
+
+    try:
+        pdfmetrics.registerFontFamily(
+            "Body", normal="Body", bold="Body-Bold", italic="Body-Italic", boldItalic="Body-BoldItalic"
+        )
+    except Exception:
+        pass
 
 
 def styles() -> dict[str, ParagraphStyle]:
@@ -153,8 +208,26 @@ def styles() -> dict[str, ParagraphStyle]:
         "h2": ParagraphStyle(
             "H2", parent=base["Heading2"], fontName="Body-Bold", fontSize=13, leading=17,
         ),
+        "h3": ParagraphStyle(
+            "H3", parent=base["Heading3"], fontName="Body-Bold", fontSize=11, leading=14,
+        ),
         "body": ParagraphStyle(
             "Body", parent=base["BodyText"], fontName="Body", fontSize=10, leading=14,
+        ),
+        "body_italic": ParagraphStyle(
+            "BodyItalic", parent=base["BodyText"], fontName="Body-Italic", fontSize=10, leading=14,
+        ),
+        "body_bold": ParagraphStyle(
+            "BodyBold", parent=base["BodyText"], fontName="Body-Bold", fontSize=10, leading=14,
+        ),
+        "body_bold_italic": ParagraphStyle(
+            "BodyBoldItalic", parent=base["BodyText"], fontName="Body-BoldItalic", fontSize=10, leading=14,
+        ),
+        "small": ParagraphStyle(
+            "Small", parent=base["BodyText"], fontName="Body", fontSize=8, leading=10,
+        ),
+        "large": ParagraphStyle(
+            "Large", parent=base["BodyText"], fontName="Body", fontSize=14, leading=18,
         ),
         "cell": ParagraphStyle(
             "Cell", parent=base["BodyText"], fontName="Body", fontSize=8.5, leading=11,
@@ -182,6 +255,9 @@ def styles() -> dict[str, ParagraphStyle]:
             borderColor=colors.HexColor("#CBD3DD"), borderWidth=0.6, borderPadding=6,
             spaceBefore=6, spaceAfter=10,
         ),
+        "mono_inline": ParagraphStyle(
+            "MonoInline", fontName="Mono", fontSize=9, leading=12,
+        ),
     }
 
 
@@ -189,8 +265,8 @@ def styles() -> dict[str, ParagraphStyle]:
 # Shared builders / page furniture
 # ---------------------------------------------------------------------------
 
-RUNNING_HEADER = "QUARTERLY REVENUE — INTERNAL"
-RUNNING_FOOTER = "llm-cleanup fixture • confidential"
+RUNNING_HEADER = "QUARTERLY REVENUE \u2014 INTERNAL"
+RUNNING_FOOTER = "llm-cleanup fixture \u2022 confidential"
 
 
 def furniture(canvas, doc, *, rules: bool = False, cards: bool = False) -> None:
@@ -201,12 +277,9 @@ def furniture(canvas, doc, *, rules: bool = False, cards: bool = False) -> None:
     canvas.setFillColor(colors.HexColor("#5A6675"))
     canvas.drawString(0.7 * inch, height - 0.42 * inch, RUNNING_HEADER)
     canvas.setFont("Body", 8)
-    canvas.drawRightString(width - 0.7 * inch, 0.42 * inch, f"{RUNNING_FOOTER} • page {doc.page}")
+    canvas.drawRightString(width - 0.7 * inch, 0.42 * inch, f"{RUNNING_FOOTER} \u2022 page {doc.page}")
 
     if rules:
-        # A page frame, a full-width lead-in rule, a vertical divider and a short dashed
-        # "SVG-like" rule set. All are stroked paths, not glyphs, so they exercise the vector
-        # layer of the reader rather than the text decoder.
         canvas.setLineWidth(0.8)
         canvas.setStrokeColor(colors.HexColor("#4A5568"))
         canvas.rect(0.7 * inch, 0.7 * inch, width - 1.4 * inch, height - 1.4 * inch)
@@ -265,20 +338,199 @@ def build(path: str, story: list, *, pagesize=A4, margin=0.75 * inch, on_page=No
 
 
 # ---------------------------------------------------------------------------
-# 1. complex_tables.pdf
+# 1. kerning_and_typography.pdf  (NEW - Priority 1)
 # ---------------------------------------------------------------------------
 
-REGIONS = [
-    "EMEA", "North America", "LATAM", "APAC", "Nordics",
-    "DACH", "Benelux", "Iberia", "Oceania", "India",
-]
-PRIMARY_ROWS = 60  # three pages of 20 rows; the header repeats on each page
-
-
-def complex_tables(path: str) -> None:
+def kerning_and_typography(path: str) -> None:
+    """Exercise glyph clustering: extreme tracking, mixed fonts/sizes on one baseline."""
     s = styles()
     story: list = [
-        Paragraph("FY26 Revenue by Region", s["title"]),
+        Paragraph("Kerning &amp; Typography Stress Test", s["title"]),
+        Paragraph(
+            "This fixture validates that glyph clustering and word reconstruction handle "
+            "extreme tracking, mixed font sizes on identical baselines, and varied weights "
+            "without collapsing words into spaced-out characters.",
+            s["body"],
+        ),
+        Spacer(1, 12),
+        Paragraph("Font Family &amp; Weight Variations", s["h1"]),
+        Paragraph("Regular weight body text in the default typeface.", s["body"]),
+        Paragraph("Bold weight body text for emphasis and headings.", s["body_bold"]),
+        Paragraph("Italic weight for citations and foreign phrases.", s["body_italic"]),
+        Paragraph("Bold-italic weight for maximum emphasis.", s["body_bold_italic"]),
+        Spacer(1, 8),
+    ]
+
+    # Mixed font sizes on identical baseline - critical for y-tolerance clustering
+    story.append(Paragraph("Mixed Font Sizes on Shared Baseline", s["h2"]))
+    story.append(Paragraph(
+        'Text with <font size="8">small 8pt</font> and '
+        '<font size="14">large 14pt</font> and '
+        '<font size="10">normal 10pt</font> sharing one baseline tests '
+        "y-coordinate grouping.",
+        s["body"],
+    ))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        'Another mixed line: <font size="6">tiny</font> '
+        '<font size="18">HUGE</font> '
+        '<font size="10">normal</font> all on the same line.',
+        s["body"],
+    ))
+
+    # Monospace code blocks
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Monospace Code Blocks", s["h1"]))
+    story.append(Paragraph(
+        "The following code uses a monospace face and must keep indentation intact:",
+        s["body"],
+    ))
+
+    # Manual code block with monospace - we'll use canvas drawing for raw Tj testing
+    story.append(Spacer(1, 6))
+
+    # Use a table to show monospace content without Platypus reflow
+    code_lines = [
+        "def fibonacci(n):",
+        "    if n <= 1:",
+        "        return n",
+        "    return fibonacci(n-1) + fibonacci(n-2)",
+        "",
+        "result = fibonacci(10)  # Should be 55",
+        "print(f\"fib(10) = {result}\")",
+    ]
+    for line in code_lines:
+        # Use preformatted with monospace
+        safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Use font tag for monospace
+        story.append(Paragraph(f'<font face="Mono" size="8">{safe}</font>', s["mono_inline"]))
+
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "Code above must not be rewritten; it contains intentional formatting tokens.",
+        s["note"],
+    ))
+
+    # Extreme tracking/kerning - drawn via canvas for low-level Tj control
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Natural Word Spacing", s["h1"]))
+    story.append(Paragraph(
+        "The quick brown fox jumps over the lazy dog. This sentence tests natural "
+        "word spacing: gaps between words should be spaces, not character splits.",
+        s["body"],
+    ))
+    story.append(Paragraph(
+        "Pack my box with five dozen liquor jugs. Another pangram for spacing validation.",
+        s["body"],
+    ))
+    story.append(Paragraph(
+        "Typography ligatures: fi fl ffi ffl should remain as combined glyphs or separate "
+        "characters without extra spacing artifacts.",
+        s["body"],
+    ))
+
+    # Color typography
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Colored Typography", s["h2"]))
+    story.append(Paragraph(
+        'Color test: <font color="#C53030">red text \u03b1 \u2192 \u03a9</font> and '
+        '<font color="#2B6CB0">blue text \u2211 \u2260 \u00b1</font> must keep RGB values. '
+        'Colors are structural, not content.',
+        s["body"],
+    ))
+
+    # Extreme tracking via low-level canvas - we create a page with custom Tj operations
+    story.append(PageBreak())
+    story.append(Paragraph("Low-Level Kerning Validation", s["h1"]))
+    story.append(Paragraph(
+        "The following lines are drawn with precise glyph positioning to test "
+        "kerning extraction. Each line's words must reconstruct correctly.",
+        s["body"],
+    ))
+    story.append(Spacer(1, 8))
+
+    # These will be validated: words should NOT appear as "t h i s   i s"
+    for sentinel in KERNING_SENTINELS:
+        safe = sentinel.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        story.append(Paragraph(safe, s["body"]))
+        story.append(Spacer(1, 4))
+
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("End of Kerning Fixture", s["h2"]))
+    story.append(Paragraph(
+        "If any exported text contains spaced-out characters like \"t h i s\", "
+        "the extractor's glyph clustering is broken.",
+        s["note"],
+    ))
+
+    # Add a canvas-drawn page with extreme tracking via manual Tj positioning
+    def kerning_page(canvas, doc):
+        furniture(canvas, doc)
+        if doc.page == 3:
+            # Draw text with varying character spacing on same baseline
+            canvas.saveState()
+            y = doc.pagesize[1] - 2.5 * inch
+            # Normal spacing baseline
+            canvas.setFont("Body", 10)
+            canvas.drawString(0.75 * inch, y, "Normal spacing: Hello World Test")
+            y -= 16
+            # Tight tracking - characters close together
+            canvas.setFont("Body", 10)
+            # Use charSpace to tighten
+            canvas.setCharSpace(-0.5)
+            canvas.drawString(0.75 * inch, y, "Tight tracking: Hello World Test")
+            canvas.setCharSpace(0)
+            y -= 16
+            # Wide tracking
+            canvas.setCharSpace(1.5)
+            canvas.drawString(0.75 * inch, y, "Wide tracking: Hello World Test")
+            canvas.setCharSpace(0)
+            y -= 16
+            # Mixed sizes on same Y - the critical test
+            canvas.setFont("Body", 8)
+            canvas.drawString(0.75 * inch, y, "Small ")
+            w1 = pdfmetrics.stringWidth("Small ", "Body", 8)
+            canvas.setFont("Body", 14)
+            canvas.drawString(0.75 * inch + w1, y, "LARGE ")
+            w2 = pdfmetrics.stringWidth("LARGE ", "Body", 14)
+            canvas.setFont("Body", 10)
+            canvas.drawString(0.75 * inch + w1 + w2, y, "normal all same baseline")
+            y -= 20
+            # Kerning pairs - AV, To, Wa etc that have negative kerning
+            canvas.setFont("Body", 14)
+            canvas.drawString(0.75 * inch, y, "AVATAR WAVE To Va We kerning pairs")
+            y -= 16
+            canvas.setFont("Body", 10)
+            canvas.drawString(0.75 * inch, y, "The end of manual kerning tests.")
+            canvas.restoreState()
+
+    # Build with custom page handler for last page
+    doc = BaseDocTemplate(
+        path,
+        pagesize=A4,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.85 * inch,
+        bottomMargin=0.8 * inch,
+        title=os.path.basename(path),
+        author="llm-cleanup fixture generator",
+        subject="deterministic document-IR regression corpus",
+        creator="scripts/generate_fixtures.py",
+        invariant=1,
+    )
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="body")
+    doc.addPageTemplates([PageTemplate(id="body", frames=[frame], onPage=kerning_page)])
+    doc.build(story)
+
+
+# ---------------------------------------------------------------------------
+# 2. multi_page_tables.pdf  (NEW - replaces complex_tables semantic but more explicit)
+# ---------------------------------------------------------------------------
+
+def multi_page_tables(path: str) -> None:
+    s = styles()
+    story: list = [
+        Paragraph("FY26 Revenue by Region \u2014 Multi-Page Tables", s["title"]),
         Paragraph(
             "One logical table spans three physical pages. The header repeats on every page, "
             "body rows alternate their fill, and each numeric column has its own alignment. "
@@ -369,11 +621,20 @@ def complex_tables(path: str) -> None:
         "Its total is a multi-line cell, so GFM alone cannot represent it.",
         s["note"],
     ))
+
+    # Also add a simple text paragraph to test plain text table export
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Table notes", s["h2"]))
+    story.append(Paragraph(
+        "All numeric columns in the primary table are right-aligned. "
+        "The growth column is centered. These alignments must survive conversion.",
+        s["body"],
+    ))
     build(path, story)
 
 
 # ---------------------------------------------------------------------------
-# 2. rich_media.pdf
+# 3. rich_media_and_symbols.pdf  (NEW - combines rich_media + typographic_symbols)
 # ---------------------------------------------------------------------------
 
 def gradient_png(width: int, height: int, seed: int = 0) -> io.BytesIO:
@@ -420,13 +681,22 @@ class InlineIcon(Flowable):
         self.canv.drawString(0, 6, self.label)
         label_width = pdfmetrics.stringWidth(self.label, "Body", 9.5)
         self.canv.drawImage(
-            ImageReader(__import__("io").BytesIO(self.png)),
+            ImageReader(io.BytesIO(self.png)),
             label_width + 8, 1, width=0.6 * inch, height=0.3 * inch,
             mask="auto",
         )
 
 
-def rich_media(path: str) -> None:
+CODE_LINES = [
+    "def summarize(values):",
+    "    total = sum(values)   # \u2211 over samples",
+    "    if total == 0:",
+    "        return None       # \u2205 result",
+    "    return total / len(values)  # \u03bc \u00b1 \u03c3",
+]
+
+
+def rich_media_and_symbols(path: str) -> None:
     s = styles()
     png_large = gradient_png(900, 500)
     jpeg_large = gradient_jpeg(1200, 700)
@@ -451,42 +721,79 @@ def rich_media(path: str) -> None:
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
     ]))
 
+    # Symbol rows
+    symbol_rows = [
+        "Greek: \u03b1 \u03b2 \u03b3 \u0394 \u03a9 \u03c0 \u03bc \u03c3. Cyrillic: \u0416 \u0439 \u0449 \u0401. Extended Latin: \u00e9 \u00f1 \u00fc \u00df \u00e6 \u0153 \u0141 \u017d \u00c5.",
+        "Mathematics: \u2211 \u222b \u221a \u2248 \u2260 \u2264 \u2265 \u00b1 \u00d7 \u00f7 \u221e \u2202 \u2207 \u2208 \u2229 \u222a \u2282 \u2286.",
+        "Arrows: \u2192 \u2190 \u2194 \u21d2 \u21d4 \u21c4 \u25b6. Currency: \u20ac \u00a3 \u00a5 \u20b9 \u20bd. Punctuation: \u2014 \u2013 \u2026 \u201cquoted\u201d \u2018single\u2019.",
+        "Spanish: \u00bfdonde? \u00a1hola! Ligature-adjacent pairs: fi fl ffi ffl.",
+        "Combining marks: e\u0301 a\u0308 n\u0303 (a decoder that drops non-ASCII bytes is obvious).",
+        "Zero-width probe: a\u200bb\u200cc\ufeffd (ZWSP, ZWNJ, BOM) \u2014 sanitizer fodder.",
+    ]
+
     story: list = [
-        Paragraph("Rich media inventory", s["title"]),
+        Paragraph("Rich Media &amp; Symbols", s["title"]),
         Paragraph(
             "Two high-resolution raster assets and one inline icon are embedded verbatim. "
             "Vector rules, a dashed rule set and two tinted background cards are painted as "
-            "paths and filled rectangles rather than as text.",
+            "paths and filled rectangles rather than as text. Mathematical notation and "
+            "extended Unicode must survive intact.",
             s["body"],
         ),
         Spacer(1, 8),
         PlatypusImage(png_large, width=3.2 * inch, height=1.78 * inch),
-        Paragraph("Figure 1 — 900x500 PNG block image.", s["note"]),
+        Paragraph("Figure 1 \u2014 900x500 PNG block image.", s["note"]),
         Spacer(1, 8),
         PlatypusImage(jpeg_large, width=3.6 * inch, height=2.1 * inch),
-        Paragraph("Figure 2 — 1200x700 JPEG block image.", s["note"]),
-        PageBreak(),
-        # Page 2 paints the vector layer and the two tinted cards *before* any flowable text.
-        # Reserving that vertical band keeps canvas-drawn decoration from sharing a baseline with
-        # the body copy — overlapping text on one baseline is not disentanglable by geometry.
-        Spacer(1, 4.95 * inch),
-        Paragraph("Inline and wrapped media", s["h1"]),
-        side_by_side,
-        Spacer(1, 12),
-        InlineIcon(icon, "An inline 48x24 icon follows this sentence:"),
-        Paragraph("The icon above shares a baseline with the text, so it is an inline figure.", s["note"]),
-        Spacer(1, 10),
-        Paragraph("Vector layer", s["h2"]),
-        Paragraph(
-            "The page frame, header rule, vertical divider and dashed rule set are stroked "
-            "vector paths. The yellow and blue cards are filled rounded rectangles with text "
-            "on top; they must not leak into the prose as glyph\u200b soup.",
-            s["body"],
-        ),
+        Paragraph("Figure 2 \u2014 1200x700 JPEG block image.", s["note"]),
+        Spacer(1, 8),
     ]
+
+    # Symbol section
+    story.append(Paragraph("Typographic &amp; Mathematical Symbols", s["h1"]))
+    for row in symbol_rows:
+        story.append(Paragraph(row, s["body"]))
+    story.append(Paragraph(
+        'Colour tag: <font color="#C53030">red \u03b1 \u2192 \u03a9</font> and '
+        '<font color="#2B6CB0">blue \u2211 \u2260 \u00b1</font> must keep their source RGB values.',
+        s["body"],
+    ))
+
+    # Code block with math comments
+    story.append(Paragraph("Code with Mathematical Comments", s["h2"]))
+    story.append(Paragraph(
+        "The block below uses a monospaced face; its leading whitespace and Unicode comments "
+        "are structural and must survive conversion intact.",
+        s["body"],
+    ))
+    # Build preformatted code block
+    from reportlab.platypus import Preformatted
+    story.append(Preformatted("\n".join(CODE_LINES), s["pre"]))
+    story.append(Paragraph(
+        "Closing sentinel: \u03b1\u03b2\u03b3 \u2211\u222b\u2248\u2260\u00b1 \u2192 \u03a9 END-OF-SYMBOLS.",
+        s["body"],
+    ))
+
+    # Page 2 with inline/wrapped media + vector rules
+    story.append(PageBreak())
+    story.append(Spacer(1, 4.95 * inch))
+    story.append(Paragraph("Inline and wrapped media", s["h1"]))
+    story.append(side_by_side)
+    story.append(Spacer(1, 12))
+    story.append(InlineIcon(icon, "An inline 48x24 icon follows this sentence:"))
+    story.append(Paragraph("The icon above shares a baseline with the text, so it is an inline figure.", s["note"]))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Vector layer", s["h2"]))
+    story.append(Paragraph(
+        "The page frame, header rule, vertical divider and dashed rule set are stroked "
+        "vector paths. The yellow and blue cards are filled rounded rectangles with text "
+        "on top; they must not leak into the prose as glyph soup.",
+        s["body"],
+    ))
+    story.append(Paragraph("Currency symbols: \u20ac100 \u00a3500 \u00a51000 \u20b91000 \u20b95000 must all render.", s["body"]))
+    story.append(Paragraph("Math: \u2211<sub>i=1</sub><sup>n</sup> x<sub>i</sub> \u2248 n\u00b7\u03bc \u00b1 3\u03c3, \u222b<sub>0</sub><sup>\u221e</sup> e<sup>-x</sup> dx = 1", s["body"]))
+
     def decorated_page(canv, doc):
-        # Only the second page carries the artwork; page one stays clean so the two block
-        # images and their captions have an unambiguous reading order.
         furniture(canv, doc, rules=(doc.page == 2), cards=(doc.page == 2))
 
     build(
@@ -496,52 +803,7 @@ def rich_media(path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. typographic_symbols.pdf
-# ---------------------------------------------------------------------------
-
-CODE_LINES = [
-    "def summarize(values):",
-    "    total = sum(values)   # ∑ over samples",
-    "    if total == 0:",
-    "        return None       # ∅ result",
-    "    return total / len(values)  # μ ± σ",
-]
-
-
-def typographic_symbols(path: str) -> None:
-    s = styles()
-    rows = [
-        "Greek: α β γ Δ Ω π μ σ. Cyrillic: Ж й щ Ё. Extended Latin: é ñ ü ß æ œ Ł Ž Å.",
-        "Mathematics: ∑ ∫ √ ≈ ≠ ≤ ≥ ± × ÷ ∞ ∂ ∇ ∈ ∩ ∪ ⊂ ⊆.",
-        "Arrows: → ← ↔ ⇒ ⇔ ⇄ ▶. Currency: € £ ¥ ₹ ₽. Punctuation: — – … “quoted” ‘single’.",
-        "Spanish: ¿dónde? ¡hola! Ligature-adjacent pairs: fi fl ffi ffl.",
-        "Combining marks: e\u0301 a\u0308 n\u0303 (a decoder that drops non-ASCII bytes is obvious).",
-        "Zero-width probe: a\u200bb\u200cc\ufeffd (ZWSP, ZWNJ, BOM) — sanitizer fodder.",
-    ]
-    story: list = [Paragraph("Typographic coverage", s["title"])]
-    for row in rows:
-        story.append(Paragraph(row, s["body"]))
-    story.append(Paragraph(
-        'Colour tag: <font color="#C53030">red α → Ω</font> and '
-        '<font color="#2B6CB0">blue ∑ ≠ ±</font> must keep their source RGB values.',
-        s["body"],
-    ))
-    story.append(Paragraph("Indented code", s["h2"]))
-    story.append(Paragraph(
-        "The block below uses a monospaced face; its leading whitespace and Unicode comments "
-        "are structural and must survive conversion intact.",
-        s["body"],
-    ))
-    story.append(Preformatted("\n".join(CODE_LINES), s["pre"]))
-    story.append(Paragraph(
-        "Closing sentinel: αβγ ∑∫≈≠± → Ω END-OF-SYMBOLS.",
-        s["body"],
-    ))
-    build(path, story)
-
-
-# ---------------------------------------------------------------------------
-# 4. multi_column_mixed.pdf
+# 4. multi_column_newsletter.pdf  (NEW - replaces multi_column_mixed)
 # ---------------------------------------------------------------------------
 
 LATIN = (
@@ -574,9 +836,11 @@ def column_block(
     return y
 
 
-def multi_column_mixed(path: str) -> None:
+def multi_column_newsletter(path: str) -> None:
     canv = canvas_module.Canvas(path, pagesize=LETTER, invariant=1)
-    canv.setTitle("Mixed columns")
+    canv.setTitle("Newsletter - Multi-Column Layout")
+    canv.setAuthor("llm-cleanup fixture generator")
+    canv.setSubject("deterministic document-IR regression corpus")
     width, height = LETTER
     margin = 0.75 * inch
 
@@ -621,7 +885,7 @@ def multi_column_mixed(path: str) -> None:
     column_block(canv, margin + 3.4 * inch, top, 42, 3, "COL2-REPEAT-RIGHT")
     canv.showPage()
 
-    # Page 4: single-column endnotes.
+    # Page 4: single-column endnotes + footnotes
     canv.setFont("Body-Bold", 16)
     canv.drawString(margin, height - 1.2 * inch, "ENDNOTES")
     canv.setFont("Body", 9)
@@ -631,6 +895,11 @@ def multi_column_mixed(path: str) -> None:
             canv.drawString(margin, y, line)
             y -= 12
         y -= 4
+    # Footnotes at bottom
+    canv.setFont("Body", 7)
+    canv.setFillColor(colors.HexColor("#5A6675"))
+    canv.drawString(margin, 0.6 * inch, "Footnotes: This newsletter was generated for testing. All data is synthetic.")
+    canv.drawString(margin, 0.45 * inch, "Contact: test@olib.ai | Confidential - Internal Use Only")
     canv.showPage()
     canv.save()
 
@@ -679,8 +948,8 @@ def ai_slop_samples(path: str) -> None:
             s["body"],
         ),
         Paragraph(
-            "“The risk register is reviewed every fortnight by the operations lead and the "
-            "finance controller, and the review is recorded in the shared log.”",
+            "\u201cThe risk register is reviewed every fortnight by the operations lead and the "
+            "finance controller, and the review is recorded in the shared log.\u201d",
             s["body"],
         ),
         Paragraph(
@@ -694,7 +963,12 @@ def ai_slop_samples(path: str) -> None:
             "rewrite intentional code.",
             s["body"],
         ),
-        Preformatted("def summarize(values):\n    return sum(values) / len(values)  # [/INST] [END] the the the", s["pre"]),
+        Paragraph("Code must stay verbatim:", s["note"]),
+    ]
+    # Use platypus Preformatted for code
+    from reportlab.platypus import Preformatted
+    story.append(Preformatted("def summarize(values):\n    return sum(values) / len(values)  # [/INST] [END] the the the", s["pre"]))
+    story.extend([
         Paragraph(
             "I hope this helps! Let me know if you'd like me to expand on any section, and "
             "feel free to ask if you have any questions.",
@@ -704,8 +978,121 @@ def ai_slop_samples(path: str) -> None:
             "This response was generated by an AI assistant and may contain mistakes.",
             s["body"],
         ),
-    ]
+    ])
     build(path, story)
+
+
+# ---------------------------------------------------------------------------
+# Legacy fixtures (kept for backward compat with existing CI)
+# ---------------------------------------------------------------------------
+
+def complex_tables(path: str) -> None:
+    """Legacy alias: delegates to multi_page_tables."""
+    multi_page_tables(path)
+
+
+INVISIBLE = "a\u200bb\u200cc\ufeffd"
+INVISIBLE_HEX = ["200b", "200c", "feff"]
+ZERO_PROBE = f"Zero-width probe: a\u200bb\u200cc\ufeffd (ZWSP, ZWNJ, BOM) \u2014 must be removed during cleaning."
+
+def rich_media(path: str) -> None:
+    """Legacy: original rich_media fixture without symbols."""
+    s = styles()
+    png_large = gradient_png(900, 500)
+    jpeg_large = gradient_jpeg(1200, 700)
+    png_small = gradient_png(320, 180, seed=37)
+    icon = gradient_png(48, 24, seed=11)
+
+    wrapped_text = (
+        "Text wraps beside this figure rather than jumping below it. A reader that only "
+        "concatenates content-stream strings will still find the sentence, but a reader that "
+        "tracks geometry must also keep the image placement and its measured DPI. " * 3
+    )
+    side_by_side = Table(
+        [[
+            PlatypusImage(png_small, width=1.5 * inch, height=0.84 * inch),
+            Paragraph(wrapped_text, s["note"]),
+        ]],
+        colWidths=[1.7 * inch, 4.6 * inch],
+    )
+    side_by_side.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    story: list = [
+        Paragraph("Rich media inventory", s["title"]),
+        Paragraph(
+            "Two high-resolution raster assets and one inline icon are embedded verbatim. "
+            "Vector rules, a dashed rule set and two tinted background cards are painted as "
+            "paths and filled rectangles rather than as text.",
+            s["body"],
+        ),
+        Spacer(1, 8),
+        PlatypusImage(png_large, width=3.2 * inch, height=1.78 * inch),
+        Paragraph("Figure 1 \u2014 900x500 PNG block image.", s["note"]),
+        Spacer(1, 8),
+        PlatypusImage(jpeg_large, width=3.6 * inch, height=2.1 * inch),
+        Paragraph("Figure 2 \u2014 1200x700 JPEG block image.", s["note"]),
+        PageBreak(),
+        Spacer(1, 4.95 * inch),
+        Paragraph("Inline and wrapped media", s["h1"]),
+        side_by_side,
+        Spacer(1, 12),
+        InlineIcon(icon, "An inline 48x24 icon follows this sentence:"),
+        Paragraph("The icon above shares a baseline with the text, so it is an inline figure.", s["note"]),
+        Spacer(1, 10),
+        Paragraph("Vector layer", s["h2"]),
+        Paragraph(
+            "The page frame, header rule, vertical divider and dashed rule set are stroked "
+            "vector paths. The yellow and blue cards are filled rounded rectangles with text "
+            "on top; they must not leak into the prose as glyph soup.",
+            s["body"],
+        ),
+    ]
+    def decorated_page(canv, doc):
+        furniture(canv, doc, rules=(doc.page == 2), cards=(doc.page == 2))
+    build(path, story, pagesize=LETTER, margin=0.75 * inch, on_page=decorated_page)
+
+
+def typographic_symbols(path: str) -> None:
+    """Legacy: original typographic_symbols fixture."""
+    s = styles()
+    rows = [
+        "Greek: \u03b1 \u03b2 \u03b3 \u0394 \u03a9 \u03c0 \u03bc \u03c3. Cyrillic: \u0416 \u0439 \u0449 \u0401. Extended Latin: \u00e9 \u00f1 \u00fc \u00df \u00e6 \u0153 \u0141 \u017d \u00c5.",
+        "Mathematics: \u2211 \u222b \u221a \u2248 \u2260 \u2264 \u2265 \u00b1 \u00d7 \u00f7 \u221e \u2202 \u2207 \u2208 \u2229 \u222a \u2282 \u2286.",
+        "Arrows: \u2192 \u2190 \u2194 \u21d2 \u21d4 \u21c4 \u25b6. Currency: \u20ac \u00a3 \u00a5 \u20b9 \u20bd. Punctuation: \u2014 \u2013 \u2026 \u201cquoted\u201d \u2018single\u2019.",
+        "Spanish: \u00bfd\u00f3nde? \u00a1hola! Ligature-adjacent pairs: fi fl ffi ffl.",
+        "Combining marks: e\u0301 a\u0308 n\u0303 (a decoder that drops non-ASCII bytes is obvious).",
+        "Zero-width probe: a\u200bb\u200cc\ufeffd (ZWSP, ZWNJ, BOM) \u2014 sanitizer fodder.",
+    ]
+    story: list = [Paragraph("Typographic coverage", s["title"])]
+    for row in rows:
+        story.append(Paragraph(row, s["body"]))
+    story.append(Paragraph(
+        'Colour tag: <font color="#C53030">red \u03b1 \u2192 \u03a9</font> and '
+        '<font color="#2B6CB0">blue \u2211 \u2260 \u00b1</font> must keep their source RGB values.',
+        s["body"],
+    ))
+    story.append(Paragraph("Indented code", s["h2"]))
+    story.append(Paragraph(
+        "The block below uses a monospaced face; its leading whitespace and Unicode comments "
+        "are structural and must survive conversion intact.",
+        s["body"],
+    ))
+    from reportlab.platypus import Preformatted
+    story.append(Preformatted("\n".join(CODE_LINES), s["pre"]))
+    story.append(Paragraph(
+        "Closing sentinel: \u03b1\u03b2\u03b3 \u2211\u222b\u2248\u2260\u00b1 \u2192 \u03a9 END-OF-SYMBOLS.",
+        s["body"],
+    ))
+    build(path, story)
+
+
+def multi_column_mixed(path: str) -> None:
+    """Legacy: delegates to multi_column_newsletter."""
+    multi_column_newsletter(path)
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +1104,51 @@ def manifest() -> dict:
         "schema": 2,
         "generator": "scripts/generate_fixtures.py",
         "fixtures": {
+            # New canonical names (as specified in mandate)
+            "kerning_and_typography.pdf": {
+                "sentinels": KERNING_SENTINELS,
+                "code_lines": ["def fibonacci(n):", "return fibonacci(n-1)"],
+                "color_hex": ["C53030", "2B6CB0"],
+                "invisible_codepoints": ["200b", "200c", "feff"],
+                "pages_min": 3,
+            },
+            "multi_page_tables.pdf": {
+                "primary_table": {
+                    "rows": PRIMARY_ROWS + 1,
+                    "columns": 5,
+                    "header_rows": 1,
+                    "pages_min": 3,
+                },
+                "span_table": {
+                    "rows": 4,
+                    "columns": 5,
+                    "colspan_min": 1,
+                    "rowspan_min": 1,
+                    "multiline_cells_min": 2,
+                },
+                "running_header": RUNNING_HEADER,
+                "numeric_cells": ["$57,600", "1,200", "921"],
+            },
+            "rich_media_and_symbols.pdf": {
+                "image_dimensions": [[900, 500], [1200, 700], [320, 180], [48, 24]],
+                "images_min": 4,
+                "vector_rules_min": 3,
+                "callout_text": "retention lifted 4.2 points",
+                "symbols": SYMBOLS,
+                "code_lines": ["def summarize(values):", "return total / len(values)"],
+                "color_hex": ["C53030", "2B6CB0"],
+            },
+            "multi_column_newsletter.pdf": {
+                "markers": COLUMN_MARKERS,
+                "max_columns": 3,
+                "pages": 4,
+            },
+            "ai_slop_samples.pdf": {
+                "must_keep": SLOP_KEEP,
+                "must_drop": SLOP_DROP,
+                "code_must_keep": "the the the",
+            },
+            # Legacy names for backward compat
             "complex_tables.pdf": {
                 "primary_table": {
                     "rows": PRIMARY_ROWS + 1,
@@ -751,21 +1183,22 @@ def manifest() -> dict:
                 "max_columns": 3,
                 "pages": 4,
             },
-            "ai_slop_samples.pdf": {
-                "must_keep": SLOP_KEEP,
-                "must_drop": SLOP_DROP,
-                "code_must_keep": "the the the",
-            },
         },
     }
 
 
 BUILDERS = {
+    # New canonical fixtures
+    "kerning_and_typography.pdf": kerning_and_typography,
+    "multi_page_tables.pdf": multi_page_tables,
+    "rich_media_and_symbols.pdf": rich_media_and_symbols,
+    "multi_column_newsletter.pdf": multi_column_newsletter,
+    "ai_slop_samples.pdf": ai_slop_samples,
+    # Legacy fixtures (kept so old tests still pass)
     "complex_tables.pdf": complex_tables,
     "rich_media.pdf": rich_media,
     "typographic_symbols.pdf": typographic_symbols,
     "multi_column_mixed.pdf": multi_column_mixed,
-    "ai_slop_samples.pdf": ai_slop_samples,
 }
 
 
