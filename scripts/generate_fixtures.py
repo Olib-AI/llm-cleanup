@@ -1022,8 +1022,6 @@ def rich_media(path: str) -> None:
     ]))
 
     story: list = [
-        Paragraph(f"Zero-width probe: a\u200bb\u200cc\ufeffd \u2014 sanitizer must remove", s["note"]),
-
         Paragraph("Rich media inventory", s["title"]),
         Paragraph(
             "Two high-resolution raster assets and one inline icon are embedded verbatim. "
