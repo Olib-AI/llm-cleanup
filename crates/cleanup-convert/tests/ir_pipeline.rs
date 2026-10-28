@@ -850,9 +850,7 @@ fn contains_spaced_out(text: &str) -> bool {
         } else if ch == ' ' && in_word {
             in_word = false;
             continue;
-        } else if ch.is_whitespace() {
-            in_word = false;
-        } else if !ch.is_alphanumeric() {
+        } else if ch.is_whitespace() || !ch.is_alphanumeric() {
             in_word = false;
         }
     }
