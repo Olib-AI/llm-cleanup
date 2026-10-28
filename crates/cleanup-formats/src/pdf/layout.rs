@@ -914,7 +914,7 @@ impl<'a> Interpreter<'a> {
 
         // Cluster glyphs into word-level TextRuns using geometric gap threshold
         // Gap = x_curr - (x_prev + width_prev) in text space, converted via scale
-        let (x0, y0) = apply(trm, 0.0, 0.0);
+        let (_x0, y0) = apply(trm, 0.0, 0.0);
         let _space_threshold = (gs.font_size * 0.25).max(1.0) * gs.hscale;
         let top = self.page_height - y0 - size * 0.8 - gs.rise * scale;
         let bold = fonts.get(&font_name_raw).map(|f| f.bold).unwrap_or(false);
