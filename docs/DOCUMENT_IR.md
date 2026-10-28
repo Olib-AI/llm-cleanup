@@ -83,10 +83,13 @@ Key invariants:
   distinguishes a baseline icon from an anchored block image.
 * `cluster` — glyph → word reconstruction. The reader emits one `Glyph` per character code
   (advance box, baseline, font style, the font's own space advance); this module is the only
-  place that decides where a word ends. A word break needs a gap wider than half the font's
-  space advance, so `Tc` tracking, `Tz` scaling and `TJ` kerning (all of which are folded into
-  the advance, leaving a gap of zero) never split a word, while a `TJ` word gap
-  (`-200`…`-300`, i.e. 0.2–0.3 em) always does. A style change splits the *run* without
+  place that decides where a word ends. A word break needs a gap wider than 75% of the font's
+  space advance, avoiding false breaks on modest positive tracking while still detecting ordinary
+  `TJ` word gaps. `Tc` tracking, `Tz` scaling and `TJ` kerning (all of which are folded into
+  the advance, leaving a gap of zero) never split a word, while a common proportional-font
+  `TJ` word gap (`-250`, i.e. 0.25 em) clears the cutoff. Smaller `-200` gaps are deliberately
+  treated conservatively because geometry alone cannot distinguish them from wide tracking.
+  A style change splits the *run* without
   inserting a space, which is what lets one word carry two fonts.
 * `fontmap` — one interpretation of a font name: subset tags (`ABCDEF+`) stripped, style words
   (`-BoldOblique`, `,Italic`, `-Bd`) removed from the family, metric-compatible aliases folded
@@ -134,9 +137,11 @@ job.
    of the font. `Tc`/`Tw`/`Tz` and `TJ` displacements are folded into the advance, which is why
    a tracked or kerned glyph still ends exactly where the next one starts.
 2. **Words (cluster).** Glyphs are bucketed by baseline and ordered left to right, then joined
-   while the gap to the previous advance box stays at or below half the font's space advance.
-   A blank glyph is an unconditional separator; its advance is consumed and re-synthesised
-   later. Results are whole words (`Kerning`, not `K e r n i n g`, and not `Kern ing`).
+   while the gap to the previous advance box stays at or below 75% of the font's space advance.
+   The more conservative cutoff tolerates positive per-glyph positioning used as character
+   tracking without treating every displacement as a space; a typical proportional-font
+   `0.25em` word gap still separates. A blank glyph is an unconditional separator; its advance is consumed and
+   re-synthesised later. Results are whole words (`Kerning`, not `K e r n i n g`, and not `Kern ing`).
 3. **Lines and gaps (analyze).** Words are grouped into lines by baseline (never by box centre,
    which drifts when a 8pt and a 14pt run share a line), and every gap is turned back into
    blank characters: `0` when the boxes touch, one when they do not, and — for monospaced lines
