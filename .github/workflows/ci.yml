@@ -70,6 +70,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify app and bundle versions
+        run: python3 scripts/check_versions.py
+
       - name: Install Linux GUI build dependencies
         run: |
           sudo apt-get update

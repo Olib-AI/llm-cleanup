@@ -691,13 +691,28 @@ fn native_pdf_clean_keeps_geometry_fonts_and_images() {
     let source = fixture("rich_media.pdf");
     let format = cleanup_formats::Pdf;
     let parsed = format.parse(&source).expect("parse source PDF");
+    assert!(
+        parsed
+            .spans
+            .iter()
+            .any(|span| span.text.contains('\u{200B}')),
+        "the fixture must actually contain a removable zero-width probe"
+    );
+    let original_layout = cleanup_formats::pdf::extract_layout(&source)
+        .unwrap()
+        .layout;
     let rules = cleanup_rules::builtin_rules();
-    let cx = Ctx::new(CleanupLevel::Standard);
+    let cx = Ctx::new(CleanupLevel::Light);
     let (cleaned, report) =
         cleanup_core::pipeline::clean(&format, &parsed, &rules, &cx).expect("native PDF clean");
-    // Fixture may or may not have a probe; cleaning should preserve structure either way
-    let _ = report.changed;
-    // If a zero-width probe was present, cleaning would change bytes; otherwise not
+    assert!(
+        report.changed && report.edits_applied > 0,
+        "the probe was not edited: {report:?}"
+    );
+    assert_ne!(
+        source, cleaned,
+        "native cleanup unexpectedly returned the original bytes"
+    );
 
     // Valid PDF envelope.
     let head = String::from_utf8_lossy(&cleaned[..cleaned.len().min(4096)]).into_owned();
@@ -729,9 +744,35 @@ fn native_pdf_clean_keeps_geometry_fonts_and_images() {
         }
     }
 
-    // The cleaned file is still parseable by the spatial reader, with all media intact.
+    // The edited PDF must retain the exact image payloads, placements and vector
+    // geometry, and the text after the removed probe must stay on its baseline.
     let extracted = cleanup_formats::pdf::extract_layout(&cleaned).expect("reparse cleaned PDF");
     assert!(extracted.layout.assets.len() >= 4);
+    assert_eq!(original_layout.assets, extracted.layout.assets);
+    assert_eq!(original_layout.pages.len(), extracted.layout.pages.len());
+    for (before, after) in original_layout.pages.iter().zip(&extracted.layout.pages) {
+        assert_eq!(before.images, after.images);
+        assert_eq!(before.rules, after.rules);
+        assert_eq!(before.fills, after.fills);
+    }
+    let before = original_layout.pages[0]
+        .runs
+        .iter()
+        .find(|run| run.text == "must")
+        .expect("neighbor after probe");
+    let after = extracted.layout.pages[0]
+        .runs
+        .iter()
+        .find(|run| run.text == "must")
+        .expect("neighbor after cleaning");
+    assert!(
+        (before.rect.x - after.rect.x).abs() < 0.002,
+        "neighbor shifted horizontally"
+    );
+    assert!(
+        (before.baseline - after.baseline).abs() < 0.002,
+        "neighbor baseline shifted"
+    );
     let all_text: String = extracted
         .layout
         .pages
@@ -739,18 +780,8 @@ fn native_pdf_clean_keeps_geometry_fonts_and_images() {
         .flat_map(|page| page.runs.iter())
         .map(|run| run.text.as_str())
         .collect();
-    // After sanitization, re-extraction should still find some content; exact wording may be
-    // affected by probe removal and layout heuristics
-    assert!(
-        !all_text.is_empty() || extracted.layout.pages.iter().any(|p| !p.runs.is_empty()),
-        "all text was lost after cleaning: {:?}",
-        &all_text[..all_text.len().min(500)]
-    );
-    // Zero-width probe should not survive if it was present
-    assert!(
-        !all_text.contains('\u{200B}') || all_text.is_empty(),
-        "zero-width probe survived"
-    );
+    assert!(!all_text.is_empty(), "all text was lost after cleaning");
+    assert!(!all_text.contains('\u{200B}'), "zero-width probe survived");
     assert!(
         extracted
             .layout
@@ -918,17 +949,26 @@ fn docx_body_text(xml: &str) -> String {
 }
 
 fn contains_spaced_out(text: &str) -> bool {
-    // Regex-equivalent to `\b(\w\s){3,}\w\b`: 4+ consecutive one-character
-    // alphanumeric tokens separated by whitespace. Keep this dependency-free for the test crate.
-    let mut consecutive_single = 0;
-    for word in text.split_whitespace() {
-        if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
-            consecutive_single += 1;
-            if consecutive_single >= 4 {
+    // Detect `\b(\w\s){3,}\w\b`, including punctuation immediately before or
+    // after the sequence. The old split_whitespace check missed `t h i s,`.
+    let chars: Vec<char> = text.chars().collect();
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    for start in 0..chars.len() {
+        if !is_word(chars[start]) || (start > 0 && is_word(chars[start - 1])) {
+            continue;
+        }
+        let mut end = start;
+        let mut count = 1;
+        while end + 2 < chars.len()
+            && chars[end + 1].is_whitespace()
+            && is_word(chars[end + 2])
+            && (end + 3 == chars.len() || !is_word(chars[end + 3]))
+        {
+            count += 1;
+            end += 2;
+            if count >= 4 {
                 return true;
             }
-        } else {
-            consecutive_single = 0;
         }
     }
     false
@@ -937,8 +977,10 @@ fn contains_spaced_out(text: &str) -> bool {
 #[test]
 fn spaced_out_detector_matches_the_regression_pattern() {
     assert!(contains_spaced_out("this is t h i s still readable"));
+    assert!(contains_spaced_out("quoted: 't h i s,'"));
     assert!(!contains_spaced_out("this is a normal sentence"));
     assert!(!contains_spaced_out("A B C"));
+    assert!(!contains_spaced_out("t h i separate words"));
 }
 
 /// The low-level page (page 3) is drawn with `TJ` arrays, `Tc`/`Tw` registers and one `Tm`
@@ -1039,6 +1081,22 @@ fn typography_metadata_is_recovered_from_the_font_dictionary() {
     assert_eq!(bold.font_family, "DejaVuSans");
     assert!(bold.font_weight >= 700, "weight {}", bold.font_weight);
     assert!(!bold.italic);
+
+    // The labelled body examples must really be italic/bold-italic. Registering
+    // the regular font under an italic alias makes the fixture look plausible in
+    // source code while silently testing the wrong font dictionary and styling.
+    let italic = runs
+        .iter()
+        .find(|run| run.text == "Italic")
+        .expect("italic body line");
+    assert_eq!(italic.font_name, "Helvetica-Oblique");
+    assert!(italic.italic && !italic.bold);
+    let bold_italic = runs
+        .iter()
+        .find(|run| run.text == "Bold-italic")
+        .expect("bold-italic body line");
+    assert_eq!(bold_italic.font_name, "Helvetica-BoldOblique");
+    assert!(bold_italic.italic && bold_italic.bold);
 
     // These faces are drawn with real standard PDF fonts, even when optional
     // DejaVu italic files are unavailable on the fixture-generation machine.
@@ -1143,6 +1201,26 @@ fn docx_runs_carry_font_family_weight_and_size() {
         body.contains("Bold weight body text for emphasis and headings."),
         "bold line split into fragments: {body}"
     );
+    for (phrase, bold) in [
+        ("Italic weight for citations and foreign phrases.", false),
+        ("Bold-italic weight for maximum emphasis.", true),
+    ] {
+        let run = xml
+            .split("</w:r>")
+            .find(|run| run.contains(phrase))
+            .expect("whole styled run");
+        assert!(run.contains("<w:i/>"), "missing italic style: {run}");
+        assert_eq!(run.contains("<w:b/>"), bold, "incorrect weight: {run}");
+    }
+    let markdown = text("kerning_and_typography.pdf", Target::Markdown);
+    assert!(
+        markdown.contains("*Italic weight for citations and foreign phrases.*"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("***Bold-italic weight for maximum emphasis.***"),
+        "{markdown}"
+    );
 }
 
 #[test]
@@ -1196,17 +1274,140 @@ fn multi_page_tables_match_new_ground_truth() {
         !markdown.contains("QUARTERLY REVENUE"),
         "running header leaked"
     );
+    let source = cleanup_formats::pdf::extract_layout(&fixture("multi_page_tables.pdf")).unwrap();
+    let quarter = source
+        .layout
+        .pages
+        .iter()
+        .flat_map(|page| &page.runs)
+        .find(|run| run.text == "Quarter")
+        .expect("merged-table header");
+    assert!(
+        quarter.bold && quarter.color.is_white(),
+        "header must be readable on its dark fill: {quarter:?}"
+    );
+}
+
+#[test]
+fn batched_rectangle_grid_survives_ir_and_exports() {
+    let root = manifest();
+    let expected: Vec<Vec<String>> = root["fixtures"]["multi_page_tables.pdf"]["batched_grid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            row.as_array()
+                .unwrap()
+                .iter()
+                .map(|cell| cell.as_str().unwrap().to_string())
+                .collect()
+        })
+        .collect();
+    let doc = sanitized_ir("multi_page_tables.pdf");
+    let table = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .find(|table| {
+            table
+                .all_rows()
+                .flat_map(|row| &row.cells)
+                .any(|cell| cell.text() == "ALPHA")
+        })
+        .expect("batched rectangle grid was not detected as a table");
+    assert_eq!(table.column_count(), 3);
+    let actual: Vec<Vec<String>> = table
+        .all_rows()
+        .map(|row| row.cells.iter().map(|cell| cell.text()).collect())
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(table.borders.inner_horizontal > 0.0 && table.borders.inner_vertical > 0.0);
+
+    let markdown = text("multi_page_tables.pdf", Target::Markdown);
+    for cells in [&expected[1], &expected[2]] {
+        assert!(
+            markdown
+                .lines()
+                .any(|line| line.starts_with('|') && cells.iter().all(|cell| line.contains(cell))),
+            "missing GFM row {cells:?}: {markdown}"
+        );
+    }
+    let xml = docx_xml("multi_page_tables.pdf");
+    let word_table = xml
+        .split("<w:tbl>")
+        .find(|table| table.contains("ALPHA"))
+        .expect("native DOCX grid");
+    for cells in &expected {
+        for cell in cells {
+            assert!(
+                word_table.contains(cell),
+                "missing {cell:?} from Word table"
+            );
+        }
+    }
 }
 
 #[test]
 fn rich_media_and_symbols_preserves_unicode_and_images() {
-    let markdown = text("rich_media_and_symbols.pdf", Target::Markdown);
-    for symbol in ["\u{03b1}", "\u{2211}", "\u{20ac}", "\u{2192}"] {
-        assert!(markdown.contains(symbol), "symbol {symbol} lost");
-    }
+    let root = manifest();
+    let truth = &root["fixtures"]["rich_media_and_symbols.pdf"];
+    let output = convert("rich_media_and_symbols.pdf", Target::Markdown);
+    let markdown = String::from_utf8(output.bytes).unwrap();
     let plain = text("rich_media_and_symbols.pdf", Target::Text);
+    for symbol in truth["symbols"].as_array().unwrap() {
+        let symbol = symbol.as_str().unwrap();
+        assert!(
+            markdown.contains(symbol),
+            "symbol {symbol:?} lost from Markdown"
+        );
+        assert!(plain.contains(symbol), "symbol {symbol:?} lost from text");
+    }
+    let doc = sanitized_ir("rich_media_and_symbols.pdf");
+    for pair in truth["image_dimensions"].as_array().unwrap() {
+        let width = pair[0].as_u64().unwrap() as u32;
+        let height = pair[1].as_u64().unwrap() as u32;
+        assert!(
+            doc.assets
+                .iter()
+                .any(|asset| asset.width_px == width && asset.height_px == height),
+            "missing {width}x{height} image"
+        );
+    }
+    assert!(output.assets.len() >= truth["images_min"].as_u64().unwrap() as usize);
+    assert!(markdown.contains("](assets/figure-"));
     assert!(plain.contains("[figure:") || plain.contains("figure-"));
     assert!(error_codepoint(&plain).is_none());
+
+    // The vector sample has a dedicated layout area. A page-number-dependent
+    // overlay once crossed the code section whenever it spilled onto page 2.
+    let source =
+        cleanup_formats::pdf::extract_layout(&fixture("rich_media_and_symbols.pdf")).unwrap();
+    assert_eq!(source.layout.pages.len(), 2);
+    let page = &source.layout.pages[1];
+    let code_end = page
+        .runs
+        .iter()
+        .find(|run| run.text.contains("END-OF-SYMBOLS"))
+        .expect("code closing sentinel")
+        .rect
+        .bottom();
+    for run in page
+        .runs
+        .iter()
+        .filter(|run| run.rect.bottom() <= code_end + 1.0)
+    {
+        for rule in &page.rules {
+            assert!(
+                rule.rect.intersection(&run.rect.inset(0.5)).is_none(),
+                "vector rule crosses {:?}: {:?}",
+                run.text,
+                rule.rect
+            );
+        }
+    }
 }
 
 #[test]
