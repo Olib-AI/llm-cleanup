@@ -2222,12 +2222,14 @@ mod tests {
     /// turning `if n <= 1:` into `if n < = 1:`.
     #[test]
     fn glued_runs_reconstruct_without_extra_spaces() {
+        // `n`, `<=` and `1:` arrive as four separate showing operations; only the two spaces a
+        // human typed are real, and they are the only gaps wider than half a space advance.
         let runs = vec![
             run_at("if", 72.0, 100.0, 10.0, 11.0),
             run_at("n", 86.0, 100.0, 10.0, 6.0),
-            run_at("<", 92.0, 100.0, 10.0, 6.0),
-            run_at("=", 98.0, 100.0, 10.0, 6.0),
-            run_at("1:", 107.0, 100.0, 10.0, 11.0),
+            run_at("<", 96.0, 100.0, 10.0, 6.0),
+            run_at("=", 102.0, 100.0, 10.0, 6.0),
+            run_at("1:", 111.0, 100.0, 10.0, 11.0),
         ];
         let (doc, _warnings) = analyze(&page_of(runs), &AnalyzeOptions::default());
         let text = doc.plain_text();
