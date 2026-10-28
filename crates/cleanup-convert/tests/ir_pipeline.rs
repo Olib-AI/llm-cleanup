@@ -980,3 +980,102 @@ fn pdf_export_from_non_pdf_source_is_valid_and_identity_is_lossless() {
     assert_eq!(identity.bytes, source);
     assert!(!identity.report.lossy);
 }
+
+/// Spacing contract for *every* canonical fixture: no lossy export may contain the
+/// "t h i s   i s" kerning artifact. `contains_spaced_out` is the Rust equivalent of the
+/// mandated regex `\b(\w\s){3,}\w\b` — four (or more) consecutive single-character words
+/// separated only by single spaces. The spatial reader (`extract_layout`) already clusters
+/// glyphs into words and the analyser only inserts spaces between distinct baseline runs, so a
+/// correctly-reconstructed document never emits per-character tokens.
+#[test]
+fn all_fixtures_have_no_spaced_out_words() {
+    for name in [
+        "kerning_and_typography.pdf",
+        "multi_page_tables.pdf",
+        "rich_media_and_symbols.pdf",
+        "multi_column_newsletter.pdf",
+        "ai_slop_samples.pdf",
+    ] {
+        for target in [Target::Markdown, Target::Text, Target::Docx] {
+            // PDF text is encoded and not directly greppable for prose; the native PDF export is
+            // a lossless byte-splice and is covered separately by the geometry/font tests above.
+            let body = match target {
+                Target::Docx => {
+                    let output = convert(name, Target::Docx);
+                    String::from_utf8(zip_part(&output.bytes, "word/document.xml"))
+                        .expect("DOCX body is UTF-8")
+                }
+                other => text(name, other),
+            };
+            assert!(
+                !contains_spaced_out(&body),
+                "{name} -> {target:?} contains spaced-out characters: {}",
+                &body[..body.len().min(600)]
+            );
+        }
+    }
+}
+
+/// Table and image integrity across the canonical fixtures:
+///  * `multi_page_tables.pdf` reconstructs a genuine grid (≥ expected columns) whose numeric
+///    cells survive into Markdown.
+///  * `rich_media_and_symbols.pdf` yields the expected number of embedded raster assets, each
+///    linked relative to `assets/` in the Markdown export.
+#[test]
+fn new_fixtures_assert_table_and_image_integrity() {
+    let root = manifest();
+
+    // --- Table integrity: a real grid with right-aligned numeric columns. ---
+    let table_truth = &root["fixtures"]["multi_page_tables.pdf"];
+    let expected_columns = table_truth["primary_table"]["columns"]
+        .as_u64()
+        .expect("primary_table.columns") as usize;
+    let doc = sanitized_ir("multi_page_tables.pdf");
+    let table = doc
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .max_by_key(|table| table.row_count())
+        .expect("primary table was not detected from the fixture");
+    assert!(
+        table.column_count() >= expected_columns,
+        "table column count {} below expected {expected_columns}",
+        table.column_count()
+    );
+    assert!(
+        table.row_count() >= 1,
+        "the reconstructed table has no rows"
+    );
+    let markdown = text("multi_page_tables.pdf", Target::Markdown);
+    assert!(
+        markdown.contains("Region"),
+        "table header row dropped from Markdown"
+    );
+    for cell in table_truth["numeric_cells"].as_array().expect("numeric_cells") {
+        let cell = cell.as_str().expect("numeric cell is a string");
+        assert!(
+            markdown.contains(cell),
+            "numeric table cell `{cell}` dropped from Markdown"
+        );
+    }
+
+    // --- Image integrity: every embedded raster is recovered and linked relatively. ---
+    let media_truth = &root["fixtures"]["rich_media_and_symbols.pdf"];
+    let min_images = media_truth["images_min"]
+        .as_u64()
+        .expect("images_min") as usize;
+    let media_doc = sanitized_ir("rich_media_and_symbols.pdf");
+    assert!(
+        media_doc.assets.len() >= min_images,
+        "expected >= {min_images} extracted raster assets, got {}",
+        media_doc.assets.len()
+    );
+    let md = text("rich_media_and_symbols.pdf", Target::Markdown);
+    assert!(
+        md.contains("figure-"),
+        "embedded images are not referenced in the Markdown export"
+    );
+}
