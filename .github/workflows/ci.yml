@@ -22,6 +22,45 @@ permissions:
   contents: read
 
 jobs:
+  fixtures:
+    name: Reproducible PDF fixtures
+    runs-on: ubuntu-latest
+    # Match the corpus's fonts AND zlib (1.2.13). A newer runner/Python can emit
+    # different compressed PDF/PNG bytes despite ReportLab's invariant mode.
+    container: debian:bookworm-slim
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install fixture fonts and generator
+        run: |
+          apt-get update
+          apt-get install -y python3-venv fonts-dejavu-core
+          python3 -m venv /tmp/fixture-venv
+          /tmp/fixture-venv/bin/python -m pip install -r scripts/fixture-requirements.txt
+      - name: Verify committed PDFs and ground truth
+        shell: bash
+        run: |
+          set -o pipefail
+          /tmp/fixture-venv/bin/python scripts/generate_fixtures.py --verify 2>&1 | tee "$RUNNER_TEMP/ci-fixtures.log"
+      - name: Publish API-accessible fixture report
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          CONCLUSION="failure"
+          [ "$JOB_STATUS" = "success" ] && CONCLUSION="success"
+          python3 .github/scripts/publish_check_report.py \
+            --name "CI Report (fixtures)" \
+            --title "Fixture regeneration: $CONCLUSION" \
+            --conclusion "$CONCLUSION" \
+            --head-sha "$HEAD_SHA" \
+            --summary "Byte-for-byte PDF and manifest verification in Debian bookworm." \
+            --log-file "$RUNNER_TEMP/ci-fixtures.log"
+
   lint-and-test:
     name: Lint & test
     runs-on: ubuntu-latest

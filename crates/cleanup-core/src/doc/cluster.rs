@@ -51,7 +51,7 @@ impl Default for ClusterOptions {
         ClusterOptions {
             space_fraction: DEFAULT_SPACE_FRACTION,
             min_space_points: 0.05,
-            baseline_em: 0.35,
+            baseline_em: 0.05,
             size_tolerance: 0.6,
         }
     }
@@ -98,11 +98,12 @@ pub fn words_from_glyphs_with(glyphs: &[Glyph], options: &ClusterOptions) -> Vec
         let mut end = start + 1;
         while end < ordered.len() {
             let candidate = ordered[end];
-            // A baseline bucket is anchored on its first glyph; superscripts (a `Ts` rise)
-            // legitimately sit a little off and get their own bucket, which the analyser
-            // merges back into the same visual line.
+            // Keep this tighter than visual-line grouping. Sorting a superscript or a nearby
+            // small-text line into the same x-ordered bucket can interleave its letters with
+            // the base text, irreversibly corrupting words before the analyser sees them.
+            // Use the smaller size: a drop cap must not absorb neighbouring body baselines.
             let tolerance =
-                (candidate.font_size.max(ordered[start].font_size) * options.baseline_em).max(0.4);
+                (candidate.font_size.min(ordered[start].font_size) * options.baseline_em).max(0.4);
             if (candidate.baseline - reference).abs() > tolerance {
                 break;
             }
@@ -390,6 +391,38 @@ mod tests {
         let runs = words_from_glyphs(&glyphs);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].text, "abc");
+    }
+
+    #[test]
+    fn nearby_baselines_do_not_interleave_glyphs() {
+        let (mut glyphs, _) = lay_out("upper", 20.0, 40.0, 10.0);
+        let (lower, _) = lay_out("lower", 20.0, 43.0, 10.0);
+        glyphs.extend(lower);
+        let runs = words_from_glyphs(&glyphs);
+        let words: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
+        assert_eq!(words, ["upper", "lower"]);
+        assert_eq!(runs[0].baseline, 40.0);
+        assert_eq!(runs[1].baseline, 43.0);
+    }
+
+    #[test]
+    fn drop_cap_does_not_absorb_the_next_body_line() {
+        let mut glyphs = vec![glyph("D", 10.0, 40.0, 36.0, 20.0)];
+        let (upper, _) = lay_out("rop cap", 32.0, 40.0, 10.0);
+        let (lower, _) = lay_out("next line", 32.0, 51.0, 10.0);
+        glyphs.extend(upper);
+        glyphs.extend(lower);
+        // Even callers requesting a loose tolerance must not let the initial's size
+        // determine which body baselines get folded into the same glyph bucket.
+        for baseline_em in [0.05, 0.35] {
+            let options = ClusterOptions {
+                baseline_em,
+                ..ClusterOptions::default()
+            };
+            let runs = words_from_glyphs_with(&glyphs, &options);
+            let words: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
+            assert_eq!(words, ["D", "rop", "cap", "next", "line"]);
+        }
     }
 
     #[test]

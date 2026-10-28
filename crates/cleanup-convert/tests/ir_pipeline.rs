@@ -1400,6 +1400,55 @@ fn rich_media_and_symbols_preserves_unicode_and_images() {
 }
 
 #[test]
+fn rich_media_source_layout_is_readable_and_assets_are_complete() {
+    let report = cleanup_formats::pdf::extract_layout(&fixture("rich_media_and_symbols.pdf"))
+        .expect("extract rich-media layout");
+    assert_eq!(report.layout.pages.len(), 2, "orphaned vector prose page");
+    let root = manifest();
+    let truth = &root["fixtures"]["rich_media_and_symbols.pdf"];
+    for dimensions in truth["image_dimensions"].as_array().unwrap() {
+        let width = dimensions[0].as_u64().unwrap();
+        let height = dimensions[1].as_u64().unwrap();
+        assert!(
+            report.layout.assets.iter().any(|asset| {
+                u64::from(asset.width_px) == width && u64::from(asset.height_px) == height
+            }),
+            "missing image {width}x{height}"
+        );
+    }
+    let placements: usize = report
+        .layout
+        .pages
+        .iter()
+        .map(|page| page.images.len())
+        .sum();
+    assert_eq!(placements, 4);
+    for (index, page) in report.layout.pages.iter().enumerate() {
+        for image in &page.images {
+            assert!(image.rect.x >= 0.0 && image.rect.y >= 0.0);
+            assert!(image.rect.right() <= page.width && image.rect.bottom() <= page.height);
+        }
+        for rule in &page.rules {
+            for run in &page.runs {
+                assert!(
+                    run.rect.intersection(&rule.rect).is_none(),
+                    "page {}: vector rule crosses text {:?}",
+                    index + 1,
+                    run.text
+                );
+            }
+        }
+    }
+    let last = report.layout.pages.last().unwrap();
+    for word in ["Vector", "layer", "Currency", "symbols:"] {
+        assert!(
+            last.runs.iter().any(|run| run.text == word),
+            "missing {word}"
+        );
+    }
+}
+
+#[test]
 fn multi_column_newsletter_linearises_correctly() {
     let plain = text("multi_column_newsletter.pdf", Target::Text);
     for marker in ["BANNER-ONE", "COL2-LEFT", "COL2-RIGHT", "ENDNOTES"] {
