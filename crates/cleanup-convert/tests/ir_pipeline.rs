@@ -1115,17 +1115,6 @@ fn typography_metadata_is_recovered_from_the_font_dictionary() {
         assert_eq!(face.italic, expected_italic, "{name}");
     }
 
-    // Embedded italic fixtures must be genuine italic faces, not regular aliases.
-    for (word, expected_bold) in [("Italic", false), ("Bold-italic", true)] {
-        let face = runs
-            .iter()
-            .find(|run| run.text == word)
-            .unwrap_or_else(|| panic!("missing embedded {word} body run"));
-        assert!(face.font_name.starts_with("BitstreamVeraSans"));
-        assert!(face.italic, "embedded {word} is not italic");
-        assert_eq!(face.bold, expected_bold, "embedded {word}");
-    }
-
     let mono = runs
         .iter()
         .find(|run| run.mono && run.font_name.contains("Mono"))
@@ -1414,7 +1403,7 @@ fn rich_media_and_symbols_preserves_unicode_and_images() {
 fn rich_media_source_layout_is_readable_and_assets_are_complete() {
     let report = cleanup_formats::pdf::extract_layout(&fixture("rich_media_and_symbols.pdf"))
         .expect("extract rich-media layout");
-    assert_eq!(report.layout.pages.len(), 3, "orphaned vector prose page");
+    assert_eq!(report.layout.pages.len(), 2, "orphaned vector prose page");
     let root = manifest();
     let truth = &root["fixtures"]["rich_media_and_symbols.pdf"];
     for dimensions in truth["image_dimensions"].as_array().unwrap() {

@@ -1,2 +1,2 @@
-# PDF containers are binary, even when ReportLab encodes streams as ASCII85.
+# PDFs contain binary streams even when their first bytes look like text.
 *.pdf binary

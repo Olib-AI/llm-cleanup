@@ -168,7 +168,9 @@ covers all three: its third page is drawn with raw `TJ` arrays, `Tc`/`Tw` regist
 * **A table needs internal separators.** `grid_separator` requires a horizontal rule between two
   rows spanning ≥50% of the grid width and a vertical rule between two columns spanning ≥40% of
   its height, plus at least three clustered column coordinates. A page frame, a rounded card and
-  a code-block border have no internal separators and are rejected.
+  a code-block border have no internal separators and are rejected. Each `re` contributes its
+  own four edges even when many rectangles share one paint operator, and distinct filled
+  subpaths keep separate bounds. Complex filled contours are still approximated by bounding boxes.
 * **Grid text must be consumed.** After a table is built, every line whose centre falls inside
   the rule bounds is marked consumed, otherwise cell text is emitted a second time as prose and
   the duplicates block cross-page stitching.
@@ -198,17 +200,16 @@ covers all three: its third page is drawn with raw `TJ` arrays, `Tc`/`Tw` regist
 compare without modifying committed files. The checked-in corpus was generated with Debian
 `fonts-dejavu-core` 2.37-6 (regular, bold, mono and mono-bold). Different font versions can
 change the PDFs; optional system italic fonts are intentionally not used by the generator.
-Embedded italic/bold-italic use the genuine Bitstream Vera faces bundled in the pinned
-ReportLab wheel, not aliases for regular DejaVu. The typography fixture additionally draws
-genuine base-14 bold/oblique faces. CI regenerates and byte-compares the corpus and manifest
-in Debian bookworm, retaining zlib 1.2.13 as well as the fixture fonts: invariant mode removes
-random IDs/dates, but a different compression-library version can still change PDF bytes.
-The PDFs and ground-truth manifest are committed, so `cargo test` needs no
-Python or network access:
+The typography fixture uses genuine base-14 Helvetica oblique/bold-oblique faces for the
+labelled italic examples, instead of aliasing an upright font. The rich-media vector sample
+occupies its own flowable area, and the merged-table header uses explicitly white, bold
+paragraph text. Visually inspect regenerated PDFs for overlaps, contrast, clipping and page
+breaks as well as running `--verify`. The PDFs and ground-truth manifest are committed, so
+`cargo test` needs no Python or network access:
 
 | Fixture | Ground truth asserted |
 | --- | --- |
-| `complex_tables.pdf` | 61 rows × 5 columns stitched across three pages (`Table.pages`), repeated header, a second grid with `colspan=3`, `rowspan=2` and multi-line cells, explicit `<colgroup>` widths, native DOCX `w:gridSpan`/`w:vMerge`/`w:tblHeader`. |
+| `complex_tables.pdf` / `multi_page_tables.pdf` | 61 rows × 5 columns stitched across three pages (`Table.pages`), repeated header, a second grid with `colspan=3`, `rowspan=2` and multi-line cells, and a 3 × 3 grid made from nine rectangle subpaths stroked together; explicit `<colgroup>` widths and native DOCX tables. |
 | `rich_media.pdf` | 900×500 PNG, 1200×700 JPEG, 320×180 PNG and a 48×24 inline icon, measured DPI, `wp:inline` + `wp:anchor`, VML/SVG vector rules, tinted callouts, relative `assets/` references. |
 | `typographic_symbols.pdf` | Greek/Cyrillic/extended-Latin/math/arrow/currency/combining symbols unchanged in `.txt`, `.md` and `word/document.xml`; zero-width probes removed; source RGB colour tags preserved; monospaced code block intact. |
 | `multi_column_mixed.pdf` | Four pages of 1→2→3→2→1 column transitions linearised left-to-right, marker order from the manifest, `PageBoundary.columns`, DOCX `w:cols` sections. |
@@ -219,43 +220,3 @@ validity, Unicode integrity, anchor stability after cleaning, native PDF byte-sp
 preservation, and that all five fixtures convert to all four targets.
 `crates/cleanup-convert/tests/exporter_units.rs` builds a synthetic IR to cover hyperlinks,
 underline/strike, RGB runs, VML shapes, PDF `/URI` annotations and sanitizer edge cases.
-
-## 0.3.5 follow-up audit and visual review (2026-10-28)
-
-The native `Pdf::parse` byte-splice path is intentionally not the conversion reader:
-`cleanup-convert` uses `pdf::extract_layout` → `doc::cluster` → `doc::analyze`. Font metrics
-and styles survive in `Glyph`/`TextRun`; exporters consume the resulting structured blocks.
-Do not feed `ProseSpan` streaming text into conversion or insert whitespace per `Tj` operand.
-
-One remaining corruption happened **before** word-gap detection. The glyph clusterer's
-`0.35 × max(font sizes)` baseline bucket could absorb a second body line below a large
-initial. Sorting that bucket by x then interleaved the two lines' individual letters.
-Clustering now uses `max(0.4pt, 0.05 × min(font sizes))`: tolerate coordinate rounding,
-not a neighbouring baseline. Mixed sizes on an actual shared baseline still cluster;
-visual line/superscript grouping remains the analyser's separate responsibility.
-Unit regressions cover close baselines and large initials, and the real PDF adds a 36pt
-initial with two 10pt body baselines. Both sentences are checked through the exporters.
-
-Visual inspection used independent MuPDF rasterization, not the application's extractor.
-All pages of the five requested canonical fixtures were rendered and inspected; changed
-pages were re-rendered at 1.2× after correction:
-
-* **Typography (3 pages):** genuine embedded italic/bold-italic are now visibly slanted;
-  tracking/TJ/Tm lines remain inside margins; the large initial and next baseline are distinct.
-* **Tables (4 pages):** borders, repeating headers, alternating fills, numeric alignment,
-  merged roll-up cells and multi-line totals are legible. The primary table spans three pages;
-  the independent roll-up occupies page four.
-* **Rich media (now 3 pages):** explicit code-page break; move the vector test below the
-  coloured cards so no rule strikes through text; reduce the unnecessary inline-media
-  spacer so the vector heading and its prose no longer straddle an almost-empty fourth page.
-  Regression assertions check four raster placements/dimensions, page bounds, and absence
-  of rule/text intersections in this fixture.
-* **Newsletter (4 pages):** two-/three-column bodies, full-width banners, callout and endnotes
-  fit within margins without overlap or clipping.
-* **AI samples (1 page):** disclaimer, content headings and literal code are readable, with
-  no overflow. Boilerplate is intentional test input, not a fixture-generation defect.
-
-Rendering images are review artifacts, not checked-in golden screenshots. PDF bytes and the
-manifest remain reproducible via `python3 scripts/generate_fixtures.py --verify`.
-The existing reader still reports unsupported features (e.g. image transparency masks and
-ICC colour-management approximation); this follow-up does not claim full PDF conformance.
