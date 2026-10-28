@@ -866,9 +866,7 @@ fn contains_spaced_out(text: &str) -> bool {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut consecutive_single = 0;
     for word in &words {
-        if word.chars().count() == 1
-            && word.chars().next().is_some_and(|c| c.is_alphanumeric())
-        {
+        if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
             consecutive_single += 1;
             if consecutive_single >= 4 {
                 return true;
