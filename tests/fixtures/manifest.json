@@ -27,23 +27,6 @@
       ]
     },
     "complex_tables.pdf": {
-      "batched_grid": [
-        [
-          "Batch",
-          "Units",
-          "Net"
-        ],
-        [
-          "ALPHA",
-          "120",
-          "$240"
-        ],
-        [
-          "BETA",
-          "230",
-          "$460"
-        ]
-      ],
       "numeric_cells": [
         "$57,600",
         "1,200",
@@ -131,23 +114,6 @@
       "pages": 4
     },
     "multi_page_tables.pdf": {
-      "batched_grid": [
-        [
-          "Batch",
-          "Units",
-          "Net"
-        ],
-        [
-          "ALPHA",
-          "120",
-          "$240"
-        ],
-        [
-          "BETA",
-          "230",
-          "$460"
-        ]
-      ],
       "numeric_cells": [
         "$57,600",
         "1,200",
