@@ -1,0 +1,2 @@
+# PDFs contain binary streams even when their first bytes look like text.
+*.pdf binary

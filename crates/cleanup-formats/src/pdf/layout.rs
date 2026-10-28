@@ -318,23 +318,43 @@ impl GraphicsState {
 
 #[derive(Default)]
 struct PathState {
-    bbox: Option<(f32, f32, f32, f32)>,
+    // A single path can contain many separate subpaths (e.g. every cell of a
+    // table, followed by one S or f). Keep their bounds separate for fills.
+    subpath_bounds: Vec<(f32, f32, f32, f32)>,
     segments: Vec<((f32, f32), (f32, f32))>,
     current: Option<(f32, f32)>,
     start: Option<(f32, f32)>,
 }
 
 impl PathState {
-    fn touch(&mut self, point: (f32, f32)) {
-        self.bbox = Some(match self.bbox {
-            Some((x0, y0, x1, y1)) => (
-                x0.min(point.0),
-                y0.min(point.1),
-                x1.max(point.0),
-                y1.max(point.1),
-            ),
-            None => (point.0, point.1, point.0, point.1),
-        });
+    fn move_to(&mut self, point: (f32, f32)) {
+        self.subpath_bounds
+            .push((point.0, point.1, point.0, point.1));
+        self.current = Some(point);
+        self.start = Some(point);
+    }
+
+    fn line_to(&mut self, point: (f32, f32)) {
+        if let Some(current) = self.current {
+            self.segments.push((current, point));
+        }
+        if let Some((x0, y0, x1, y1)) = self.subpath_bounds.last_mut() {
+            *x0 = x0.min(point.0);
+            *y0 = y0.min(point.1);
+            *x1 = x1.max(point.0);
+            *y1 = y1.max(point.1);
+        } else {
+            self.subpath_bounds
+                .push((point.0, point.1, point.0, point.1));
+        }
+        self.current = Some(point);
+    }
+
+    fn close(&mut self) {
+        if let (Some(current), Some(start)) = (self.current, self.start) {
+            self.segments.push((current, start));
+            self.current = Some(start);
+        }
     }
 
     fn reset(&mut self) {
@@ -962,46 +982,27 @@ impl<'a> Interpreter<'a> {
                 }
                 "m" => {
                     if let Some(values) = last_numbers(&operands, 2) {
-                        let point = apply(gs.ctm, values[0], values[1]);
-                        path.touch(point);
-                        path.current = Some(point);
-                        path.start = Some(point);
+                        path.move_to(apply(gs.ctm, values[0], values[1]));
                     }
                 }
-                "l" => {
+                "l" | "c" | "v" | "y" => {
                     if let Some(values) = last_numbers(&operands, 2) {
-                        let point = apply(gs.ctm, values[0], values[1]);
-                        if let Some(current) = path.current {
-                            path.segments.push((current, point));
-                        }
-                        path.touch(point);
-                        path.current = Some(point);
+                        // Curves are approximated by their endpoint chord for layout analysis.
+                        path.line_to(apply(gs.ctm, values[0], values[1]));
                     }
                 }
-                "c" | "v" | "y" => {
-                    if let Some(values) = last_numbers(&operands, 2) {
-                        let point = apply(gs.ctm, values[0], values[1]);
-                        if let Some(current) = path.current {
-                            path.segments.push((current, point));
-                        }
-                        path.touch(point);
-                        path.current = Some(point);
-                    }
-                }
-                "h" => {
-                    if let (Some(current), Some(start)) = (path.current, path.start) {
-                        path.segments.push((current, start));
-                        path.current = Some(start);
-                    }
-                }
+                "h" => path.close(),
                 "re" => {
                     if let Some(values) = last_numbers(&operands, 4) {
                         let (x, y, w, h) = (values[0], values[1], values[2], values[3]);
-                        for (dx, dy) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
-                            path.touch(apply(gs.ctm, x + dx, y + dy));
+                        // PDF `re` is a closed subpath, not just a bounding box. A
+                        // producer may append multiple rectangles and stroke them once,
+                        // or combine rectangles with ordinary line segments.
+                        path.move_to(apply(gs.ctm, x, y));
+                        for (dx, dy) in [(w, 0.0), (w, h), (0.0, h)] {
+                            path.line_to(apply(gs.ctm, x + dx, y + dy));
                         }
-                        path.current = Some(apply(gs.ctm, x, y));
-                        path.start = Some(apply(gs.ctm, x, y));
+                        path.close();
                     }
                 }
                 "f" | "F" | "f*" => {
@@ -1009,10 +1010,16 @@ impl<'a> Interpreter<'a> {
                     path.reset();
                 }
                 "S" | "s" => {
+                    if operator == "s" {
+                        path.close();
+                    }
                     self.paint(&gs, &path, geom, false, true);
                     path.reset();
                 }
                 "B" | "B*" | "b" | "b*" => {
+                    if operator == "b" || operator == "b*" {
+                        path.close();
+                    }
                     self.paint(&gs, &path, geom, true, true);
                     path.reset();
                 }
@@ -1138,68 +1145,36 @@ impl<'a> Interpreter<'a> {
         fill: bool,
         stroke: bool,
     ) {
-        if fill && let Some((x0, y0, x1, y1)) = path.bbox {
-            let width = x1 - x0;
-            let height = y1 - y0;
-            if width > 0.2 && height > 0.2 {
-                let rect = self.page_rect(x0, y0, x1, y1);
-                let thickness = width.min(height);
-                if thickness <= 2.5 && width.max(height) >= 6.0 {
-                    geom.rules.push(RuleSegment {
-                        rect,
-                        axis: if width >= height {
-                            Axis::Horizontal
-                        } else {
-                            Axis::Vertical
-                        },
-                        thickness,
-                        color: gs.fill,
-                    });
-                } else if rect.area() >= 64.0 {
-                    geom.fills.push(FillRect {
-                        rect,
-                        fill: Some(gs.fill),
-                        stroke: if stroke { Some(gs.stroke) } else { None },
-                        stroke_width: gs.line_width,
-                    });
+        if fill {
+            // Separate painted subpaths must not become one enormous fill covering
+            // the gaps between cells. Complex contours remain an approximate bbox.
+            for &(x0, y0, x1, y1) in &path.subpath_bounds {
+                let width = x1 - x0;
+                let height = y1 - y0;
+                if width > 0.2 && height > 0.2 {
+                    let rect = self.page_rect(x0, y0, x1, y1);
+                    let thickness = width.min(height);
+                    if thickness <= 2.5 && width.max(height) >= 6.0 {
+                        geom.rules.push(RuleSegment {
+                            rect,
+                            axis: if width >= height {
+                                Axis::Horizontal
+                            } else {
+                                Axis::Vertical
+                            },
+                            thickness,
+                            color: gs.fill,
+                        });
+                    } else if rect.area() >= 64.0 {
+                        geom.fills.push(FillRect {
+                            rect,
+                            fill: Some(gs.fill),
+                            stroke: if stroke { Some(gs.stroke) } else { None },
+                            stroke_width: gs.line_width,
+                        });
+                    }
                 }
             }
-        }
-        if stroke
-            && path.segments.is_empty()
-            && let Some((x0, y0, x1, y1)) = path.bbox
-        {
-            // A stroked rectangle (`re … S`) has no path segments; emit its four edges as
-            // rules so the table detector can still see the grid.
-            let thickness = gs.line_width.max(0.3);
-            let left = x0 - self.page_left;
-            let right = x1 - self.page_left;
-            let top = self.page_top - y1;
-            let bottom = self.page_top - y0;
-            geom.rules.push(RuleSegment {
-                rect: Rect::new(left, top, (right - left).max(0.0), thickness),
-                axis: Axis::Horizontal,
-                thickness,
-                color: gs.stroke,
-            });
-            geom.rules.push(RuleSegment {
-                rect: Rect::new(left, bottom - thickness, (right - left).max(0.0), thickness),
-                axis: Axis::Horizontal,
-                thickness,
-                color: gs.stroke,
-            });
-            geom.rules.push(RuleSegment {
-                rect: Rect::new(left, top, thickness, (bottom - top).max(0.0)),
-                axis: Axis::Vertical,
-                thickness,
-                color: gs.stroke,
-            });
-            geom.rules.push(RuleSegment {
-                rect: Rect::new(right - thickness, top, thickness, (bottom - top).max(0.0)),
-                axis: Axis::Vertical,
-                thickness,
-                color: gs.stroke,
-            });
         }
         if stroke {
             for (start, end) in &path.segments {
