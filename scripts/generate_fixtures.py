@@ -440,7 +440,7 @@ def low_level_operators(canvas, doc) -> None:
     text = canvas.beginText(0.75 * inch, y)
     text.setFont("Body", 10)
     pen = 0.75 * inch
-    tracking = 2.0
+    tracking = 0.8
     for char in LOW_LEVEL_SENTINELS[6]:
         text.setTextTransform(1, 0, 0, 1, pen, y)
         text.textOut(char)
@@ -497,7 +497,6 @@ def kerning_and_typography(path: str) -> None:
     # Manual code block with monospace - we'll use canvas drawing for raw Tj testing
     story.append(Spacer(1, 6))
 
-    # Use a table to show monospace content without Platypus reflow
     code_lines = [
         "def fibonacci(n):",
         "    if n <= 1:",
@@ -507,11 +506,8 @@ def kerning_and_typography(path: str) -> None:
         "result = fibonacci(10)  # Should be 55",
         "print(f\"fib(10) = {result}\")",
     ]
-    for line in code_lines:
-        # Use preformatted with monospace
-        safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        # Use font tag for monospace
-        story.append(Paragraph(f'<font face="Mono" size="8">{safe}</font>', s["mono_inline"]))
+    from reportlab.platypus import Preformatted
+    story.append(Preformatted("\n".join(code_lines), s["pre"]))
 
     story.append(Spacer(1, 8))
     story.append(Paragraph(
@@ -869,10 +865,10 @@ def rich_media_and_symbols(path: str) -> None:
             s["body"],
         ),
         Spacer(1, 8),
-        PlatypusImage(png_large, width=3.2 * inch, height=1.78 * inch),
+        PlatypusImage(png_large, width=2.8 * inch, height=1.55 * inch),
         Paragraph("Figure 1 \u2014 900x500 PNG block image.", s["note"]),
         Spacer(1, 8),
-        PlatypusImage(jpeg_large, width=3.6 * inch, height=2.1 * inch),
+        PlatypusImage(jpeg_large, width=3.0 * inch, height=1.75 * inch),
         Paragraph("Figure 2 \u2014 1200x700 JPEG block image.", s["note"]),
         Spacer(1, 8),
     ]
@@ -887,20 +883,22 @@ def rich_media_and_symbols(path: str) -> None:
         s["body"],
     ))
 
-    # Code block with math comments
-    story.append(Paragraph("Code with Mathematical Comments", s["h2"]))
-    story.append(Paragraph(
-        "The block below uses a monospaced face; its leading whitespace and Unicode comments "
-        "are structural and must survive conversion intact.",
-        s["body"],
-    ))
-    # Build preformatted code block
-    from reportlab.platypus import Preformatted
-    story.append(Preformatted("\n".join(CODE_LINES), s["pre"]))
-    story.append(Paragraph(
-        "Closing sentinel: \u03b1\u03b2\u03b3 \u2211\u222b\u2248\u2260\u00b1 \u2192 \u03a9 END-OF-SYMBOLS.",
-        s["body"],
-    ))
+    # Code block with math comments - keep together to avoid split across pages
+    from reportlab.platypus import Preformatted, KeepTogether
+    code_block = [
+        Paragraph("Code with Mathematical Comments", s["h2"]),
+        Paragraph(
+            "The block below uses a monospaced face; its leading whitespace and Unicode comments "
+            "are structural and must survive conversion intact.",
+            s["body"],
+        ),
+        Preformatted("\n".join(CODE_LINES), s["pre"]),
+        Paragraph(
+            "Closing sentinel: \u03b1\u03b2\u03b3 \u2211\u222b\u2248\u2260\u00b1 \u2192 \u03a9 END-OF-SYMBOLS.",
+            s["body"],
+        ),
+    ]
+    story.append(KeepTogether(code_block))
 
     # Page 2 with inline/wrapped media + vector rules
     story.append(PageBreak())
@@ -1158,10 +1156,10 @@ def rich_media(path: str) -> None:
             s["body"],
         ),
         Spacer(1, 8),
-        PlatypusImage(png_large, width=3.2 * inch, height=1.78 * inch),
+        PlatypusImage(png_large, width=2.8 * inch, height=1.55 * inch),
         Paragraph("Figure 1 \u2014 900x500 PNG block image.", s["note"]),
         Spacer(1, 8),
-        PlatypusImage(jpeg_large, width=3.6 * inch, height=2.1 * inch),
+        PlatypusImage(jpeg_large, width=3.0 * inch, height=1.75 * inch),
         Paragraph("Figure 2 \u2014 1200x700 JPEG block image.", s["note"]),
         PageBreak(),
         Spacer(1, 4.95 * inch),
