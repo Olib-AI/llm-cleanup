@@ -200,7 +200,9 @@ compare without modifying committed files. The checked-in corpus was generated w
 change the PDFs; optional system italic fonts are intentionally not used by the generator.
 Embedded italic/bold-italic use the genuine Bitstream Vera faces bundled in the pinned
 ReportLab wheel, not aliases for regular DejaVu. The typography fixture additionally draws
-genuine base-14 bold/oblique faces. CI regenerates and byte-compares the corpus and manifest.
+genuine base-14 bold/oblique faces. CI regenerates and byte-compares the corpus and manifest
+in Debian bookworm, retaining zlib 1.2.13 as well as the fixture fonts: invariant mode removes
+random IDs/dates, but a different compression-library version can still change PDF bytes.
 The PDFs and ground-truth manifest are committed, so `cargo test` needs no
 Python or network access:
 

@@ -1219,11 +1219,19 @@ fn rich_media_source_layout_is_readable_and_assets_are_complete() {
     for dimensions in truth["image_dimensions"].as_array().unwrap() {
         let width = dimensions[0].as_u64().unwrap();
         let height = dimensions[1].as_u64().unwrap();
-        assert!(report.layout.assets.iter().any(|asset| {
-            u64::from(asset.width_px) == width && u64::from(asset.height_px) == height
-        }), "missing image {width}x{height}");
+        assert!(
+            report.layout.assets.iter().any(|asset| {
+                u64::from(asset.width_px) == width && u64::from(asset.height_px) == height
+            }),
+            "missing image {width}x{height}"
+        );
     }
-    let placements: usize = report.layout.pages.iter().map(|page| page.images.len()).sum();
+    let placements: usize = report
+        .layout
+        .pages
+        .iter()
+        .map(|page| page.images.len())
+        .sum();
     assert_eq!(placements, 4);
     for (index, page) in report.layout.pages.iter().enumerate() {
         for image in &page.images {
@@ -1234,14 +1242,19 @@ fn rich_media_source_layout_is_readable_and_assets_are_complete() {
             for run in &page.runs {
                 assert!(
                     run.rect.intersection(&rule.rect).is_none(),
-                    "page {}: vector rule crosses text {:?}", index + 1, run.text
+                    "page {}: vector rule crosses text {:?}",
+                    index + 1,
+                    run.text
                 );
             }
         }
     }
     let last = report.layout.pages.last().unwrap();
     for word in ["Vector", "layer", "Currency", "symbols:"] {
-        assert!(last.runs.iter().any(|run| run.text == word), "missing {word}");
+        assert!(
+            last.runs.iter().any(|run| run.text == word),
+            "missing {word}"
+        );
     }
 }
 

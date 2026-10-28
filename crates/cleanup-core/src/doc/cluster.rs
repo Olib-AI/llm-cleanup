@@ -412,9 +412,17 @@ mod tests {
         let (lower, _) = lay_out("next line", 32.0, 51.0, 10.0);
         glyphs.extend(upper);
         glyphs.extend(lower);
-        let runs = words_from_glyphs(&glyphs);
-        let words: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
-        assert_eq!(words, ["D", "rop", "cap", "next", "line"]);
+        // Even callers requesting a loose tolerance must not let the initial's size
+        // determine which body baselines get folded into the same glyph bucket.
+        for baseline_em in [0.05, 0.35] {
+            let options = ClusterOptions {
+                baseline_em,
+                ..ClusterOptions::default()
+            };
+            let runs = words_from_glyphs_with(&glyphs, &options);
+            let words: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
+            assert_eq!(words, ["D", "rop", "cap", "next", "line"]);
+        }
     }
 
     #[test]
