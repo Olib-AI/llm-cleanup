@@ -499,7 +499,8 @@ fn no_exporter_emits_split_character_runs() {
         let words: Vec<&str> = body.split_whitespace().collect();
         let mut run = 0;
         for word in &words {
-            if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+            if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric())
+            {
                 run += 1;
                 assert!(
                     run < 4,
