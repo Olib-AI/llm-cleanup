@@ -292,9 +292,7 @@ fn join_hyphenated(previous: &mut Word, next: &Word) {
 
 fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
     let mut runs: Vec<&TextRun> = page.runs.iter().filter(|run| !run.is_blank()).collect();
-    runs.sort_by(|a, b| {
-        compare_f32(a.baseline, b.baseline).then(compare_f32(a.rect.x, b.rect.x))
-    });
+    runs.sort_by(|a, b| compare_f32(a.baseline, b.baseline).then(compare_f32(a.rect.x, b.rect.x)));
     let mut lines: Vec<Line> = Vec::new();
     for run in runs {
         let mut placed = false;
@@ -308,10 +306,7 @@ fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
             let gap = run.rect.x - line.rect.right();
             let split = (line.font_size.max(run.font_size) * 1.6).max(8.0);
             let min_gap = -(line.font_size.max(run.font_size) * 0.35).max(1.5);
-            if (line.baseline - run.baseline).abs() <= tolerance
-                && gap >= min_gap
-                && gap <= split
-            {
+            if (line.baseline - run.baseline).abs() <= tolerance && gap >= min_gap && gap <= split {
                 let words = split_run_into_words(run);
                 // Only the first run of a line starts it; later runs keep the gap the reader
                 // measured, so a glued fragment stays glued and a word gap stays one space.
@@ -327,9 +322,7 @@ fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
         }
     }
     lines.retain(|line| !line.is_blank());
-    lines.sort_by(|a, b| {
-        compare_f32(a.rect.y, b.rect.y).then(compare_f32(a.rect.x, b.rect.x))
-    });
+    lines.sort_by(|a, b| compare_f32(a.rect.y, b.rect.y).then(compare_f32(a.rect.x, b.rect.x)));
     lines
 }
 
@@ -2259,7 +2252,10 @@ mod tests {
         let mut third = run_at("graphy", 94.0, 100.0, 10.0, 33.0);
         third.bold = true;
         third.font_weight = 700;
-        let (doc, _warnings) = analyze(&page_of(vec![first, second, third]), &AnalyzeOptions::default());
+        let (doc, _warnings) = analyze(
+            &page_of(vec![first, second, third]),
+            &AnalyzeOptions::default(),
+        );
         let text = doc.plain_text();
         assert_eq!(text.trim(), "Typography", "{text:?}");
         // The emphasis must cover whole fragments, never single characters.

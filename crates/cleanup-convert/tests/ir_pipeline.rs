@@ -805,8 +805,8 @@ fn kerning_fixture_has_no_spaced_out_words() {
         let body = match target {
             Target::Docx => {
                 let output = convert("kerning_and_typography.pdf", Target::Docx);
-                let xml =
-                    String::from_utf8(zip_part(&output.bytes, "word/document.xml")).expect("docx xml");
+                let xml = String::from_utf8(zip_part(&output.bytes, "word/document.xml"))
+                    .expect("docx xml");
                 // Check the *visible* text, not the markup: a raw-XML scan would pass simply
                 // because `<w:t>` tags sit between the characters it is looking for.
                 docx_body_text(&xml)
@@ -914,21 +914,20 @@ fn contains_spaced_out(text: &str) -> bool {
 #[test]
 fn low_level_operators_reconstruct_exact_words() {
     let root = manifest();
-    let sentinels: Vec<String> = root["fixtures"]["kerning_and_typography.pdf"]
-        ["low_level_sentinels"]
-        .as_array()
-        .expect("manifest lists the low-level sentinels")
-        .iter()
-        .map(|value| value.as_str().expect("sentinel is a string").to_string())
-        .collect();
+    let sentinels: Vec<String> =
+        root["fixtures"]["kerning_and_typography.pdf"]["low_level_sentinels"]
+            .as_array()
+            .expect("manifest lists the low-level sentinels")
+            .iter()
+            .map(|value| value.as_str().expect("sentinel is a string").to_string())
+            .collect();
     assert!(
         sentinels.len() >= 6,
         "the fixture must cover TJ, Tc, Tw and per-glyph Tm: {sentinels:?}"
     );
 
     let docx = convert("kerning_and_typography.pdf", Target::Docx);
-    let docx_xml =
-        String::from_utf8(zip_part(&docx.bytes, "word/document.xml")).expect("docx xml");
+    let docx_xml = String::from_utf8(zip_part(&docx.bytes, "word/document.xml")).expect("docx xml");
     let exports = [
         (
             "markdown",
@@ -950,7 +949,10 @@ fn low_level_operators_reconstruct_exact_words() {
     // The IR itself must expose the words, not the showing operators.
     let doc = ir("kerning_and_typography.pdf");
     let text = doc.plain_text();
-    assert!(text.contains("Kerning TJ array keeps words whole"), "{text}");
+    assert!(
+        text.contains("Kerning TJ array keeps words whole"),
+        "{text}"
+    );
     assert!(
         text.contains("Word gap from geometry alone"),
         "a TJ word gap (no space character) must become a space: {text}"
@@ -967,7 +969,11 @@ fn low_level_operators_reconstruct_exact_words() {
 fn typography_metadata_is_recovered_from_the_font_dictionary() {
     let bytes = fixture("kerning_and_typography.pdf");
     let report = cleanup_formats::pdf::extract_layout(&bytes).expect("extract layout");
-    assert_eq!(report.layout.pages.len(), 3, "the low-level page is missing");
+    assert_eq!(
+        report.layout.pages.len(),
+        3,
+        "the low-level page is missing"
+    );
     let runs: Vec<&cleanup_core::doc::TextRun> = report
         .layout
         .pages
@@ -983,7 +989,11 @@ fn typography_metadata_is_recovered_from_the_font_dictionary() {
             "subset tag survived: {}",
             run.font_name
         );
-        assert!(!run.font_family.is_empty(), "run {:?} has no family", run.text);
+        assert!(
+            !run.font_family.is_empty(),
+            "run {:?} has no family",
+            run.text
+        );
         assert!((100..=900).contains(&run.font_weight));
     }
 

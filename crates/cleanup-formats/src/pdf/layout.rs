@@ -522,10 +522,13 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let weight = fontmap::weight_from_name(&canonical)
         .or(descriptor_weight)
         .or_else(|| stem_v.and_then(fontmap::weight_from_stem_v))
-        .unwrap_or(if flags & FLAG_FORCE_BOLD != 0 { 700 } else { 400 });
-    let italic = fontmap::name_is_italic(&canonical)
-        || flags & FLAG_ITALIC != 0
-        || italic_angle != 0;
+        .unwrap_or(if flags & FLAG_FORCE_BOLD != 0 {
+            700
+        } else {
+            400
+        });
+    let italic =
+        fontmap::name_is_italic(&canonical) || flags & FLAG_ITALIC != 0 || italic_angle != 0;
     let mono =
         fontmap::name_is_mono(&canonical) || flags & FLAG_FIXED_PITCH != 0 || family == "Courier";
 

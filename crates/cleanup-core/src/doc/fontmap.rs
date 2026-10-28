@@ -230,7 +230,9 @@ pub fn weight_from_name(name: &str) -> Option<u16> {
     if has("semibold") || has("demibold") {
         return Some(600);
     }
-    let abbreviated_bold = parts(name).iter().any(|part| part.eq_ignore_ascii_case("bd"));
+    let abbreviated_bold = parts(name)
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("bd"));
     if has("bold") || abbreviated_bold {
         return Some(700);
     }
@@ -326,7 +328,14 @@ pub fn name_is_mono(name: &str) -> bool {
 pub fn is_serif_family(family: &str) -> bool {
     let lowered = family.to_ascii_lowercase();
     const MARKERS: [&str; 9] = [
-        "times", "serif", "georgia", "garamond", "cambria", "book", "roman", "baskerville",
+        "times",
+        "serif",
+        "georgia",
+        "garamond",
+        "cambria",
+        "book",
+        "roman",
+        "baskerville",
         "palatino",
     ];
     MARKERS.iter().any(|marker| lowered.contains(marker))

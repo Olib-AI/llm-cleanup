@@ -341,9 +341,7 @@ impl<'a> Writer<'a> {
             let size_tenths = style.size_pt.map(|size| size * scale * 2.0);
             let half_points = match size_tenths {
                 Some(value) => Some(value.round().clamp(2.0, 400.0) as i64),
-                None => {
-                    ((scale - 1.0).abs() > 0.01).then_some((10.5 * scale * 2.0).round() as i64)
-                }
+                None => ((scale - 1.0).abs() > 0.01).then_some((10.5 * scale * 2.0).round() as i64),
             };
             if let Some(half_points) = half_points {
                 properties.push_str(&format!(

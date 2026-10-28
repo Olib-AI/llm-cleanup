@@ -57,7 +57,9 @@ fn compare_f32(a: f32, b: f32) -> std::cmp::Ordering {
 
 /// The gap that counts as a word break for `glyph`.
 fn space_threshold(glyph: &Glyph, options: &ClusterOptions) -> f32 {
-    let natural = glyph.space_width.max(glyph.font_size * options.min_space_em);
+    let natural = glyph
+        .space_width
+        .max(glyph.font_size * options.min_space_em);
     (natural * options.space_fraction).max(glyph.font_size * options.min_space_em)
 }
 
@@ -79,9 +81,8 @@ pub fn words_from_glyphs_with(glyphs: &[Glyph], options: &ClusterOptions) -> Vec
     if ordered.is_empty() {
         return Vec::new();
     }
-    ordered.sort_by(|a, b| {
-        compare_f32(a.baseline, b.baseline).then(compare_f32(a.rect.x, b.rect.x))
-    });
+    ordered
+        .sort_by(|a, b| compare_f32(a.baseline, b.baseline).then(compare_f32(a.rect.x, b.rect.x)));
 
     let mut runs: Vec<TextRun> = Vec::new();
     let mut start = 0usize;
@@ -93,9 +94,8 @@ pub fn words_from_glyphs_with(glyphs: &[Glyph], options: &ClusterOptions) -> Vec
             // A baseline bucket is anchored on its first glyph; superscripts (a `Ts` rise)
             // legitimately sit a little off and get their own bucket, which the analyser
             // merges back into the same visual line.
-            let tolerance = (candidate.font_size.max(ordered[start].font_size)
-                * options.baseline_em)
-                .max(0.4);
+            let tolerance =
+                (candidate.font_size.max(ordered[start].font_size) * options.baseline_em).max(0.4);
             if (candidate.baseline - reference).abs() > tolerance {
                 break;
             }
@@ -139,9 +139,7 @@ fn cluster_line(line: &[&Glyph], options: &ClusterOptions) -> Vec<TextRun> {
                 // advance is.
                 let gap = glyph.rect.x - edge;
                 let threshold = space_threshold(glyph, options);
-                after_blank
-                    || gap > threshold
-                    || breaks_style(run, glyph, options)
+                after_blank || gap > threshold || breaks_style(run, glyph, options)
             }
         };
 
@@ -357,7 +355,15 @@ mod tests {
     fn style_changes_split_a_run_without_inserting_space() {
         let (plain, pen) = lay_out("bold", 10.0, 60.0, 10.0);
         let mut glyphs = plain;
-        glyphs.push(glyph_with("x", pen, 60.0, 10.0, 5.0, "DejaVuSans-Bold", 700));
+        glyphs.push(glyph_with(
+            "x",
+            pen,
+            60.0,
+            10.0,
+            5.0,
+            "DejaVuSans-Bold",
+            700,
+        ));
         let runs = words_from_glyphs(&glyphs);
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].text, "bold");
@@ -400,9 +406,25 @@ mod tests {
             pen += space;
         }
         let indent = pen;
-        glyphs.push(glyph_with(" ", pen, 200.0, size, space, "DejaVuSansMono", 400));
+        glyphs.push(glyph_with(
+            " ",
+            pen,
+            200.0,
+            size,
+            space,
+            "DejaVuSansMono",
+            400,
+        ));
         pen += space;
-        glyphs.push(glyph_with("x", pen, 200.0, size, space, "DejaVuSansMono", 400));
+        glyphs.push(glyph_with(
+            "x",
+            pen,
+            200.0,
+            size,
+            space,
+            "DejaVuSansMono",
+            400,
+        ));
         let runs = words_from_glyphs(&glyphs);
         assert_eq!(runs.len(), 2);
         // The four-space indent is preserved as geometry: the word starts one indent in.
