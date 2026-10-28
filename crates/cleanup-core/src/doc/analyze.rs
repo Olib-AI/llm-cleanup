@@ -197,7 +197,7 @@ const MAX_GAP_SPACES: u16 = 12;
 /// Give every word after the first the gap its geometry implies.
 ///
 /// Words that touch (a kerning split, a style change inside a word) get `0` and are glued
-/// back together; words separated by more than half the font's space advance get one blank,
+/// back together; words separated by more than 75% of the font's space advance get one blank,
 /// or as many blanks as a monospaced font's own advance accounts for.
 fn assign_spaces(words: &mut [Word], mono: bool) {
     if words.is_empty() {
@@ -2232,7 +2232,7 @@ mod tests {
     #[test]
     fn glued_runs_reconstruct_without_extra_spaces() {
         // `n`, `<=` and `1:` arrive as four separate showing operations; only the two spaces a
-        // human typed are real, and they are the only gaps wider than half a space advance.
+        // human typed are real, and they are the only gaps wider than the word-gap threshold.
         let runs = vec![
             run_at("if", 72.0, 100.0, 10.0, 11.0),
             run_at("n", 86.0, 100.0, 10.0, 6.0),

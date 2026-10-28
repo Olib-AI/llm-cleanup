@@ -159,6 +159,7 @@ LOW_LEVEL_SENTINELS = [
     "Per glyph Tm positioning still forms words",
     "Wide word spacing keeps letters intact",
     "Word gap from geometry alone",
+    "Per glyph Tm tracking keeps words whole",
 ]
 
 
@@ -430,6 +431,20 @@ def low_level_operators(canvas, doc) -> None:
     text.textOut("Word")
     for word in ("gap", "from", "geometry", "alone"):
         text._code.append(f"[-250({word})] TJ")
+    canvas.drawText(text)
+    y -= 16
+
+    # 7. Extreme per-glyph positioning: each glyph gets its own Tm and a 0.20em
+    #    positive gap. This is character tracking, not a series of word boundaries.
+    #    The real words below are still separated by literal space glyphs.
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    pen = 0.75 * inch
+    tracking = 2.0
+    for char in LOW_LEVEL_SENTINELS[6]:
+        text.setTextTransform(1, 0, 0, 1, pen, y)
+        text.textOut(char)
+        pen += pdfmetrics.stringWidth(char, "Body", 10) + tracking
     canvas.drawText(text)
     canvas.restoreState()
 

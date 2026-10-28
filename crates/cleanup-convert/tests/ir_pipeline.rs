@@ -848,13 +848,17 @@ fn kerning_fixture_has_no_spaced_out_words() {
                 docx_body_text(&xml)
             }
             Target::Pdf => {
-                // PDF text is not directly readable; skip text check, just verify it converts
+                // PDF text is not directly readable, so re-run the spatial extractor and
+                // inspect the reconstructed IR instead of skipping the regression assertion.
                 let output = convert("kerning_and_typography.pdf", Target::Pdf);
                 assert!(
                     output.bytes.starts_with(b"%PDF-"),
                     "PDF output is not a PDF"
                 );
-                continue;
+                let report =
+                    cleanup_formats::pdf::extract_layout(&output.bytes).expect("PDF output parses");
+                let (doc, _warnings) = analyze(&report.layout, &AnalyzeOptions::default());
+                doc.plain_text()
             }
             _ => text("kerning_and_typography.pdf", target),
         };
@@ -914,22 +918,10 @@ fn docx_body_text(xml: &str) -> String {
 }
 
 fn contains_spaced_out(text: &str) -> bool {
-    // Detect \b(\w\s){3,}\w\b  - 3+ single-char tokens separated by single spaces
-    let mut in_word = false;
-    for ch in text.chars() {
-        if ch.is_alphanumeric() && !in_word {
-            in_word = true;
-        } else if ch == ' ' && in_word {
-            in_word = false;
-            continue;
-        } else if ch.is_whitespace() || !ch.is_alphanumeric() {
-            in_word = false;
-        }
-    }
-    // More precise: split into words and check for consecutive single-char words
-    let words: Vec<&str> = text.split_whitespace().collect();
+    // Regex-equivalent to `\b(\w\s){3,}\w\b`: 4+ consecutive one-character
+    // alphanumeric tokens separated by whitespace. Keep this dependency-free for the test crate.
     let mut consecutive_single = 0;
-    for word in &words {
+    for word in text.split_whitespace() {
         if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
             consecutive_single += 1;
             if consecutive_single >= 4 {
@@ -940,6 +932,13 @@ fn contains_spaced_out(text: &str) -> bool {
         }
     }
     false
+}
+
+#[test]
+fn spaced_out_detector_matches_the_regression_pattern() {
+    assert!(contains_spaced_out("this is t h i s still readable"));
+    assert!(!contains_spaced_out("this is a normal sentence"));
+    assert!(!contains_spaced_out("A B C"));
 }
 
 /// The low-level page (page 3) is drawn with `TJ` arrays, `Tc`/`Tw` registers and one `Tm`
@@ -1212,7 +1211,13 @@ fn multi_column_newsletter_linearises_correctly() {
 
 #[test]
 fn pdf_export_from_non_pdf_source_is_valid_and_identity_is_lossless() {
-    let markdown = b"# Findings\n\nCafe naive - \xe2\x88\x91\n\n| Item | Total |\n| --- | ---: |\n| Widgets | 1204 |\n";
+    let markdown = concat!(
+        "# Findings\n\n",
+        "The quick brown fox jumps over the lazy dog. Kerning TJ array keeps words whole.\n\n",
+        "Cafe naive - ∑\n\n",
+        "| Item | Total |\n| --- | ---: |\n| Widgets | 1204 |\n",
+    )
+    .as_bytes();
     let output = convert_document(
         FormatId::Markdown,
         markdown,
@@ -1225,6 +1230,15 @@ fn pdf_export_from_non_pdf_source_is_valid_and_identity_is_lossless() {
     assert!(body.contains("/FontFile2"), "fonts must be embedded");
     assert!(body.contains("/ToUnicode"), "text must stay copyable");
     assert!(body.contains("startxref") && body.trim_end().ends_with("%%EOF"));
+    let extracted = cleanup_formats::pdf::extract_layout(&output.bytes).expect("re-extract PDF");
+    let (round_trip, _warnings) = analyze(&extracted.layout, &AnalyzeOptions::default());
+    let round_trip_text = flattened(&round_trip.plain_text());
+    assert!(round_trip_text.contains("The quick brown fox jumps over the lazy dog"));
+    assert!(round_trip_text.contains("Kerning TJ array keeps words whole"));
+    assert!(
+        !contains_spaced_out(&round_trip_text),
+        "PDF exporter introduced spaced-out characters: {round_trip_text}"
+    );
 
     // Same-format conversion stays byte-identical; cleaning a PDF is the native splice path
     // tested above, never a lossy re-render.

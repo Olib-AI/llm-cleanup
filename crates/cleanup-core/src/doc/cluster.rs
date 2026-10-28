@@ -14,11 +14,14 @@
 //!   ended at is part of the same word. Tracking (`Tc`), horizontal scaling (`Tz`) and `TJ`
 //!   displacements are already baked into the advance, so an untracked word has a gap of
 //!   exactly zero and a tracked word also has a gap of exactly zero.
-//! * **A real blank.** A word gap is at least half the font's own space advance. Kerning pairs
-//!   are a few hundredths of an em and never reach it; a `TJ` word gap (typically `-200` to
-//!   `-300`, i.e. 0.2–0.3 em) does. The threshold is expressed in the *font's* space advance
-//!   rather than a fixed `0.25 × font_size`, so a condensed face with a `0.18em` space and a
-//!   monospaced face with a `0.60em` space both break in the right place.
+//! * **A real blank.** A word gap must exceed 75% of the font's own space advance. This is
+//!   deliberately more conservative than a half-space cutoff: half of a narrow `0.28em` space
+//!   is only `0.14em`, so modest positive tracking can otherwise turn `tracked` into
+//!   `t r a c k e d`. Common proportional faces land around `0.19–0.24em`; a typical `TJ` word
+//!   gap of `-250` (`0.25em`) still clears the threshold. Smaller `-200` gaps are treated
+//!   conservatively because geometry alone cannot distinguish them from wide tracking. Using
+//!   the actual, transformed space advance keeps the decision in sync with `Tz` and the text
+//!   matrix.
 //!
 //! Style changes also end a word: a run cannot mix two fonts, two weights or two colours,
 //! because the exporters map one run onto one `<w:rPr>`/emphasis span. Splitting there is
@@ -26,6 +29,9 @@
 //! with no space between them.
 
 use super::model::{Glyph, Rect, TextRun};
+
+/// Default fraction of the declared horizontal space advance required for a word break.
+const DEFAULT_SPACE_FRACTION: f32 = 0.75;
 
 /// Tolerances for [`words_from_glyphs`].
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +49,7 @@ pub struct ClusterOptions {
 impl Default for ClusterOptions {
     fn default() -> Self {
         ClusterOptions {
-            space_fraction: 0.5,
+            space_fraction: DEFAULT_SPACE_FRACTION,
             min_space_points: 0.05,
             baseline_em: 0.35,
             size_tolerance: 0.6,
@@ -57,9 +63,10 @@ fn compare_f32(a: f32, b: f32) -> std::cmp::Ordering {
 
 /// The gap that counts as a word break for `glyph`.
 fn space_threshold(glyph: &Glyph, options: &ClusterOptions) -> f32 {
-    // `space_width` is already in page space, including Tz and the text matrix.
-    // A threshold derived from the vertical font size incorrectly joins words
-    // in horizontally compressed text.
+    // `space_width` is already in page space, including Tz and the text matrix. Keep
+    // the cutoff proportional to that horizontal metric: a vertical font-size cutoff
+    // incorrectly joins words in horizontally compressed text, while a half-space cutoff
+    // mistakes ordinary positive tracking for a word boundary in narrow faces.
     (glyph.space_width * options.space_fraction).max(options.min_space_points)
 }
 
@@ -195,14 +202,13 @@ fn run_from_glyph(glyph: &Glyph) -> TextRun {
 ///
 /// The counterpart of [`words_from_glyphs`] for the analyser: runs whose advance boxes touch
 /// glue together with no space (that is exactly the case that used to turn "Kerning" into
-/// "K e r n i n g"), one space otherwise. Monospaced lines quantise the gap so that code
-/// indentation survives as indentation instead of collapsing to a single blank.
+/// "K e r n i n g"). The same 75%-of-space cutoff is used on both sides of the IR boundary,
+/// so a moderately tracked glyph pair is not split by the reader and then re-spaced by the
+/// analyser. Monospaced lines quantise the gap so code indentation survives as indentation.
 pub fn gap_spaces(previous: Rect, next: Rect, space_width: f32, mono: bool) -> u16 {
     let gap = next.x - previous.right();
     let space = space_width.max(0.1);
-    // Half a space advance is the same threshold the clusterer uses, so a run the clusterer
-    // split off (kerning, a style change) is re-joined with no space.
-    if gap <= space * 0.5 {
+    if gap <= space * DEFAULT_SPACE_FRACTION {
         return 0;
     }
     if mono {
@@ -324,6 +330,52 @@ mod tests {
     }
 
     #[test]
+    fn moderate_positive_tracking_does_not_split_glyphs_into_words() {
+        let size = 10.0;
+        let tracking = 1.8; // 0.18 em: above half a narrow space, below a word gap.
+        let advance = 5.5;
+
+        // Exercise both a generic sans and a narrow-space serif. The old half-space
+        // threshold would split the tracked letters in either face.
+        for font_name in ["DejaVuSans", "Times-Roman"] {
+            let mut glyphs = Vec::new();
+            let mut pen = 10.0;
+            for ch in "tracking".chars() {
+                glyphs.push(glyph_with(
+                    &ch.to_string(),
+                    pen,
+                    80.0,
+                    size,
+                    advance,
+                    font_name,
+                    400,
+                ));
+                pen += advance + tracking;
+            }
+            // Remove the trailing tracking after the final character, then add an actual
+            // geometry-only word gap (the words themselves contain no space glyph).
+            pen -= tracking;
+            pen += 2.5; // 0.25 em, the fixture's TJ word displacement.
+            for ch in "works".chars() {
+                glyphs.push(glyph_with(
+                    &ch.to_string(),
+                    pen,
+                    80.0,
+                    size,
+                    advance,
+                    font_name,
+                    400,
+                ));
+                pen += advance + tracking;
+            }
+
+            let runs = words_from_glyphs(&glyphs);
+            let words: Vec<&str> = runs.iter().map(|run| run.text.as_str()).collect();
+            assert_eq!(words, ["tracking", "works"], "{font_name}: {runs:?}");
+        }
+    }
+
+    #[test]
     fn a_tj_word_gap_becomes_a_space_and_a_kern_does_not() {
         let (mut glyphs, pen) = lay_out("ab", 10.0, 70.0, 10.0);
         // 0.25em gap: a word break, because the font's space is 0.30em.
@@ -441,8 +493,10 @@ mod tests {
         // Touching boxes: the same word, split only by a style change.
         let touching = Rect::new(50.0, 0.0, 20.0, 10.0);
         assert_eq!(gap_spaces(kerning, touching, 3.0, false), 0);
-        // A normal word gap is slightly wider than the space advance (Tw stretch included).
-        let spaced = Rect::new(53.5, 0.0, 20.0, 10.0);
+        // A 0.20em tracked gap is still inside a word; the 0.25em TJ gap is a word break.
+        let tracked = Rect::new(52.0, 0.0, 20.0, 10.0);
+        assert_eq!(gap_spaces(kerning, tracked, 3.0, false), 0);
+        let spaced = Rect::new(52.5, 0.0, 20.0, 10.0);
         assert_eq!(gap_spaces(kerning, spaced, 3.0, false), 1);
         // Monospaced indentation keeps its column count.
         let four_spaces = Rect::new(50.0 + 4.0 * 4.8, 0.0, 20.0, 10.0);
