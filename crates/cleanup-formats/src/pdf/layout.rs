@@ -1145,6 +1145,8 @@ impl<'a> Interpreter<'a> {
                     data,
                     width_px: width as u32,
                     height_px: height as u32,
+                    dpi_x: None,
+                    dpi_y: None,
                 });
                 self.asset_keys.insert(key, index);
                 index
@@ -1162,6 +1164,9 @@ impl<'a> Interpreter<'a> {
         let y1 = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
         let rect = self.page_rect(x0, y0, x1, y1);
         if rect.width > 0.5 && rect.height > 0.5 {
+            if let Some(asset) = self.assets.get_mut(index) {
+                asset.observe_dpi(&rect);
+            }
             geom.images.push(ImagePlacement { asset: index, rect });
         }
     }

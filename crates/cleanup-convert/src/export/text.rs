@@ -104,12 +104,17 @@ fn render_block(block: &Block, doc: &Doc, out: &mut String, warnings: &mut Vec<S
         }
         Block::Figure(figure) => {
             if let Some(asset) = asset_for(doc, figure.asset, warnings) {
+                let dpi = asset
+                    .dpi_label()
+                    .map(|label| format!(", {label}"))
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "[figure: {} ({}x{} px, {})]\n",
+                    "[figure: {} ({}x{} px, {}{})]\n",
                     asset.name,
                     asset.width_px,
                     asset.height_px,
-                    asset.kind.mime()
+                    asset.kind.mime(),
+                    dpi
                 ));
             }
             if let Some(caption) = &figure.caption {
@@ -119,6 +124,22 @@ fn render_block(block: &Block, doc: &Doc, out: &mut String, warnings: &mut Vec<S
                 }
             }
             out.push('\n');
+        }
+        Block::Vector(shape) => {
+            let label = match shape.kind {
+                cleanup_core::doc::VectorKind::Line
+                    if shape.axis == cleanup_core::doc::Axis::Horizontal =>
+                {
+                    "horizontal vector rule"
+                }
+                cleanup_core::doc::VectorKind::Line => "vertical vector rule",
+                cleanup_core::doc::VectorKind::Rect => "vector rectangle",
+                cleanup_core::doc::VectorKind::Ellipse => "vector ellipse",
+            };
+            out.push_str(&format!(
+                "[vector: {label}, {:.0}x{:.0} pt]\n\n",
+                shape.rect.width, shape.rect.height
+            ));
         }
         Block::Divider(_) => {
             out.push_str(&"\u{2500}".repeat(60));
@@ -156,9 +177,120 @@ fn render_block(block: &Block, doc: &Doc, out: &mut String, warnings: &mut Vec<S
 fn plain_inlines(inlines: &[Inline]) -> String {
     let mut out = String::new();
     for inline in inlines {
-        out.push_str(&inline.text);
+        if inline.style.is_code() {
+            // Inline code is content: an HTML-like string inside it is intentional.
+            out.push_str(&inline.text);
+        } else {
+            out.push_str(&strip_residual_markup(&inline.text));
+        }
     }
     out
+}
+
+/// Literal markup that leaked out of a source container must never reach a `.txt` file as an
+/// orphaned tag. Code *blocks* bypass this function entirely (they are emitted verbatim), and
+/// inline-code runs are skipped by [`plain_inlines`].
+const RESIDUAL_TOKENS: &[&str] = &[
+    "[/INST]",
+    "[INST]",
+    "[END]",
+    "[START]",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|endoftext|>",
+    "```markdown",
+    "```",
+    "~~~",
+    "</s>",
+    "<s>",
+];
+
+fn strip_residual_markup(text: &str) -> String {
+    let mut cleaned = text.to_string();
+    for token in RESIDUAL_TOKENS {
+        if cleaned.contains(token) {
+            cleaned = cleaned.replace(token, "");
+        }
+    }
+    let chars: Vec<char> = cleaned.chars().collect();
+    let mut out = String::with_capacity(cleaned.len());
+    let mut index = 0usize;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '<' {
+            let limit = (index + 96).min(chars.len());
+            if let Some(end) = (index + 1..limit).find(|position| chars[*position] == '>') {
+                let inner: String = chars[index + 1..end].iter().collect();
+                if looks_like_tag(&inner) {
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+        if ch == '*' || ch == '`' || ch == '_' {
+            let mut end = index;
+            while end < chars.len() && chars[end] == ch {
+                end += 1;
+            }
+            let run = end - index;
+            // A single underscore is a perfectly ordinary identifier character.
+            if (ch == '_' && run >= 2) || ch != '_' {
+                index = end;
+                continue;
+            }
+        }
+        out.push(ch);
+        index += 1;
+    }
+    out
+}
+
+fn looks_like_tag(inner: &str) -> bool {
+    let trimmed = inner.trim();
+    let name: String = trimmed
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphabetic() || *ch == '/' || *ch == '!' || *ch == '-')
+        .collect();
+    let name = name
+        .trim_start_matches('/')
+        .trim_start_matches('!')
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "p" | "div"
+            | "span"
+            | "br"
+            | "hr"
+            | "b"
+            | "i"
+            | "em"
+            | "strong"
+            | "code"
+            | "pre"
+            | "ul"
+            | "ol"
+            | "li"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "blockquote"
+            | "a"
+            | "img"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tr"
+            | "td"
+            | "th"
+            | "svg"
+            | "line"
+            | "rect"
+            | "ellipse"
+    )
 }
 
 /// Greedy word wrap with an optional indent applied to continuation lines.

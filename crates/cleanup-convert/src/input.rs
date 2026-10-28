@@ -9,7 +9,8 @@ use crate::{ConvertError, Result};
 use cleanup_core::FormatId;
 use cleanup_core::doc::{
     Align, Axis, Block, CalloutKind, Cell, ColumnSpec, Divider, Doc, Figure, ImageAsset, ImageKind,
-    Inline, InlineStyle, ListItem, PageSpec, ParagraphStyle, Row, SourceKind, Table, TableBorders,
+    Inline, InlineStyle, ListItem, PageBoundary, PageSpec, ParagraphStyle, Row, SourceKind, Table,
+    TableBorders,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
 use quick_xml::Reader;
@@ -18,7 +19,7 @@ use std::collections::BTreeMap;
 
 /// Build the IR for an already-decoded input document.
 pub(crate) fn build(from: FormatId, src: &[u8]) -> Result<(Doc, Vec<String>)> {
-    match from {
+    let (doc, warnings) = match from {
         FormatId::Markdown => markdown(src),
         FormatId::PlainText => plain_text(src),
         FormatId::Html => html(src),
@@ -28,7 +29,22 @@ pub(crate) fn build(from: FormatId, src: &[u8]) -> Result<(Doc, Vec<String>)> {
             from: "image",
             to: "document",
         }),
+    }?;
+    Ok((ensure_page_boundaries(doc), warnings))
+}
+
+/// Non-paginated readers still expose one explicit page boundary, so exporters and the
+/// furniture-zone filter can ask the same questions of every source format.
+fn ensure_page_boundaries(mut doc: Doc) -> Doc {
+    if doc.info.page_boundaries.is_empty() {
+        doc.info
+            .page_boundaries
+            .push(PageBoundary::new(0, doc.page.width, doc.page.height));
+        if doc.info.page_count == 0 {
+            doc.info.page_count = 1;
+        }
     }
+    doc
 }
 
 /// PDF: spatial reconstruction, then layout analysis.
@@ -1198,6 +1214,8 @@ fn embed_image(
                 data,
                 width_px: width,
                 height_px: height,
+                dpi_x: None,
+                dpi_y: None,
             });
             doc.blocks.push(Block::Figure(Figure {
                 asset: index,
@@ -1205,6 +1223,7 @@ fn embed_image(
                 caption: None,
                 alt: name,
                 display_size: None,
+                inline: true,
             }));
         }
         Err(_) => warnings.push(format!("DOCX media part `{part}` could not be read")),

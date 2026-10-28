@@ -21,14 +21,20 @@ pub struct Rendered {
     pub engine: &'static str,
 }
 
-/// Inline formatting flags that all three text exporters need.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Inline formatting flags that all text exporters need.
+///
+/// `color` and `link` are part of the run, not the block: a coloured or hyperlinked phrase must
+/// survive a split across source runs. `Clone` (rather than `Copy`) is the price of carrying the
+/// link target; the PDF layout engine clones a style per wrapped piece.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct RunStyle {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
     pub underline: bool,
     pub strike: bool,
+    pub color: Option<cleanup_core::doc::Rgb>,
+    pub link: Option<String>,
 }
 
 impl RunStyle {
@@ -39,6 +45,8 @@ impl RunStyle {
             code: style.code,
             underline: style.underline,
             strike: style.strike,
+            color: style.color,
+            link: style.link.clone(),
         }
     }
 }
