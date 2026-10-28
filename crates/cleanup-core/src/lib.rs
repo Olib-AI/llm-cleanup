@@ -6,6 +6,7 @@
 //! replacements into the original bytes. Everything outside the spans is byte-identical
 //! by construction, which is what makes "don't break formatting" provable rather than hoped-for.
 
+pub mod doc;
 pub mod error;
 pub mod ir;
 pub mod level;

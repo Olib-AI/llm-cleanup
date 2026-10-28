@@ -38,6 +38,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::ops::Range;
 
+mod layout;
+
+pub use layout::{PdfLayoutReport, extract_layout};
+
 pub struct Pdf;
 
 /// Generous-but-finite guard rails for untrusted files: a hostile PDF must not be
@@ -1967,6 +1971,8 @@ enum Operand {
     Name(String),
     Str(ContentString),
     Array(Vec<Operand>),
+    /// A numeric operand, kept as a value so the spatial reader can reconstruct matrices.
+    Num(f64),
     Other,
 }
 
@@ -2219,7 +2225,11 @@ impl<'a> ContentLexer<'a> {
                     .chars()
                     .all(|ch| ch.is_ascii_digit() || matches!(ch, '+' | '-' | '.'))
                     && token.chars().any(|ch| ch.is_ascii_digit());
-                if numeric || token == "true" || token == "false" || token == "null" {
+                if numeric {
+                    Some(ContentToken::Operand(Operand::Num(
+                        token.parse::<f64>().unwrap_or(0.0),
+                    )))
+                } else if token == "true" || token == "false" || token == "null" {
                     Some(ContentToken::Operand(Operand::Other))
                 } else {
                     Some(ContentToken::Operator(token))
@@ -3525,7 +3535,7 @@ mod tests {
     fn xref_streams_and_object_streams_are_resolved() {
         // Committed fixture: catalog/pages/page/font/info live in a Flate object
         // stream and the file is indexed by an xref stream (no trailer keyword).
-        let bytes = include_bytes!("../../../samples/pdf/xref_stream.pdf");
+        let bytes = include_bytes!("../../../../samples/pdf/xref_stream.pdf");
         assert_eq!(
             span_texts(bytes),
             ["\u{201C}Compressed\u{201D} \u{2013} objects\u{2026}"]

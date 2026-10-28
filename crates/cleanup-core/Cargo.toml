@@ -8,6 +8,8 @@ description = "Core IR, traits, pipeline, and byte-splice primitive for llm-clea
 
 [dependencies]
 serde = { workspace = true }
+# PNG encode/decode for extracted raster XObjects (pure Rust, no system libraries).
+flate2 = { workspace = true }
 thiserror = { workspace = true }
 unicode-segmentation = { workspace = true }
 
