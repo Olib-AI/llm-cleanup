@@ -40,6 +40,7 @@ import sys
 import textwrap
 
 from PIL import Image, ImageDraw
+import reportlab
 from reportlab import rl_config
 
 # ReportLab emits a creation date and a random document ID unless invariant mode is on. Both
@@ -74,11 +75,11 @@ FIXTURES = os.path.join(HERE, "tests", "fixtures")
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 REGULAR = os.path.join(FONT_DIR, "DejaVuSans.ttf")
 BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
-# Keep these aliases fixed: the committed corpus was generated with core-only
-# DejaVu fonts. Optional system packages must not change fixture bytes. Genuine
-# italic/bold-italic faces are exercised independently with base-14 fonts below.
-ITALIC = REGULAR
-BOLDITALIC = REGULAR
+# The pinned ReportLab wheel bundles genuine Bitstream Vera italic faces. Never alias an
+# italic fixture to regular: that makes the picture wrong while metadata tests still pass.
+REPORTLAB_FONTS = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
+ITALIC = os.path.join(REPORTLAB_FONTS, "VeraIt.ttf")
+BOLDITALIC = os.path.join(REPORTLAB_FONTS, "VeraBI.ttf")
 MONO = os.path.join(FONT_DIR, "DejaVuSansMono.ttf")
 MONO_BOLD = os.path.join(FONT_DIR, "DejaVuSansMono-Bold.ttf")
 
@@ -160,6 +161,8 @@ LOW_LEVEL_SENTINELS = [
     "Wide word spacing keeps letters intact",
     "Word gap from geometry alone",
     "Per glyph Tm tracking keeps words whole",
+    "Drop cap preserves the upper baseline",
+    "Nearby body line keeps words whole",
 ]
 
 
@@ -169,41 +172,18 @@ def register_fonts() -> None:
         ("Body", REGULAR),
         ("Body-Bold", BOLD),
         ("Mono", MONO),
+        ("Body-Italic", ITALIC),
+        ("Body-BoldItalic", BOLDITALIC),
+        ("Mono-Bold", MONO_BOLD),
     ]
-    # Optional italic variants
-    if os.path.exists(BOLD):
-        fonts_to_register.append(("Body-Bold", BOLD))
-    if os.path.exists(MONO_BOLD):
-        fonts_to_register.append(("Mono-Bold", MONO_BOLD))
-
     for name, path in fonts_to_register:
         if not os.path.exists(path):
-            raise SystemExit(f"missing font: {path} (install fonts-dejavu-core)")
-        try:
-            pdfmetrics.registerFont(TTFont(name, path))
-        except Exception:
-            pass  # already registered
+            raise SystemExit(f"missing font: {path} (install fonts-dejavu-core and pinned ReportLab)")
+        pdfmetrics.registerFont(TTFont(name, path))
 
-    # Try italic variants if available
-    for name, path in [("Body-Italic", ITALIC), ("Body-BoldItalic", BOLDITALIC)]:
-        if os.path.exists(path):
-            try:
-                pdfmetrics.registerFont(TTFont(name, path))
-            except Exception:
-                pass
-        else:
-            # Fallback: map italic to regular
-            try:
-                pdfmetrics.registerFont(TTFont(name, REGULAR))
-            except Exception:
-                pass
-
-    try:
-        pdfmetrics.registerFontFamily(
-            "Body", normal="Body", bold="Body-Bold", italic="Body-Italic", boldItalic="Body-BoldItalic"
-        )
-    except Exception:
-        pass
+    pdfmetrics.registerFontFamily(
+        "Body", normal="Body", bold="Body-Bold", italic="Body-Italic", boldItalic="Body-BoldItalic"
+    )
 
 
 def styles() -> dict[str, ParagraphStyle]:
@@ -280,7 +260,7 @@ RUNNING_HEADER = "QUARTERLY REVENUE \u2014 INTERNAL"
 RUNNING_FOOTER = "llm-cleanup fixture \u2022 confidential"
 
 
-def furniture(canvas, doc, *, rules: bool = False, cards: bool = False) -> None:
+def furniture(canvas, doc, *, rules: bool = False, cards: bool = False, rule_top: float | None = None) -> None:
     """Paint a repeated header/footer band, and optionally vector rules / tinted cards."""
     width, height = doc.pagesize
     canvas.saveState()
@@ -294,14 +274,15 @@ def furniture(canvas, doc, *, rules: bool = False, cards: bool = False) -> None:
         canvas.setLineWidth(0.8)
         canvas.setStrokeColor(colors.HexColor("#4A5568"))
         canvas.rect(0.7 * inch, 0.7 * inch, width - 1.4 * inch, height - 1.4 * inch)
+        top = height - 1.15 * inch if rule_top is None else rule_top
         canvas.setLineWidth(1.4)
-        canvas.line(0.7 * inch, height - 1.15 * inch, width - 0.7 * inch, height - 1.15 * inch)
-        canvas.line(width / 2, height - 1.2 * inch, width / 2, height - 2.4 * inch)
+        canvas.line(0.7 * inch, top, width - 0.7 * inch, top)
+        canvas.line(width / 2, top - 0.05 * inch, width / 2, top - 1.25 * inch)
         canvas.setLineWidth(1.0)
         canvas.setStrokeColor(colors.HexColor("#D9A400"))
         for index in range(6):
             x = 0.95 * inch + index * 0.62 * inch
-            canvas.line(x, height - 1.35 * inch, x + 0.42 * inch, height - 1.35 * inch)
+            canvas.line(x, top - 0.2 * inch, x + 0.42 * inch, top - 0.2 * inch)
 
     if cards:
         canvas.setFillColor(colors.HexColor("#FFF6DA"))
@@ -434,7 +415,7 @@ def low_level_operators(canvas, doc) -> None:
     canvas.drawText(text)
     y -= 16
 
-    # 7. Extreme per-glyph positioning: each glyph gets its own Tm and a 0.20em
+    # 7. Per-glyph positioning: each glyph gets its own Tm and a 0.08em
     #    positive gap. This is character tracking, not a series of word boundaries.
     #    The real words below are still separated by literal space glyphs.
     text = canvas.beginText(0.75 * inch, y)
@@ -446,6 +427,16 @@ def low_level_operators(canvas, doc) -> None:
         text.textOut(char)
         pen += pdfmetrics.stringWidth(char, "Body", 10) + tracking
     canvas.drawText(text)
+    y -= 44
+
+    # 8. A large initial shares a baseline with 10pt body text, but must not swallow
+    #    the next line into its much wider baseline tolerance and interleave glyphs.
+    canvas.setFont("Body", 36)
+    canvas.drawString(0.75 * inch, y, "D")
+    pen = 0.75 * inch + pdfmetrics.stringWidth("D", "Body", 36)
+    canvas.setFont("Body", 10)
+    canvas.drawString(pen, y, LOW_LEVEL_SENTINELS[7][1:])
+    canvas.drawString(pen, y - 12, LOW_LEVEL_SENTINELS[8])
     canvas.restoreState()
 
 
@@ -898,11 +889,12 @@ def rich_media_and_symbols(path: str) -> None:
             s["body"],
         ),
     ]
+    story.append(PageBreak())
     story.append(KeepTogether(code_block))
 
-    # Page 2 with inline/wrapped media + vector rules
+    # Page 3 with inline/wrapped media; leave enough room to keep vector prose with its heading
     story.append(PageBreak())
-    story.append(Spacer(1, 4.95 * inch))
+    story.append(Spacer(1, 0.5 * inch))
     story.append(Paragraph("Inline and wrapped media", s["h1"]))
     story.append(side_by_side)
     story.append(Spacer(1, 12))
@@ -920,7 +912,11 @@ def rich_media_and_symbols(path: str) -> None:
     story.append(Paragraph("Math: \u2211<sub>i=1</sub><sup>n</sup> x<sub>i</sub> \u2248 n\u00b7\u03bc \u00b1 3\u03c3, \u222b<sub>0</sub><sup>\u221e</sup> e<sup>-x</sup> dx = 1", s["body"]))
 
     def decorated_page(canv, doc):
-        furniture(canv, doc, rules=(doc.page == 2), cards=(doc.page == 2))
+        # The vector test lives below the cards, not through the code's letters.
+        furniture(
+            canv, doc, rules=(doc.page == 2), cards=(doc.page == 2),
+            rule_top=doc.pagesize[1] - 6.0 * inch,
+        )
 
     build(
         path, story, pagesize=LETTER, margin=0.75 * inch,

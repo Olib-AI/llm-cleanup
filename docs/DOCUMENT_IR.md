@@ -198,7 +198,9 @@ covers all three: its third page is drawn with raw `TJ` arrays, `Tc`/`Tw` regist
 compare without modifying committed files. The checked-in corpus was generated with Debian
 `fonts-dejavu-core` 2.37-6 (regular, bold, mono and mono-bold). Different font versions can
 change the PDFs; optional system italic fonts are intentionally not used by the generator.
-The typography fixture draws genuine base-14 bold/oblique faces independently of them.
+Embedded italic/bold-italic use the genuine Bitstream Vera faces bundled in the pinned
+ReportLab wheel, not aliases for regular DejaVu. The typography fixture additionally draws
+genuine base-14 bold/oblique faces. CI regenerates and byte-compares the corpus and manifest.
 The PDFs and ground-truth manifest are committed, so `cargo test` needs no
 Python or network access:
 
@@ -215,3 +217,43 @@ validity, Unicode integrity, anchor stability after cleaning, native PDF byte-sp
 preservation, and that all five fixtures convert to all four targets.
 `crates/cleanup-convert/tests/exporter_units.rs` builds a synthetic IR to cover hyperlinks,
 underline/strike, RGB runs, VML shapes, PDF `/URI` annotations and sanitizer edge cases.
+
+## 0.3.5 follow-up audit and visual review (2026-10-28)
+
+The native `Pdf::parse` byte-splice path is intentionally not the conversion reader:
+`cleanup-convert` uses `pdf::extract_layout` → `doc::cluster` → `doc::analyze`. Font metrics
+and styles survive in `Glyph`/`TextRun`; exporters consume the resulting structured blocks.
+Do not feed `ProseSpan` streaming text into conversion or insert whitespace per `Tj` operand.
+
+One remaining corruption happened **before** word-gap detection. The glyph clusterer's
+`0.35 × max(font sizes)` baseline bucket could absorb a second body line below a large
+initial. Sorting that bucket by x then interleaved the two lines' individual letters.
+Clustering now uses `max(0.4pt, 0.05 × min(font sizes))`: tolerate coordinate rounding,
+not a neighbouring baseline. Mixed sizes on an actual shared baseline still cluster;
+visual line/superscript grouping remains the analyser's separate responsibility.
+Unit regressions cover close baselines and large initials, and the real PDF adds a 36pt
+initial with two 10pt body baselines. Both sentences are checked through the exporters.
+
+Visual inspection used independent MuPDF rasterization, not the application's extractor.
+All pages of the five requested canonical fixtures were rendered and inspected; changed
+pages were re-rendered at 1.2× after correction:
+
+* **Typography (3 pages):** genuine embedded italic/bold-italic are now visibly slanted;
+  tracking/TJ/Tm lines remain inside margins; the large initial and next baseline are distinct.
+* **Tables (4 pages):** borders, repeating headers, alternating fills, numeric alignment,
+  merged roll-up cells and multi-line totals are legible. The primary table spans three pages;
+  the independent roll-up occupies page four.
+* **Rich media (now 3 pages):** explicit code-page break; move the vector test below the
+  coloured cards so no rule strikes through text; reduce the unnecessary inline-media
+  spacer so the vector heading and its prose no longer straddle an almost-empty fourth page.
+  Regression assertions check four raster placements/dimensions, page bounds, and absence
+  of rule/text intersections in this fixture.
+* **Newsletter (4 pages):** two-/three-column bodies, full-width banners, callout and endnotes
+  fit within margins without overlap or clipping.
+* **AI samples (1 page):** disclaimer, content headings and literal code are readable, with
+  no overflow. Boilerplate is intentional test input, not a fixture-generation defect.
+
+Rendering images are review artifacts, not checked-in golden screenshots. PDF bytes and the
+manifest remain reproducible via `python3 scripts/generate_fixtures.py --verify`.
+The existing reader still reports unsupported features (e.g. image transparency masks and
+ICC colour-management approximation); this follow-up does not claim full PDF conformance.

@@ -68,7 +68,9 @@
         "Per glyph Tm positioning still forms words",
         "Wide word spacing keeps letters intact",
         "Word gap from geometry alone",
-        "Per glyph Tm tracking keeps words whole"
+        "Per glyph Tm tracking keeps words whole",
+        "Drop cap preserves the upper baseline",
+        "Nearby body line keeps words whole"
       ],
       "pages_min": 3,
       "sentinels": [

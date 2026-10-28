@@ -22,6 +22,22 @@ permissions:
   contents: read
 
 jobs:
+  fixtures:
+    name: Reproducible PDF fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install fixture fonts and generator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-dejavu-core
+          python -m pip install -r scripts/fixture-requirements.txt
+      - name: Verify committed PDFs and ground truth
+        run: python scripts/generate_fixtures.py --verify
+
   lint-and-test:
     name: Lint & test
     runs-on: ubuntu-latest
