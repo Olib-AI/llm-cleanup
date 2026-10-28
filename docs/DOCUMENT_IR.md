@@ -87,6 +87,25 @@ Key invariants:
 | `cleanup-convert/src/export/{markdown,text,docx,pdf}.rs` | One renderer per target; each is `&Doc → Rendered`. |
 | `cleanup-convert/src/lib.rs` | `convert_document` wires reader → sanitizer → exporter and returns bytes, side-car assets and a report. |
 
+## Reading-order and grid heuristics worth remembering
+
+* **A baseline is not always one line.** Runs that share a baseline are merged only while the
+  horizontal gap stays under ~1.6 em; a wider gap is a column gutter, and merging across it is
+  exactly how two-column pages used to interleave.
+* **Columnar lines group by band, not by row.** Full-width lines (banners, section breaks) cut the
+  page into bands; inside a band every columnar line is assigned to a gutter-derived span and the
+  bands render as `Block::Columns`. Grouping row-by-row produced one `Columns` block per visual
+  row, which linearised as left-right-left-right.
+* **A rule grid may be open.** Tables drawn without a closing border stop short of their own text,
+  so the column grid is extended over the words it contains; presence checks for inner rules are
+  clipped to the ruled area, otherwise the last column would merge every row into one tall cell.
+* **Disclaimers count anywhere in a block.** Leading-sentence trimming is not enough: readers merge
+  wrap-adjacent paragraphs, so `DISCLAIMER_SENTENCES` are also removed from the middle of a
+  multi-sentence block (never when the sentence is the block's only one).
+* **DOCX stores images on empty elements.** `<a:blip r:embed="rId3"/>` is self-closing, so the
+  reader has to inspect `Event::Empty` as well as `Event::Start` or every picture vanishes on the
+  round trip.
+
 ## Fixtures and tests
 
 `scripts/generate_fixtures.py` writes five deterministic PDFs into
