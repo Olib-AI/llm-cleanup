@@ -559,7 +559,10 @@ fn font_subset_prefix_is_stripped() {
     assert_eq!(&raw[7..], "Helvetica-Bold");
     // Non-subset name should pass through
     assert_eq!("Helvetica", "Helvetica");
-    assert_eq!("Helvetica", "ABCDEF+Helvetica".split('+').next_back().unwrap());
+    assert_eq!(
+        "Helvetica",
+        "ABCDEF+Helvetica".split('+').next_back().unwrap()
+    );
     // 7-char prefix is not a subset tag (must be exactly 6 uppercase)
     assert_eq!(
         "ABCDEF+Helvetica".len(),
