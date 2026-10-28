@@ -289,8 +289,21 @@ fn render_html_table(
             out.push_str("  </colgroup>\n");
         }
     }
-    if table.headers.iter().any(|row| !row.cells.is_empty()) {
+    // HTML row spans cannot cross from a thead into a tbody. Keep crossing
+    // header cells and their body continuations in one row group; they remain
+    // semantic <th> cells even though the table cannot use a separate <thead>.
+    let crosses_header = table.headers.iter().enumerate().any(|(index, row)| {
+        row.cells
+            .iter()
+            .any(|cell| cell.rowspan > table.headers.len() - index)
+    });
+    let has_headers = table.headers.iter().any(|row| !row.cells.is_empty());
+    if crosses_header {
+        out.push_str("  <tbody>\n");
+    } else if has_headers {
         out.push_str("  <thead>\n");
+    }
+    if has_headers {
         for row in &table.headers {
             out.push_str("    <tr>\n");
             for cell in &row.cells {
@@ -298,9 +311,13 @@ fn render_html_table(
             }
             out.push_str("    </tr>\n");
         }
+    }
+    if !crosses_header && has_headers {
         out.push_str("  </thead>\n");
     }
-    out.push_str("  <tbody>\n");
+    if !crosses_header {
+        out.push_str("  <tbody>\n");
+    }
     for row in &table.rows {
         out.push_str("    <tr>\n");
         for cell in &row.cells {

@@ -363,7 +363,6 @@ pub fn base_metrics(family: &str, mono: bool) -> (f32, f32, f32) {
 
 /// Base-14 AFM widths in 1/1000 em, indexed by WinAnsi character code.
 /// Zero means no corresponding glyph. Oblique Helvetica shares its upright metrics.
-
 const HELVETICA_WIDTHS: [u16; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,

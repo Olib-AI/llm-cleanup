@@ -300,6 +300,45 @@ fn markdown_tables_keep_inline_styles_multiline_cells_and_images() {
 }
 
 #[test]
+fn html_table_keeps_header_rowspans_within_one_row_group() {
+    let mut doc = Doc::new(PageSpec::default());
+    let mut spanning = Cell::paragraph("Period");
+    spanning.rowspan = 2;
+    let table = Table {
+        columns: vec![
+            ColumnSpec {
+                width: 1.0,
+                align: Align::Left,
+            },
+            ColumnSpec {
+                width: 1.0,
+                align: Align::Left,
+            },
+        ],
+        headers: vec![Row {
+            cells: vec![spanning, Cell::paragraph("Header")],
+            header: true,
+            fill: None,
+        }],
+        rows: vec![Row {
+            cells: vec![Cell::paragraph("Body")],
+            header: false,
+            fill: None,
+        }],
+        ..Table::default()
+    };
+    doc.blocks.push(Block::Table(table));
+    let rendered = string(markdown::render(&doc).bytes);
+    assert!(!rendered.contains("<thead>"), "{rendered}");
+    assert!(rendered.contains("<tbody>"), "{rendered}");
+    assert!(
+        rendered.contains("<th rowspan=\"2\">Period</th>"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("<td>Body</td>"), "{rendered}");
+}
+
+#[test]
 fn text_output_has_no_orphaned_markup_but_keeps_code() {
     let doc = styled_doc();
     let plain = string(text::render(&doc).bytes);
