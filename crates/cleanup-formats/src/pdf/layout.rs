@@ -443,7 +443,13 @@ impl FontInfo {
     /// small width error would move all subsequent text. Only explicit PDF
     /// widths/defaults or the exact, unembedded standard 14 face are safe.
     pub(super) fn positioning_width_em(&self, code: u32) -> Option<f32> {
-        self.metrics.declared(code)
+        let index = i64::from(code) - i64::from(self.metrics.first_char);
+        if index >= 0 && (index as usize) < self.metrics.widths.len() {
+            // An explicitly listed but unreadable width is not the same as an
+            // omitted glyph: don't silently substitute MissingWidth for it.
+            return self.metrics.widths[index as usize].map(|width| width / 1000.0);
+        }
+        self.metrics.cid_widths.get(&code).copied()
             .or(self.metrics.default_width)
             .map(|width| width / 1000.0)
             .or_else(|| if self.native_base14 { self.known_width_em(code) } else { None })
@@ -602,10 +608,15 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
         "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" |
         "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique"
     );
+    let safe_cid_mapping = if is_cid {
+        encoding == Some("Identity-H") && profile.code_len == 2
+    } else {
+        profile.code_len == 1
+    };
     FontInfo {
         profile,
         vertical: encoding.is_some_and(|name| name.ends_with("-V")),
-        safe_cid_mapping: !is_cid || encoding == Some("Identity-H"),
+        safe_cid_mapping,
         native_base14,
         metrics,
         canonical,
@@ -661,7 +672,7 @@ fn font_metrics(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontMetrics {
         })
     {
         for item in &widths {
-            metrics.widths.push(as_f32(item));
+            metrics.widths.push(as_f32(pdf.resolve(item)));
         }
     }
     if metrics.default_width.is_none() {

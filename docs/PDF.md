@@ -55,10 +55,11 @@ Reported at every level, and scrubbed at **Aggressive**:
 - **Text in fonts without a usable Unicode map** (e.g. a CID font with no `ToUnicode`)
   is reported (`container.pdf-undecodable-text`) and left untouched.
 - **Some edits cannot be positioned safely.** If a replacement glyph is missing, a font
-  width is unavailable, an edit splits a multi-character glyph, or text uses vertical or
-  non-Identity CID positioning, native editing returns an error rather than emitting a
-  potentially shifted result. Exact built-in metrics are used only for unembedded base-14
-  fonts; metric-compatible aliases are insufficient to guarantee native positions.
+  width is unavailable, an edit splits a multi-character glyph, spacing or font resources
+  are ambiguously inherited across streams/forms, or text uses vertical or non-Identity CID
+  positioning, native editing returns an error rather than emitting a potentially shifted
+  result. Exact built-in metrics are used only for unembedded base-14 fonts; compatible font
+  aliases are insufficient to guarantee native positions.
 - **Unsupported stream filters** (e.g. `LZWDecode`, `JBIG2Decode`, `JPXDecode` content)
   leave the affected stream untouched.
 - **Digital signatures** are reported: any cleaned copy necessarily stops validating.

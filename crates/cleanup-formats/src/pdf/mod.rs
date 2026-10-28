@@ -1784,6 +1784,11 @@ struct StreamCtx {
     reference: Ref,
     decoded: Vec<u8>,
     fonts: BTreeMap<String, FontInfo>,
+    /// Only the first content stream of an unshared page starts with PDF's
+    /// default text spacing. Forms and subsequent streams inherit graphics state.
+    known_initial_text: bool,
+    /// Form fonts supplied by the form itself; `None` means all page fonts.
+    safe_fonts: Option<BTreeSet<String>>,
     base: usize,
 }
 
@@ -1791,8 +1796,8 @@ struct StreamCtx {
 struct CleanupTextState {
     font: Option<String>,
     font_size: Option<f64>,
-    char_spacing: f64,
-    word_spacing: f64,
+    char_spacing: Option<f64>,
+    word_spacing: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1899,8 +1904,16 @@ fn push_content_stream(
     seen: &mut BTreeSet<Ref>,
     reference: Ref,
     fonts: BTreeMap<String, FontInfo>,
+    known_initial_text: bool,
+    safe_fonts: Option<BTreeSet<String>>,
 ) {
     if !seen.insert(reference) {
+        // The same stream can inherit different resources or graphics state in
+        // different contexts. Do not pretend one invocation proves all others.
+        if let Some(existing) = streams.iter_mut().find(|stream| stream.reference == reference) {
+            existing.known_initial_text = false;
+            existing.safe_fonts = Some(BTreeSet::new());
+        }
         return;
     }
     if let Some(Ok(decoded)) = pdf.decoded_stream(reference) {
@@ -1908,6 +1921,8 @@ fn push_content_stream(
             reference,
             decoded,
             fonts,
+            known_initial_text,
+            safe_fonts,
             base: 0,
         });
     }
@@ -1951,11 +1966,13 @@ fn collect_form_streams(
             continue;
         }
         let own_resources = dict_get(&dict, "Resources").cloned();
+        let own_fonts = fonts_for_resources(pdf, own_resources.as_ref());
+        let safe_fonts = own_fonts.keys().cloned().collect();
         let mut fonts = inherited_fonts.clone();
-        for (name, profile) in fonts_for_resources(pdf, own_resources.as_ref()) {
+        for (name, profile) in own_fonts {
             fonts.insert(name, profile);
         }
-        push_content_stream(pdf, streams, seen, reference, fonts.clone());
+        push_content_stream(pdf, streams, seen, reference, fonts.clone(), false, Some(safe_fonts));
         collect_form_streams(
             pdf,
             own_resources.as_ref().or(Some(resources)),
@@ -2387,7 +2404,11 @@ fn tokenize_stream(
     let fonts = &ctx.fonts;
     let mut lexer = ContentLexer::new(&ctx.decoded);
     let mut operands: Vec<Operand> = Vec::new();
-    let mut state = CleanupTextState::default();
+    let mut state = CleanupTextState {
+        char_spacing: ctx.known_initial_text.then_some(0.0),
+        word_spacing: ctx.known_initial_text.then_some(0.0),
+        ..CleanupTextState::default()
+    };
     let mut stack: Vec<CleanupTextState> = Vec::new();
     let mut segments: Vec<SegmentInfo> = Vec::new();
 
@@ -2408,12 +2429,12 @@ fn tokenize_stream(
                     }
                     "Tc" => {
                         if let Some(Operand::Num(value)) = operands.last() {
-                            state.char_spacing = *value;
+                            state.char_spacing = Some(*value);
                         }
                     }
                     "Tw" => {
                         if let Some(Operand::Num(value)) = operands.last() {
-                            state.word_spacing = *value;
+                            state.word_spacing = Some(*value);
                         }
                     }
                     "Tj" | "'" => {
@@ -2436,8 +2457,8 @@ fn tokenize_stream(
                         if let (Some(Operand::Num(word)), Some(Operand::Num(character))) =
                             (operands.first(), operands.get(1))
                         {
-                            state.word_spacing = *word;
-                            state.char_spacing = *character;
+                            state.word_spacing = Some(*word);
+                            state.char_spacing = Some(*character);
                         }
                         let operation = ShowOperation::NextLineWithSpacing { operator_end: lexer.pos };
                         if let Some(Operand::Str(string)) = operands.into_iter().last()
@@ -2466,11 +2487,18 @@ fn tokenize_stream(
                         operands = Vec::new();
                         continue;
                     }
+                    // An ExtGState can set /Font without a Tf. Without
+                    // interpreting its resources the active font is unknown.
+                    "gs" => {
+                        state.font = None;
+                        state.font_size = None;
+                    }
                     "q" => stack.push(state.clone()),
                     "Q" => {
-                        if let Some(previous) = stack.pop() {
-                            state = previous;
-                        }
+                        // A matching q may live in a previous content stream.
+                        // If it is not in our local stack, its restored state
+                        // is unknown rather than whatever happened locally.
+                        state = stack.pop().unwrap_or_default();
                     }
                     _ => {}
                 }
@@ -2503,13 +2531,15 @@ fn derive_pdf(bytes: &[u8]) -> Result<DerivedPdf> {
     let mut streams: Vec<StreamCtx> = Vec::new();
     let mut seen: BTreeSet<Ref> = BTreeSet::new();
     for page in &pages {
-        for &reference in &page.content_refs {
+        for (index, &reference) in page.content_refs.iter().enumerate() {
             push_content_stream(
                 &parsed,
                 &mut streams,
                 &mut seen,
                 reference,
                 page.fonts.clone(),
+                index == 0,
+                None,
             );
         }
     }
@@ -2836,28 +2866,56 @@ fn encode_replacement(profile: &FontProfile, replacement: &str) -> Option<Vec<u8
     Some(encoded)
 }
 
-/// Text-space advance measured in thousandths of an em. The horizontal scaling
-/// register cancels out: both a glyph advance and a TJ displacement use Tz.
-fn advance_units(font: &FontInfo, state: &CleanupTextState, codes: &[u32]) -> Result<f64> {
+/// Difference in text-space advance, in thousandths of an em. Tz cancels out
+/// because it affects glyph advances and TJ displacements equally. Unknown
+/// inherited spacing is harmless only when the number of affected glyphs or
+/// space codes respectively does not change.
+fn adjustment_units(
+    font: &FontInfo,
+    state: &CleanupTextState,
+    original: &[u32],
+    replacement: &[u32],
+) -> Result<f64> {
     let size = state.font_size.filter(|size| size.is_finite() && size.abs() > 0.00001)
         .ok_or_else(|| CoreError::Encoding("PDF text has no usable font size; cannot preserve its position".to_string()))?;
-    if font.vertical || !font.safe_cid_mapping || !state.char_spacing.is_finite() || !state.word_spacing.is_finite() {
+    if font.vertical || !font.safe_cid_mapping
+        || state.char_spacing.is_some_and(|value| !value.is_finite())
+        || state.word_spacing.is_some_and(|value| !value.is_finite())
+    {
         return Err(CoreError::Encoding("vertical, non-Identity CID or invalid PDF text spacing cannot be edited safely".to_string()));
     }
-    let mut advance = 0.0;
-    for code in codes {
-        let width = font.positioning_width_em(*code).ok_or_else(|| {
-            CoreError::Encoding(format!("missing PDF font width for glyph {code}; cannot preserve text positions"))
-        })?;
-        advance += f64::from(width) * 1000.0 + state.char_spacing * 1000.0 / size;
-        if font.profile.code_len == 1 && *code == 32 {
-            advance += state.word_spacing * 1000.0 / size;
+    let width = |codes: &[u32]| -> Result<f64> {
+        let mut total = 0.0;
+        for code in codes {
+            let glyph = font.positioning_width_em(*code).ok_or_else(|| {
+                CoreError::Encoding(format!("missing PDF font width for glyph {code}; cannot preserve text positions"))
+            })?;
+            total += f64::from(glyph) * 1000.0;
+        }
+        Ok(total)
+    };
+    let mut adjustment = width(replacement)? - width(original)?;
+    let glyph_delta = replacement.len() as f64 - original.len() as f64;
+    if glyph_delta != 0.0 {
+        let spacing = state.char_spacing.ok_or_else(|| CoreError::Encoding(
+            "inherited PDF character spacing is unknown; cannot preserve text positions".to_string()
+        ))?;
+        adjustment += glyph_delta * spacing * 1000.0 / size;
+    }
+    if font.profile.code_len == 1 {
+        let spaces = |codes: &[u32]| codes.iter().filter(|code| **code == 32).count() as f64;
+        let space_delta = spaces(replacement) - spaces(original);
+        if space_delta != 0.0 {
+            let spacing = state.word_spacing.ok_or_else(|| CoreError::Encoding(
+                "inherited PDF word spacing is unknown; cannot preserve text positions".to_string()
+            ))?;
+            adjustment += space_delta * spacing * 1000.0 / size;
         }
     }
-    if !advance.is_finite() || advance.abs() > 1_000_000_000.0 {
+    if !adjustment.is_finite() || adjustment.abs() > 1_000_000_000.0 {
         return Err(CoreError::Encoding("PDF text advance is outside the safe range".to_string()));
     }
-    Ok(advance)
+    Ok(adjustment)
 }
 
 fn positioned_change(
@@ -2877,12 +2935,11 @@ fn positioned_change(
     })?;
     let replacement_codes: Vec<u32> = encoded.chunks(font.profile.code_len.max(1))
         .map(hex_bytes_to_u32).collect();
-    let before = advance_units(font, &segment.state, &original)?;
-    let after = advance_units(font, &segment.state, &replacement_codes)?;
+    let adjustment = adjustment_units(font, &segment.state, &original, &replacement_codes)?;
     Ok(PositionedChange {
         encoded_range: segment.codes[first].encoded.start..segment.codes[last].encoded.end,
         replacement: encoded,
-        adjustment: after - before,
+        adjustment,
     })
 }
 
@@ -3269,6 +3326,9 @@ impl Format for Pdf {
                 }
                 let stream = derived.streams.get(segment.stream_index)
                     .ok_or_else(|| CoreError::SelfCheck("missing PDF content stream".to_string()))?;
+                if stream.safe_fonts.as_ref().is_some_and(|fonts| !fonts.contains(&segment.font_name)) {
+                    return Err(CoreError::Encoding("PDF stream uses an inherited or ambiguous font resource; cannot preserve text positions".to_string()));
+                }
                 let font = stream.fonts.get(&segment.font_name)
                     .ok_or_else(|| CoreError::Encoding("missing PDF font; cannot preserve text positions".to_string()))?;
                 let replacement = if first { edit.replacement.as_str() } else { "" };
@@ -3334,6 +3394,8 @@ impl Format for Pdf {
                 reference: stream.reference,
                 decoded: restore_position_templates(&stream.decoded),
                 fonts: stream.fonts.clone(),
+                known_initial_text: stream.known_initial_text,
+                safe_fonts: stream.safe_fonts.clone(),
                 base: 0,
             };
             let streams = [normalized];
@@ -3701,6 +3763,34 @@ mod tests {
     }
 
     #[test]
+    fn native_edits_reject_unknown_spacing_in_later_content_streams() {
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents [4 0 R 5 0 R] >>".to_vec(),
+            stream_body("", b"BT 3 Tc 4 Tw ET", false),
+            stream_body("", b"BT /F1 12 Tf 40 700 Td (A REMOVE Z) Tj ET", false),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
+        ];
+        let bytes = assemble_pdf(&objects, 1, None);
+        let doc = Pdf.parse(&bytes).unwrap();
+        let start = doc.spans[0].text.find("REMOVE").unwrap();
+        let edit = |replacement: &str| EditSet { edits: vec![Edit {
+            span_index: 0, range: start..start + 6, replacement: replacement.to_string(), rule_id: "test".to_string()
+        }] };
+        let error = Pdf.render(&doc, &edit("")).unwrap_err();
+        assert!(error.to_string().contains("inherited PDF character spacing"), "{error}");
+        // Equal glyph/space counts cancel the unknown inherited spacing exactly.
+        let out = Pdf.render(&doc, &edit("CHANGE")).unwrap();
+        let before = extract_layout(&bytes).unwrap();
+        let after = extract_layout(&out).unwrap();
+        let z1 = before.layout.pages[0].runs.iter().find(|run| run.text == "Z").unwrap();
+        let z2 = after.layout.pages[0].runs.iter().find(|run| run.text == "Z").unwrap();
+        assert!((z1.rect.x - z2.rect.x).abs() < 0.002);
+        assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap());
+    }
+
+    #[test]
     fn native_edit_rejects_unknown_widths_and_partial_ligature_edits() {
         let make = |font: &[u8], content: &[u8], cmap: Option<&[u8]>| {
             let mut objects = vec![
@@ -3716,6 +3806,9 @@ mod tests {
         let doc = Pdf.parse(&unknown).unwrap();
         let edit = |range| EditSet { edits: vec![Edit { span_index: 0, range, replacement: "x".to_string(), rule_id: "test".to_string() }] };
         assert!(Pdf.render(&doc, &edit(0..1)).unwrap_err().to_string().contains("width"));
+        let alias = make(b"<< /Type /Font /Subtype /TrueType /BaseFont /ArialMT /Encoding /WinAnsiEncoding >>", b"BT /F1 12 Tf (abc) Tj ET", None);
+        let alias_doc = Pdf.parse(&alias).unwrap();
+        assert!(Pdf.render(&alias_doc, &edit(0..1)).unwrap_err().to_string().contains("width"), "metric-compatible aliases must not be used as exact widths");
         let cmap = b"1 beginbfchar\n<41> <00660069>\nendbfchar\n";
         let ligature = make(b"<< /Type /Font /Subtype /TrueType /BaseFont /Custom /ToUnicode 6 0 R >>", b"BT /F1 12 Tf (A) Tj ET", Some(cmap));
         let doc = Pdf.parse(&ligature).unwrap();
