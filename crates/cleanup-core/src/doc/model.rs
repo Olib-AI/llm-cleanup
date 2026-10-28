@@ -169,7 +169,51 @@ impl Rgb {
 // Raw geometry recovered from a page
 // ---------------------------------------------------------------------------
 
-/// One text-showing run recovered from a page, with its font metadata.
+/// One positioned glyph cell as the content stream drew it.
+///
+/// This is the rawest text layer: every `Tj`/`TJ` element expands into glyphs here, with the
+/// advance the font gives the glyph (including `Tc`, `Tw`, `Tz` and the `TJ` displacement),
+/// its exact baseline, and the style its font dictionary declares. Nothing is joined and no
+/// spaces are invented at this layer — [`super::cluster`] is the only thing that turns glyphs
+/// into words, and it does so from geometry and font metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Glyph {
+    /// The character(s) this code maps to through the font's `ToUnicode`/`Differences` map.
+    pub text: String,
+    /// Advance box of the glyph in top-left-origin page space (width = advance, not ink).
+    pub rect: Rect,
+    /// Baseline y in page space. Two glyphs share a line only when their baselines agree.
+    pub baseline: f32,
+    /// Advance of the font's space character at this size, in points. Drives the
+    /// word-break threshold, so a font with a narrow space (`0.20em`) still breaks words.
+    pub space_width: f32,
+    /// Nominal font size in points (after the text matrix scale).
+    pub font_size: f32,
+    /// PostScript base font name with any subset tag stripped.
+    pub font_name: String,
+    /// Human family name (`Helvetica`, `DejaVuSans`), alias-folded.
+    pub font_family: String,
+    /// Weight in the `100..=900` scale.
+    pub font_weight: u16,
+    pub bold: bool,
+    pub italic: bool,
+    pub mono: bool,
+    pub color: Rgb,
+}
+
+impl Glyph {
+    /// True when this glyph exists only to advance the pen (a space or a blank filler).
+    pub fn is_blank(&self) -> bool {
+        self.text.trim().is_empty()
+    }
+}
+
+/// One reconstructed word recovered from a page, with its font metadata.
+///
+/// A word — never a glyph and never a whole line. Keeping words (rather than characters or
+/// lines) is what makes the IR immune to the classic "t h i s   i s" corruption: the reader
+/// decides word boundaries once, from geometry, and every consumer downstream only ever sees
+/// whole words plus the geometry needed to re-insert the gaps between them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextRun {
     pub text: String,
@@ -177,18 +221,55 @@ pub struct TextRun {
     pub rect: Rect,
     /// Nominal font size in points.
     pub font_size: f32,
-    /// PostScript base font name, e.g. `Inter` or `ABCDEF+SourceCodePro`.
+    /// PostScript base font name, e.g. `Inter` or `SourceCodePro` (subset tag stripped).
     pub font_name: String,
+    /// Human family name, e.g. `Helvetica`. Alias-folded through the fallback map.
+    pub font_family: String,
+    /// Weight in the `100..=900` scale, from `/FontDescriptor` or the font name.
+    pub font_weight: u16,
     pub bold: bool,
     pub italic: bool,
     pub mono: bool,
     pub color: Rgb,
+    /// Baseline y in page space. Exact when the reader knows it; otherwise derived from the
+    /// box. Line grouping compares baselines, not box centres, so mixed font sizes on one
+    /// baseline stay on one line and two lines never merge because their boxes happen to
+    /// straddle the same centre.
+    pub baseline: f32,
+    /// Advance of a space in this font at this size, in points.
+    pub space_width: f32,
 }
 
 impl TextRun {
-    /// Baseline y in page space, approximated from the ink box.
+    /// Build a run from a font name alone, filling every style field from the name map.
+    ///
+    /// Tests and non-PDF readers use this so that "made up" runs still carry a consistent
+    /// family/weight/bold triple instead of four fields that disagree with each other.
+    pub fn new(text: impl Into<String>, rect: Rect, font_size: f32, font_name: &str) -> TextRun {
+        let name = super::fontmap::canonical_name(font_name);
+        let family = super::fontmap::family(&name);
+        let mono = super::fontmap::name_is_mono(&name);
+        let (ascent, _descent, space) = super::fontmap::base_metrics(&family, mono);
+        let weight = super::fontmap::weight_from_name(&name).unwrap_or(400);
+        TextRun {
+            text: text.into(),
+            rect,
+            font_size,
+            font_family: family,
+            font_weight: weight,
+            bold: weight >= 700,
+            italic: super::fontmap::name_is_italic(&name),
+            mono,
+            color: Rgb::BLACK,
+            baseline: rect.y + font_size * ascent,
+            space_width: (font_size * space).max(0.5),
+            font_name: name,
+        }
+    }
+
+    /// Baseline y in page space.
     pub fn baseline_y(&self) -> f32 {
-        self.rect.y + self.font_size * 0.8
+        self.baseline
     }
 
     pub fn is_blank(&self) -> bool {
@@ -408,7 +489,7 @@ impl Anchor {
 /// an inline `<span>`, DOCX a `w:color`, and the PDF renderer an `rg` fill operator. Keeping it
 /// in the IR (instead of re-reading the source at export time) is why coloured runs survive a
 /// PDF → DOCX → PDF round trip.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct InlineStyle {
     pub bold: bool,
     pub italic: bool,
@@ -417,6 +498,14 @@ pub struct InlineStyle {
     pub strike: bool,
     pub link: Option<String>,
     pub color: Option<Rgb>,
+    /// Source font family, when the reader knows it. Exporters that can carry a font
+    /// (`w:rFonts`, CSS `font-family`) map it straight through instead of substituting.
+    pub font_family: Option<String>,
+    /// Source weight in the `100..=900` scale, when the reader knows it. `bold` stays the
+    /// binary emphasis flag; the weight keeps `Medium`, `SemiBold` and `Black` distinguishable.
+    pub font_weight: Option<u16>,
+    /// Source size in points, when the reader knows it. DOCX maps it to `w:sz` (half-points).
+    pub size_pt: Option<f32>,
 }
 
 impl InlineStyle {
@@ -450,6 +539,8 @@ impl InlineStyle {
         self
     }
 
+    /// True when the run carries no *emphasis*. Font metadata is deliberately ignored: a run
+    /// that merely records "this was set in Helvetica at 11pt" is still plain prose.
     pub fn is_plain(&self) -> bool {
         !self.bold
             && !self.italic

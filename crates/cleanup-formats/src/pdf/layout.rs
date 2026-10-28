@@ -1,4 +1,4 @@
-//! Spatial reconstruction: PDF page content → positioned runs, rules, fills and images.
+//! Spatial reconstruction: PDF page content → glyphs, words, rules, fills and images.
 //!
 //! The lossless cleaner in the parent module reads text showing operators only, because it
 //! splices prose back into the same operands and never needs to know where anything is drawn.
@@ -7,8 +7,10 @@
 //! graphics state:
 //!
 //! * `q`/`Q`/`cm` maintain the CTM; `BT`/`ET`/`Tm`/`Td`/`TD`/`T*`/`TL` maintain the text
-//!   matrices, and every `Tj`/`TJ`/`'`/`"` produces a [`TextRun`] whose box is the transformed
-//!   glyph advance width, using the font's `/Widths` (or CID `/W`) where available;
+//!   matrices, and every `Tj`/`TJ`/`'`/`"` produces one [`Glyph`] per character code whose box
+//!   is the transformed advance, using the font's `/Widths` (or CID `/W`) where available.
+//!   Word boundaries are *not* decided here: `cluster` turns the page's glyphs into
+//!   [`cleanup_core::doc::TextRun`]s once the whole page has been read;
 //! * `re`/`m`/`l`/`c` build paths that `f`/`S`/`B` paint — thin ones become divider
 //!   [`RuleSegment`]s, thick ones become [`FillRect`]s (callout backgrounds, table header fills);
 //! * `Do` resolves `XObject`s: images are decoded into [`ImageAsset`]s (JPEG payloads are kept
@@ -20,8 +22,8 @@
 
 use super::*;
 use cleanup_core::doc::{
-    Axis, FillRect, ImageAsset, ImageKind, ImagePlacement, LayoutDoc, PageLayout, Rect, Rgb,
-    RuleSegment, TextRun,
+    Axis, FillRect, Glyph, ImageAsset, ImageKind, ImagePlacement, LayoutDoc, PageLayout, Rect, Rgb,
+    RuleSegment, cluster, fontmap,
 };
 use std::collections::BTreeMap;
 
@@ -329,7 +331,9 @@ impl PathState {
 struct PageGeometry {
     width: f32,
     height: f32,
-    runs: Vec<TextRun>,
+    /// Every glyph the page drew, in paint order. Words are reconstructed from this buffer
+    /// once, by [`cluster::words_from_glyphs`], instead of being guessed per showing operator.
+    glyphs: Vec<Glyph>,
     rules: Vec<RuleSegment>,
     fills: Vec<FillRect>,
     images: Vec<ImagePlacement>,
@@ -340,7 +344,7 @@ impl PageGeometry {
         PageGeometry {
             width,
             height,
-            runs: Vec::new(),
+            glyphs: Vec::new(),
             rules: Vec::new(),
             fills: Vec::new(),
             images: Vec::new(),
@@ -348,10 +352,13 @@ impl PageGeometry {
     }
 
     fn into_page(self) -> PageLayout {
+        // Word reconstruction happens exactly once per page, after every content stream, form
+        // XObject and text object has contributed its glyphs.
+        let runs = cluster::words_from_glyphs(&self.glyphs);
         PageLayout {
             width: self.width,
             height: self.height,
-            runs: self.runs,
+            runs,
             rules: self.rules,
             fills: self.fills,
             images: self.images,
@@ -363,12 +370,48 @@ impl PageGeometry {
 // Fonts
 // ---------------------------------------------------------------------------
 
+/// Everything the reader knows about one `/Font` resource.
+///
+/// Read once from the font dictionary, `/FontDescriptor` and the name, so that every glyph the
+/// font shows carries the same family, weight, italic flag and metrics. Nothing downstream
+/// re-guesses a style from a name.
 struct FontInfo {
     profile: FontProfile,
     metrics: FontMetrics,
+    /// PostScript name with the subset tag stripped, e.g. `DejaVuSans-Bold`.
+    canonical: String,
+    /// Alias-folded family, e.g. `Helvetica`.
+    family: String,
+    /// Weight in the `100..=900` scale.
+    weight: u16,
     bold: bool,
     italic: bool,
     mono: bool,
+    /// Ascent above the baseline, in em.
+    ascent: f32,
+    /// Descent below the baseline, in em (positive).
+    descent: f32,
+    /// Advance of the space character, in em.
+    space_em: f32,
+}
+
+impl FontInfo {
+    /// Advance width of `code` in em: declared `/Widths` first, then the base-14 AFM table,
+    /// then the font's own `/MissingWidth`.
+    fn width_em(&self, code: u32) -> f32 {
+        if let Some(width) = self.metrics.declared(code) {
+            return width / 1000.0;
+        }
+        if let Some(width) = fontmap::base14_width(&self.family, code) {
+            return width / 1000.0;
+        }
+        self.metrics.width(code) / 1000.0
+    }
+
+    /// Advance of a space at `size` points, in text-space units.
+    fn space_advance(&self, size: f32) -> f32 {
+        (self.space_em * size).max(size * 0.1)
+    }
 }
 
 #[derive(Default)]
@@ -380,6 +423,27 @@ struct FontMetrics {
 }
 
 impl FontMetrics {
+    /// Glyph advance in 1/1000 em, but only when the font *declares* one.
+    ///
+    /// Distinguishing "declared" from "defaulted" matters twice: an unembedded base-14 face
+    /// has no `/Widths` at all (so the AFM table should answer), while an embedded subset that
+    /// omits a code really does mean `/MissingWidth`.
+    fn declared(&self, code: u32) -> Option<f32> {
+        if !self.widths.is_empty() {
+            let index = code as i64 - i64::from(self.first_char);
+            if index >= 0
+                && let Some(width) = self.widths.get(index as usize)
+                && *width > 0.0
+            {
+                return Some(*width);
+            }
+        }
+        self.cid_widths
+            .get(&code)
+            .copied()
+            .filter(|width| *width > 0.0)
+    }
+
     /// Glyph advance in 1/1000 em.
     fn width(&self, code: u32) -> f32 {
         if !self.widths.is_empty() {
@@ -424,43 +488,95 @@ fn fonts_for(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, Fon
     fonts
 }
 
-/// Strip PDF subset prefix (e.g. "ABCDEF+Helvetica-Bold" -> "Helvetica-Bold").
-fn canonical_font_name(raw: &str) -> String {
-    if let Some(plus) = raw.find('+') {
-        // Subset tags are 6 uppercase letters + "+"; verify pattern
-        let prefix = &raw[..plus];
-        if prefix.len() == 6 && prefix.chars().all(|c| c.is_ascii_uppercase()) {
-            return raw[plus + 1..].to_string();
-        }
-    }
-    raw.to_string()
-}
+/// `/FontDescriptor /Flags` bits (PDF 32000-1 table 123).
+const FLAG_FIXED_PITCH: i64 = 1 << 0;
+const FLAG_ITALIC: i64 = 1 << 6;
+const FLAG_FORCE_BOLD: i64 = 1 << 18;
 
 fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let profile = font_profile(pdf, dict);
     let metrics = font_metrics(pdf, dict);
     let base_raw = dict_get(dict, "BaseFont").and_then(as_name).unwrap_or("");
-    let base = base_raw.to_ascii_lowercase();
-    // Detect style from canonical name as well
-    let canonical_lower = canonical_font_name(base_raw).to_ascii_lowercase();
+    let canonical = fontmap::canonical_name(base_raw);
+    let family = fontmap::family(&canonical);
+    let descriptor = dict_get(dict, "FontDescriptor")
+        .map(|value| pdf.resolve(value))
+        .and_then(as_dict_ref);
+    let flags = descriptor
+        .and_then(|entries| dict_get(entries, "Flags"))
+        .and_then(as_int)
+        .unwrap_or(0);
+    let italic_angle = descriptor
+        .and_then(|entries| dict_get(entries, "ItalicAngle"))
+        .and_then(as_int)
+        .unwrap_or(0);
+    let stem_v = descriptor
+        .and_then(|entries| dict_get(entries, "StemV"))
+        .and_then(as_int);
+    let descriptor_weight = descriptor
+        .and_then(|entries| dict_get(entries, "FontWeight"))
+        .and_then(as_int)
+        .and_then(fontmap::weight_from_font_weight);
+
+    // Name first (it is what a typesetter wrote), then the descriptor, then the flags.
+    let weight = fontmap::weight_from_name(&canonical)
+        .or(descriptor_weight)
+        .or_else(|| stem_v.and_then(fontmap::weight_from_stem_v))
+        .unwrap_or(if flags & FLAG_FORCE_BOLD != 0 {
+            700
+        } else {
+            400
+        });
+    let italic =
+        fontmap::name_is_italic(&canonical) || flags & FLAG_ITALIC != 0 || italic_angle != 0;
+    let mono =
+        fontmap::name_is_mono(&canonical) || flags & FLAG_FIXED_PITCH != 0 || family == "Courier";
+
+    // Vertical metrics: the descriptor when it has them, the family's AFM otherwise. These
+    // are what give every run an honest box instead of a `0.8 em` guess, so boxes on one
+    // baseline stay aligned and boxes on different baselines never merge.
+    let (base_ascent, base_descent, base_space) = fontmap::base_metrics(&family, mono);
+    let ascent = descriptor
+        .and_then(|entries| dict_get(entries, "Ascent"))
+        .and_then(as_int)
+        .map(|value| value as f32 / 1000.0)
+        .filter(|value| *value > 0.2 && *value < 1.6)
+        .unwrap_or(base_ascent);
+    let descent = descriptor
+        .and_then(|entries| dict_get(entries, "Descent"))
+        .and_then(as_int)
+        .map(|value| (value as f32 / 1000.0).abs())
+        .filter(|value| *value > 0.02 && *value < 0.8)
+        .unwrap_or(base_descent);
+    // A font that declares a space glyph but no `/Widths` entry for it falls back to the
+    // family's AFM value, never to "half an em".
+    let space_em = metrics
+        .declared(32)
+        .map(|width| width / 1000.0)
+        .or_else(|| fontmap::base14_width(&family, 32).map(|width| width / 1000.0))
+        .filter(|value| (0.1..=0.9).contains(value))
+        .unwrap_or(base_space);
+
     FontInfo {
         profile,
         metrics,
-        bold: base.contains("bold")
-            || base.contains("black")
-            || base.contains("heavy")
-            || canonical_lower.contains("bold"),
-        italic: base.contains("italic")
-            || base.contains("oblique")
-            || canonical_lower.contains("italic")
-            || canonical_lower.contains("oblique"),
-        mono: base.contains("courier")
-            || base.contains("mono")
-            || base.contains("consol")
-            || base.contains("code")
-            || base.contains("typewriter")
-            || canonical_lower.contains("courier")
-            || canonical_lower.contains("mono"),
+        canonical,
+        family,
+        weight,
+        bold: weight >= 700,
+        italic,
+        mono,
+        ascent,
+        descent,
+        space_em,
+    }
+}
+
+/// Resolve a value to a dictionary without cloning it.
+fn as_dict_ref(value: &Value) -> Option<&[(String, Value)]> {
+    match value {
+        Value::Dict(entries) => Some(entries.as_slice()),
+        _ => None,
     }
 }
 
@@ -837,13 +953,14 @@ impl<'a> Interpreter<'a> {
         // A path left un-painted at the end of a stream is not rendered by a viewer either.
     }
 
-    /// Emit glyphs with precise per-character geometry.
+    /// Emit one glyph cell per character code, exactly where the text matrices put it.
     ///
-    /// Each glyph is placed using its font advance (width/1000 * font_size) plus
-    /// Tc/Tw/hscale. Glyphs sharing baseline/font/size are clustered: the gap
-    /// `x_curr - (x_prev + width_prev)` is measured and a word-break space is
-    /// only inserted when it exceeds `space_threshold = 0.25 * font_size`.
-    /// This prevents "t h i s   i s" corruption from naive per-glyph emission.
+    /// Every showing operator (`Tj`, each `TJ` element, `'`, `"`) funnels through here, so a
+    /// word that arrives as two `Tj` calls, as one `TJ` element per letter, or with an explicit
+    /// `Tm` per glyph still produces adjacent cells at the right coordinates. No spaces and no
+    /// word boundaries are invented at this layer: `Tc` tracking, `Tw` word spacing, `Tz`
+    /// scaling and `TJ` displacements are folded into the advance, and
+    /// [`cluster::words_from_glyphs`] decides word breaks once, from that geometry.
     fn show(
         &mut self,
         bytes: &[u8],
@@ -853,135 +970,80 @@ impl<'a> Interpreter<'a> {
         geom: &mut PageGeometry,
     ) {
         let font_name_raw = gs.font.clone().unwrap_or_default();
-        let font_name = canonical_font_name(&font_name_raw);
         let trm = mul(*tm, gs.ctm);
         let scale = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt().max(0.01);
-        let size = (gs.font_size * scale).max(1.0);
+        let size = (gs.font_size * scale).max(0.5);
 
-        // Glyph record with precise advance for clustering
-        struct Glyph {
-            text: String,
-            advance: f32, // in text space (before CTM scale)
-            is_space: bool,
-        }
-
-        let mut glyphs: Vec<Glyph> = Vec::new();
-        let mut total_advance = 0.0f32;
-        match fonts.get(&font_name_raw) {
-            Some(font) if font.profile.supported => {
-                let code_len = font.profile.code_len.max(1);
-                let mut index = 0usize;
-                while index < bytes.len() {
-                    let end = (index + code_len).min(bytes.len());
-                    let code = hex_bytes_to_u32(&bytes[index..end]);
-                    let decoded = font.profile.decode.get(&code);
-                    let width = font.metrics.width(code) / 1000.0;
-                    let is_space = decoded.is_some_and(|t| t.chars().all(|c| c == ' '));
-                    let adv = (width * gs.font_size
-                        + gs.char_spacing
-                        + if is_space { gs.word_spacing } else { 0.0 })
-                        * gs.hscale;
-                    total_advance += adv;
-                    if let Some(decoded) = decoded {
-                        glyphs.push(Glyph {
-                            text: decoded.clone(),
-                            advance: adv,
-                            is_space,
-                        });
-                    } else {
-                        *self.unsupported += 1;
-                    }
-                    index = end;
-                }
+        let Some(font) = fonts.get(&font_name_raw) else {
+            // A font resource we could not resolve (or a symbolic face with no Unicode map).
+            // Advance by a nominal half-em so later runs keep roughly their place, and record
+            // that something was skipped instead of emitting garbage glyphs.
+            if !bytes.is_empty() {
+                *self.unsupported += 1;
             }
-            _ => {
-                if !bytes.is_empty() {
-                    *self.unsupported += 1;
-                }
-                // Fallback: treat as mono without precise metrics
-                let adv = bytes.len() as f32 * gs.font_size.max(1.0) * 0.5 * gs.hscale;
-                total_advance = adv;
-                // No glyphs to emit individually; still need to advance Tm
-                *tm = mul(translation(total_advance, 0.0), *tm);
-                return;
+            let advance = bytes.len() as f32 * gs.font_size.max(1.0) * 0.5 * gs.hscale;
+            *tm = mul(translation(advance, 0.0), *tm);
+            return;
+        };
+        if !font.profile.supported {
+            if !bytes.is_empty() {
+                *self.unsupported += 1;
             }
-        }
-
-        if glyphs.is_empty() {
-            *tm = mul(translation(total_advance, 0.0), *tm);
+            let advance = bytes.len() as f32 * gs.font_size.max(1.0) * 0.5 * gs.hscale;
+            *tm = mul(translation(advance, 0.0), *tm);
             return;
         }
 
-        // Cluster glyphs into word-level TextRuns using geometric gap threshold
-        // Gap = x_curr - (x_prev + width_prev) in text space, converted via scale
-        let (_x0, y0) = apply(trm, 0.0, 0.0);
-        let _space_threshold = (gs.font_size * 0.25).max(1.0) * gs.hscale;
-        let top = self.page_height - y0 - size * 0.8 - gs.rise * scale;
-        let bold = fonts.get(&font_name_raw).map(|f| f.bold).unwrap_or(false);
-        let italic = fonts.get(&font_name_raw).map(|f| f.italic).unwrap_or(false);
-        let mono = fonts.get(&font_name_raw).map(|f| f.mono).unwrap_or(false);
-
-        // If the Tj string already contains explicit space characters, we preserve them
-        // as word boundaries and do not synthesize extra spaces from geometry.
-        // Geometry-based spacing only applies to inter-glyph gaps *within* a word.
-        let mut word_start_advance = 0.0f32; // offset of current word start in text space
-        let mut word_text = String::new();
-        let mut word_advance = 0.0f32;
-        let mut cursor = 0.0f32; // current glyph's x in text space (before CTM)
-
-        // Helper to flush current word as a TextRun
-        let flush_word =
-            |word_text: &mut String, word_start: f32, word_adv: f32, geom: &mut PageGeometry| {
-                if word_text.trim().is_empty() {
-                    return;
-                }
-                let (wx0, _) = apply(trm, word_start, 0.0);
-                let (wx1, _) = apply(trm, word_start + word_adv, 0.0);
-                let left = wx0.min(wx1);
-                let width = (wx1 - wx0).abs().max(1.0);
-                geom.runs.push(TextRun {
-                    text: std::mem::take(word_text),
-                    rect: Rect::new(left, top, width, size),
+        let code_len = font.profile.code_len.max(1);
+        let space_width = font.space_advance(gs.font_size) * scale;
+        let mut cursor = 0.0f32;
+        let mut index = 0usize;
+        while index < bytes.len() {
+            let end = (index + code_len).min(bytes.len());
+            let code = hex_bytes_to_u32(&bytes[index..end]);
+            let width = font.width_em(code);
+            let blank = font
+                .profile
+                .decode
+                .get(&code)
+                .is_some_and(|text| text.chars().all(|ch| ch.is_whitespace()));
+            let advance = (width * gs.font_size
+                + gs.char_spacing
+                + if blank { gs.word_spacing } else { 0.0 })
+                * gs.hscale;
+            if let Some(text) = font.profile.decode.get(&code) {
+                // Origin and end of the advance box, in page space. `rise` (`Ts`) is applied
+                // along the text-space y axis, so a superscript is displaced the way a viewer
+                // draws it rather than by a re-derived offset.
+                let (x0, y0) = apply(trm, cursor, gs.rise);
+                let (x1, _) = apply(trm, cursor + advance, gs.rise);
+                let baseline = self.page_height - y0;
+                geom.glyphs.push(Glyph {
+                    text: text.clone(),
+                    rect: Rect::new(
+                        x0.min(x1),
+                        baseline - font.ascent * size,
+                        (x1 - x0).abs().max(0.01),
+                        (font.ascent + font.descent) * size,
+                    ),
+                    baseline,
+                    space_width,
                     font_size: size,
-                    font_name: font_name.clone(),
-                    bold,
-                    italic,
-                    mono,
+                    font_name: font.canonical.clone(),
+                    font_family: font.family.clone(),
+                    font_weight: font.weight,
+                    bold: font.bold,
+                    italic: font.italic,
+                    mono: font.mono,
                     color: gs.fill,
                 });
-            };
-
-        for glyph in &glyphs {
-            if glyph.is_space {
-                // Explicit space in source: flush word, advance cursor including space
-                flush_word(&mut word_text, word_start_advance, word_advance, geom);
-                cursor += glyph.advance;
-                word_start_advance = cursor;
-                word_advance = 0.0;
-                continue;
+            } else {
+                *self.unsupported += 1;
             }
-            // Compute gap from previous glyph's right edge
-            // For glyphs within same word, cursor points to current glyph's left
-            // word_advance is sum of advances of glyphs in current word so far
-            // If word has content, gap = cursor - (word_start_advance + word_advance) but
-            // cursor == word_start_advance + word_advance by construction unless TJ
-            // inserted extra shift. Actually after each glyph we do cursor += advance,
-            // so gap for next glyph = cursor - (word_start + word_adv) = 0 normally.
-            // For inter-word detection, we look at whether gap exceeds threshold.
-            // Since within a Tj string glyphs are contiguous (gap 0), no extra space.
-            // The meaningful gap check is BETWEEN Tj strings via Tm displacement,
-            // which is handled at the caller by advancing Tm before next show().
-            // So within one show() call, we just concatenate.
-            if word_text.is_empty() {
-                word_start_advance = cursor;
-            }
-            word_text.push_str(&glyph.text);
-            word_advance += glyph.advance;
-            cursor += glyph.advance;
+            cursor += advance;
+            index = end;
         }
-        flush_word(&mut word_text, word_start_advance, word_advance, geom);
-
-        *tm = mul(translation(total_advance, 0.0), *tm);
+        *tm = mul(translation(cursor, 0.0), *tm);
     }
 
     fn paint(

@@ -151,6 +151,19 @@ KERNING_SENTINELS = [
     "Natural word spacing must survive",
 ]
 
+# Lines drawn with operators a Platypus paragraph never emits: `TJ` arrays with real kerning
+# adjustments, `Tc` tracking in both directions, `Tw` word spacing, and one `Tm` per glyph.
+# Each entry is the *exact* text a correct extractor must reproduce; a reader that emits one
+# token per showing operator turns them into "Kern ing TJ array …" and fails the assertion.
+LOW_LEVEL_SENTINELS = [
+    "Kerning TJ array keeps words whole",
+    "Tracking with Tc must not split words",
+    "Negative tracking keeps words whole",
+    "Per glyph Tm positioning still forms words",
+    "Wide word spacing keeps letters intact",
+    "Word gap from geometry alone",
+]
+
 
 def register_fonts() -> None:
     """DejaVu covers Greek, Cyrillic, math and arrows without glyph substitution."""
@@ -341,6 +354,89 @@ def build(path: str, story: list, *, pagesize=A4, margin=0.75 * inch, on_page=No
 # 1. kerning_and_typography.pdf  (NEW - Priority 1)
 # ---------------------------------------------------------------------------
 
+def low_level_operators(canvas, doc) -> None:
+    """Draw text with the operators a high-level paragraph API cannot produce.
+
+    `TJ` arrays with per-pair adjustments, `Tc`/`Tw` registers and one `Tm` per glyph are how
+    real typesetting engines (LaTeX, InDesign, Word's PDF export) place justified text. They
+    are also exactly what naive extractors mis-read as per-character spacing.
+
+    `t._code.append(...)` is the only way to reach `TJ` through ReportLab's text object API;
+    the text object has already emitted the real `/Fn` `Tf` for the subset face by then, so the
+    appended operators inherit the correct font resource and size.
+    """
+    canvas.saveState()
+    canvas.setFillColor(colors.black)
+    y = doc.pagesize[1] - 4.75 * inch
+    canvas.setFont("Body", 10)
+    canvas.drawString(0.75 * inch, y, "Low-Level Text Operators")
+    y -= 18
+
+    # 1. `TJ` array: +40 tightens a letter pair (a real kerning adjustment), -250 opens a
+    #    word gap without any space character. Neither may split or join the wrong words.
+    #    Every word boundary here is a `-250` displacement (0.25 em, wider than half of DejaVu
+    #    Sans's 0.318 em space), and the only `+40` sits *inside* "words", so a correct reader
+    #    produces "Kerning TJ array keeps words whole" and a naive one produces either
+    #    "Kern ing TJ array …" or "KerningTJarray keepswordswhole".
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    text.textOut("Kern")
+    text._code.append("[40(ing)] TJ")
+    #    The array opens with `-250` so the word gap after "Kerning" is geometry too: there
+    #    is no space character anywhere in this line.
+    text._code.append("[-250(TJ)-250(array)-250(keeps)-250(word)40(s)-250(whole)] TJ")
+    canvas.drawText(text)
+    y -= 16
+
+    # 2. Positive `Tc` tracking: every advance grows, no glyph may be split off.
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    text.setCharSpace(1.6)
+    text.textOut(LOW_LEVEL_SENTINELS[1])
+    text.setCharSpace(0)
+    canvas.drawText(text)
+    y -= 16
+
+    # 3. Negative tracking: advances shrink, glyph boxes still touch.
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    text.setCharSpace(-0.45)
+    text.textOut(LOW_LEVEL_SENTINELS[2])
+    text.setCharSpace(0)
+    canvas.drawText(text)
+    y -= 16
+
+    # 4. One `Tm` per glyph, each placed at the exact advance of the glyph before it.
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    pen = 0.75 * inch
+    for char in LOW_LEVEL_SENTINELS[3]:
+        text.setTextTransform(1, 0, 0, 1, pen, y)
+        text.textOut(char)
+        pen += pdfmetrics.stringWidth(char, "Body", 10)
+    canvas.drawText(text)
+    y -= 16
+
+    # 5. `Tw` word spacing: the blanks stretch, the letters must not.
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    text.setWordSpace(6.0)
+    text.textOut(LOW_LEVEL_SENTINELS[4])
+    text.setWordSpace(0)
+    canvas.drawText(text)
+    y -= 16
+
+    # 6. Word gaps that exist only as geometry: the string contains no space character,
+    #    only the -250 `TJ` displacement between words.
+    text = canvas.beginText(0.75 * inch, y)
+    text.setFont("Body", 10)
+    text.textOut("Word")
+    for word in ("gap", "from", "geometry", "alone"):
+        text._code.append(f"[-250({word})] TJ")
+    canvas.drawText(text)
+    canvas.restoreState()
+
+
 def kerning_and_typography(path: str) -> None:
     """Exercise glyph clustering: extreme tracking, mixed fonts/sizes on one baseline."""
     s = styles()
@@ -463,46 +559,53 @@ def kerning_and_typography(path: str) -> None:
         s["note"],
     ))
 
+    # A page whose content is drawn entirely on the canvas (see `kerning_page`): `TJ`, `Tc`,
+    # `Tw` and per-glyph `Tm` are not reachable through Platypus flowables. The 1pt spacer is
+    # what makes ReportLab materialise the page.
+    story.append(PageBreak())
+    story.append(Spacer(1, 1))
+
     # Add a canvas-drawn page with extreme tracking via manual Tj positioning
+    def tracked_line(canvas, x, y, text, tracking):
+        """Draw one line with `Tc` character tracking.
+
+        `Canvas` has no `setCharSpace`; the operator is only reachable through a text object,
+        which is also the API that emits the `Tc`/`Tw` registers a PDF viewer reads.
+        """
+        text_object = canvas.beginText(x, y)
+        text_object.setFont("Body", 10)
+        text_object.setCharSpace(tracking)
+        text_object.textOut(text)
+        text_object.setCharSpace(0)
+        canvas.drawText(text_object)
+
     def kerning_page(canvas, doc):
         furniture(canvas, doc)
-        if doc.page == 3:
-            # Draw text with varying character spacing on same baseline
-            canvas.saveState()
-            y = doc.pagesize[1] - 2.5 * inch
-            # Normal spacing baseline
-            canvas.setFont("Body", 10)
-            canvas.drawString(0.75 * inch, y, "Normal spacing: Hello World Test")
-            y -= 16
-            # Tight tracking - characters close together
-            canvas.setFont("Body", 10)
-            # Use charSpace to tighten
-            canvas.setCharSpace(-0.5)
-            canvas.drawString(0.75 * inch, y, "Tight tracking: Hello World Test")
-            canvas.setCharSpace(0)
-            y -= 16
-            # Wide tracking
-            canvas.setCharSpace(1.5)
-            canvas.drawString(0.75 * inch, y, "Wide tracking: Hello World Test")
-            canvas.setCharSpace(0)
-            y -= 16
-            # Mixed sizes on same Y - the critical test
-            canvas.setFont("Body", 8)
-            canvas.drawString(0.75 * inch, y, "Small ")
-            w1 = pdfmetrics.stringWidth("Small ", "Body", 8)
-            canvas.setFont("Body", 14)
-            canvas.drawString(0.75 * inch + w1, y, "LARGE ")
-            w2 = pdfmetrics.stringWidth("LARGE ", "Body", 14)
-            canvas.setFont("Body", 10)
-            canvas.drawString(0.75 * inch + w1 + w2, y, "normal all same baseline")
-            y -= 20
-            # Kerning pairs - AV, To, Wa etc that have negative kerning
-            canvas.setFont("Body", 14)
-            canvas.drawString(0.75 * inch, y, "AVATAR WAVE To Va We kerning pairs")
-            y -= 16
-            canvas.setFont("Body", 10)
-            canvas.drawString(0.75 * inch, y, "The end of manual kerning tests.")
-            canvas.restoreState()
+        if doc.page != 3:
+            return
+        canvas.saveState()
+        y = doc.pagesize[1] - 2.5 * inch
+        canvas.setFont("Body", 10)
+        canvas.drawString(0.75 * inch, y, "Normal spacing: Hello World Test")
+        y -= 16
+        tracked_line(canvas, 0.75 * inch, y, "Tight tracking: Hello World Test", -0.5)
+        y -= 16
+        tracked_line(canvas, 0.75 * inch, y, "Wide tracking: Hello World Test", 1.5)
+        y -= 16
+        # Mixed sizes on one baseline: the critical y-coordinate grouping test.
+        pen = 0.75 * inch
+        for size, chunk in ((8, "Small "), (14, "LARGE "), (10, "normal all same baseline")):
+            canvas.setFont("Body", size)
+            canvas.drawString(pen, y, chunk)
+            pen += pdfmetrics.stringWidth(chunk, "Body", size)
+        y -= 20
+        canvas.setFont("Body", 14)
+        canvas.drawString(0.75 * inch, y, "AVATAR WAVE To Va We kerning pairs")
+        y -= 16
+        canvas.setFont("Body", 10)
+        canvas.drawString(0.75 * inch, y, "The end of manual kerning tests.")
+        canvas.restoreState()
+        low_level_operators(canvas, doc)
 
     # Build with custom page handler for last page
     doc = BaseDocTemplate(
@@ -1107,6 +1210,7 @@ def manifest() -> dict:
             # New canonical names (as specified in mandate)
             "kerning_and_typography.pdf": {
                 "sentinels": KERNING_SENTINELS,
+                "low_level_sentinels": LOW_LEVEL_SENTINELS,
                 "code_lines": ["def fibonacci(n):", "return fibonacci(n-1)"],
                 "color_hex": ["C53030", "2B6CB0"],
                 "invisible_codepoints": ["200b", "200c", "feff"],

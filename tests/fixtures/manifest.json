@@ -61,6 +61,14 @@
         "200c",
         "feff"
       ],
+      "low_level_sentinels": [
+        "Kerning TJ array keeps words whole",
+        "Tracking with Tc must not split words",
+        "Negative tracking keeps words whole",
+        "Per glyph Tm positioning still forms words",
+        "Wide word spacing keeps letters intact",
+        "Word gap from geometry alone"
+      ],
       "pages_min": 3,
       "sentinels": [
         "The quick brown fox jumps over the lazy dog",

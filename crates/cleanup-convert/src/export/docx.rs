@@ -17,7 +17,7 @@
 //! | `Callout` | shaded paragraphs with a coloured left border |
 //! | `Divider` | paragraph with a bottom border |
 
-use super::{Rendered, RunStyle, asset_for};
+use super::{Rendered, RunStyle, asset_for, target_font_family};
 use cleanup_core::doc::{Align, Block, CalloutKind, Cell, Doc, Inline, PageSpec, Table};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -321,7 +321,14 @@ impl<'a> Writer<'a> {
             if style.underline {
                 properties.push_str("<w:u w:val=\"single\"/>");
             }
-            if style.code {
+            // Typography first, so a run keeps the family, weight and size the source had
+            // instead of inheriting whatever `styles.xml` happens to say.
+            if let Some(family) = style.font_family.as_deref() {
+                let target = escape_xml(&target_font_family(family, style.code));
+                properties.push_str(&format!(
+                    "<w:rFonts w:ascii=\"{target}\" w:hAnsi=\"{target}\" w:cs=\"{target}\"/>"
+                ));
+            } else if style.code {
                 properties.push_str(
                     "<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/>",
                 );
@@ -329,9 +336,17 @@ impl<'a> Writer<'a> {
             if let Some(color) = style.color {
                 properties.push_str(&format!("<w:color w:val=\"{}\"/>", color.hex()));
             }
-            if (scale - 1.0).abs() > 0.01 {
-                let half_points = (10.5 * scale * 2.0).round() as i64;
-                properties.push_str(&format!("<w:sz w:val=\"{half_points}\"/>"));
+            // `w:sz` is in half-points. A run that knows its source size keeps it; otherwise
+            // only a scaled block (a heading rendered from Markdown) needs an explicit size.
+            let size_tenths = style.size_pt.map(|size| size * scale * 2.0);
+            let half_points = match size_tenths {
+                Some(value) => Some(value.round().clamp(2.0, 400.0) as i64),
+                None => ((scale - 1.0).abs() > 0.01).then_some((10.5 * scale * 2.0).round() as i64),
+            };
+            if let Some(half_points) = half_points {
+                properties.push_str(&format!(
+                    "<w:sz w:val=\"{half_points}\"/><w:szCs w:val=\"{half_points}\"/>"
+                ));
             }
             if !properties.is_empty() {
                 properties = format!("<w:rPr>{properties}</w:rPr>");
