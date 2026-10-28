@@ -3637,10 +3637,10 @@ mod tests {
     #[test]
     fn native_edits_preserve_following_glyph_positions_for_all_show_operators() {
         for showing in [
-            "(A REMOVEZ) Tj (Q) Tj",
-            "[(A ) -120 (REMOVE) 70 (Z)] TJ (Q) Tj",
-            "(A REMOVEZ) ' (Q) Tj",
-            "2 1 (A REMOVEZ) \" (Q) Tj",
+            "(A REMOVE Z) Tj ( Q) Tj",
+            "[(A ) -120 (REMOVE) 70 ( Z)] TJ ( Q) Tj",
+            "(A REMOVE Z) ' ( Q) Tj",
+            "2 1 (A REMOVE Z) \" ( Q) Tj",
         ] {
             let content = format!(
                 "BT /F1 12 Tf 1 Tc 2 Tw 75 Tz 18 TL 1 .2 -.1 1 40 700 Tm {showing} ET\n"
@@ -3660,8 +3660,8 @@ mod tests {
             let before = extract_layout(&bytes).unwrap();
             let after = extract_layout(&out).unwrap();
             for letter in ["Z", "Q"] {
-                let a = before.layout.pages[0].glyphs.iter().find(|glyph| glyph.text == letter).unwrap();
-                let b = after.layout.pages[0].glyphs.iter().find(|glyph| glyph.text == letter).unwrap();
+                let a = before.layout.pages[0].runs.iter().find(|glyph| glyph.text == letter).unwrap();
+                let b = after.layout.pages[0].runs.iter().find(|glyph| glyph.text == letter).unwrap();
                 assert!((a.rect.x - b.rect.x).abs() < 0.002, "{showing}: {a:?} vs {b:?}");
                 assert!((a.baseline - b.baseline).abs() < 0.002, "{showing}: {a:?} vs {b:?}");
             }
@@ -3671,8 +3671,8 @@ mod tests {
             let z = second.spans[0].text.find('Z').unwrap();
             let out2 = Pdf.render(&second, &EditSet { edits: vec![Edit { span_index: 0, range: z..z + 1, replacement: String::new(), rule_id: "test".to_string() }] }).unwrap();
             let after2 = extract_layout(&out2).unwrap();
-            let q1 = after.layout.pages[0].glyphs.iter().find(|glyph| glyph.text == "Q").unwrap();
-            let q2 = after2.layout.pages[0].glyphs.iter().find(|glyph| glyph.text == "Q").unwrap();
+            let q1 = after.layout.pages[0].runs.iter().find(|glyph| glyph.text == "Q").unwrap();
+            let q2 = after2.layout.pages[0].runs.iter().find(|glyph| glyph.text == "Q").unwrap();
             assert!((q1.rect.x - q2.rect.x).abs() < 0.002, "{showing}");
             assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out2).unwrap());
         }
