@@ -439,9 +439,7 @@ fn canonical_font_name(raw: &str) -> String {
 fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let profile = font_profile(pdf, dict);
     let metrics = font_metrics(pdf, dict);
-    let base_raw = dict_get(dict, "BaseFont")
-        .and_then(as_name)
-        .unwrap_or("");
+    let base_raw = dict_get(dict, "BaseFont").and_then(as_name).unwrap_or("");
     let base = base_raw.to_ascii_lowercase();
     // Detect style from canonical name as well
     let canonical_lower = canonical_font_name(base_raw).to_ascii_lowercase();
@@ -932,28 +930,26 @@ impl<'a> Interpreter<'a> {
         let mut cursor = 0.0f32; // current glyph's x in text space (before CTM)
 
         // Helper to flush current word as a TextRun
-        let mut flush_word = |word_text: &mut String,
-                              word_start: f32,
-                              word_adv: f32,
-                              geom: &mut PageGeometry| {
-            if word_text.trim().is_empty() {
-                return;
-            }
-            let (wx0, _) = apply(trm, word_start, 0.0);
-            let (wx1, _) = apply(trm, word_start + word_adv, 0.0);
-            let left = wx0.min(wx1);
-            let width = (wx1 - wx0).abs().max(1.0);
-            geom.runs.push(TextRun {
-                text: std::mem::take(word_text),
-                rect: Rect::new(left, top, width, size),
-                font_size: size,
-                font_name: font_name.clone(),
-                bold,
-                italic,
-                mono,
-                color: gs.fill,
-            });
-        };
+        let mut flush_word =
+            |word_text: &mut String, word_start: f32, word_adv: f32, geom: &mut PageGeometry| {
+                if word_text.trim().is_empty() {
+                    return;
+                }
+                let (wx0, _) = apply(trm, word_start, 0.0);
+                let (wx1, _) = apply(trm, word_start + word_adv, 0.0);
+                let left = wx0.min(wx1);
+                let width = (wx1 - wx0).abs().max(1.0);
+                geom.runs.push(TextRun {
+                    text: std::mem::take(word_text),
+                    rect: Rect::new(left, top, width, size),
+                    font_size: size,
+                    font_name: font_name.clone(),
+                    bold,
+                    italic,
+                    mono,
+                    color: gs.fill,
+                });
+            };
 
         for glyph in &glyphs {
             if glyph.is_space {

@@ -162,7 +162,13 @@ fn is_spaced_out(words: &[Word]) -> bool {
     }
     let mut run = 0usize;
     for word in words {
-        if word.text.chars().count() == 1 && word.text.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+        if word.text.chars().count() == 1
+            && word
+                .text
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric())
+        {
             run += 1;
             if run >= 3 {
                 return true;
@@ -242,7 +248,11 @@ fn split_run_into_words(run: &TextRun) -> Vec<Word> {
     // Safety net: if we produced spaced-out artifacts, collapse them back.
     // This catches any remaining per-glyph emission that slipped through.
     if is_spaced_out(&words) {
-        let collapsed = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join("");
+        let collapsed = words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join("");
         let collapsed = collapsed.replace(' ', "");
         if !collapsed.is_empty() {
             return vec![Word {

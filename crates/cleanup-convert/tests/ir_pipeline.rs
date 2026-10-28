@@ -805,7 +805,10 @@ fn kerning_fixture_has_no_spaced_out_words() {
             Target::Pdf => {
                 // PDF text is not directly readable; skip text check, just verify it converts
                 let output = convert("kerning_and_typography.pdf", Target::Pdf);
-                assert!(output.bytes.starts_with(b"%PDF-"), "PDF output is not a PDF");
+                assert!(
+                    output.bytes.starts_with(b"%PDF-"),
+                    "PDF output is not a PDF"
+                );
                 continue;
             }
             _ => text("kerning_and_typography.pdf", target),
@@ -815,7 +818,8 @@ fn kerning_fixture_has_no_spaced_out_words() {
         let spaced = contains_spaced_out(&body);
         assert!(
             !spaced,
-            "kerning_and_typography.pdf -> {target:?} contains spaced-out characters: {}", &body[..body.len().min(500)]
+            "kerning_and_typography.pdf -> {target:?} contains spaced-out characters: {}",
+            &body[..body.len().min(500)]
         );
         // Also verify natural sentences survived intact
         for sentinel in [
@@ -862,7 +866,9 @@ fn contains_spaced_out(text: &str) -> bool {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut consecutive_single = 0;
     for word in &words {
-        if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+        if word.chars().count() == 1
+            && word.chars().next().is_some_and(|c| c.is_alphanumeric())
+        {
             consecutive_single += 1;
             if consecutive_single >= 4 {
                 return true;
@@ -884,7 +890,11 @@ fn new_fixtures_have_valid_ir_and_convert() {
     ] {
         let doc = ir(name);
         assert!(!doc.blocks.is_empty(), "{name}: no blocks recovered");
-        assert!(doc.validate().is_empty(), "{name}: IR invalid: {:?}", doc.validate());
+        assert!(
+            doc.validate().is_empty(),
+            "{name}: IR invalid: {:?}",
+            doc.validate()
+        );
         for target in [Target::Markdown, Target::Text, Target::Docx, Target::Pdf] {
             let output = convert(name, target);
             assert!(!output.bytes.is_empty(), "{name} -> {target:?} empty");
@@ -909,10 +919,18 @@ fn multi_page_tables_match_new_ground_truth() {
         .max_by_key(|table| table.row_count())
         .expect("primary table not detected");
     assert_eq!(primary.column_count(), expected_columns);
-    assert!(primary.row_count() >= expected_rows, "rows {} < expected {}", primary.row_count(), expected_rows);
+    assert!(
+        primary.row_count() >= expected_rows,
+        "rows {} < expected {}",
+        primary.row_count(),
+        expected_rows
+    );
     let markdown = text("multi_page_tables.pdf", Target::Markdown);
     assert!(markdown.contains("Region"));
-    assert!(!markdown.contains("QUARTERLY REVENUE"), "running header leaked");
+    assert!(
+        !markdown.contains("QUARTERLY REVENUE"),
+        "running header leaked"
+    );
 }
 
 #[test]

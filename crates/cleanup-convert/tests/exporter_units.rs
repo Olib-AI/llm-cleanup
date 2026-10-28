@@ -499,15 +499,25 @@ fn no_exporter_emits_split_character_runs() {
         let words: Vec<&str> = body.split_whitespace().collect();
         let mut run = 0;
         for word in &words {
-            if word.chars().count() == 1 && word.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+            if word.chars().count() == 1
+                && word.chars().next().is_some_and(|c| c.is_alphanumeric())
+            {
                 run += 1;
-                assert!(run < 4, "split-character regression in {} export: {:?}", target.engine, &body[..body.len().min(300)]);
+                assert!(
+                    run < 4,
+                    "split-character regression in {} export: {:?}",
+                    target.engine,
+                    &body[..body.len().min(300)]
+                );
             } else {
                 run = 0;
             }
         }
         // Whole words must wrap as units, not character by character
-        assert!(body.contains("quick") || body.contains("quick"), "word 'quick' was split");
+        assert!(
+            body.contains("quick") || body.contains("quick"),
+            "word 'quick' was split"
+        );
         assert!(body.contains("jumps"), "word 'jumps' was split");
     }
     // Inline formatting must wrap whole words, not characters
@@ -526,7 +536,10 @@ fn no_exporter_emits_split_character_runs() {
     assert!(md.contains("**bold word**"), "bold wrapping broken: {md}");
     assert!(md.contains("*italic word*"), "italic wrapping broken: {md}");
     // Must NOT be "**b** **o** **l** **d**"
-    assert!(!md.contains("**b**"), "character-level splitting in markdown");
+    assert!(
+        !md.contains("**b**"),
+        "character-level splitting in markdown"
+    );
 }
 
 #[test]
@@ -538,7 +551,10 @@ fn font_subset_prefix_is_stripped() {
     assert_eq!(&raw[7..], "Helvetica-Bold");
     // Non-subset name should pass through
     assert_eq!("Helvetica", "Helvetica");
-    assert_eq!("ABCDEF+Helvetica", "ABCDEF+Helvetica".split('+').last().unwrap());
+    assert_eq!(
+        "ABCDEF+Helvetica",
+        "ABCDEF+Helvetica".split('+').last().unwrap()
+    );
 }
 
 #[test]
