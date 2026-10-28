@@ -264,7 +264,11 @@ fn markdown_tables_keep_inline_styles_multiline_cells_and_images() {
         style: ParagraphStyle::default(),
     }];
     let mut table = Table::default();
-    table.rows.push(Row { cells: vec![styled], header: false, fill: None });
+    table.rows.push(Row {
+        cells: vec![styled],
+        header: false,
+        fill: None,
+    });
     doc.blocks.push(Block::Table(table));
 
     let mut mixed = Cell::paragraph("first line");
@@ -278,13 +282,20 @@ fn markdown_tables_keep_inline_styles_multiline_cells_and_images() {
         inline: true,
     }));
     let mut html_table = Table::default();
-    html_table.rows.push(Row { cells: vec![mixed], header: false, fill: None });
+    html_table.rows.push(Row {
+        cells: vec![mixed],
+        header: false,
+        fill: None,
+    });
     doc.blocks.push(Block::Table(html_table));
 
     let rendered = markdown::render(&doc);
     let text = string(rendered.bytes);
     assert!(text.contains("**Whole words** \\| value"), "{text}");
-    assert!(text.contains("first line<br />second line<br /><img src=\"assets/"), "{text}");
+    assert!(
+        text.contains("first line<br />second line<br /><img src=\"assets/"),
+        "{text}"
+    );
     assert!(text.contains("alt=\"diagram &amp; label\""), "{text}");
 }
 
@@ -370,6 +381,32 @@ fn docx_uses_native_openxml_for_every_feature() {
         rels.contains("TargetMode=\"External\"") && rels.contains("https://example.com/report"),
         "external hyperlink relationship missing: {rels}"
     );
+}
+
+#[test]
+fn docx_continues_combined_row_and_column_spans_through_empty_rows() {
+    let mut doc = Doc::new(PageSpec::default());
+    let mut merged = Cell::paragraph("combined span");
+    merged.colspan = 3;
+    merged.rowspan = 2;
+    let table = Table {
+        columns: vec![ColumnSpec { width: 1.0, align: Align::Left }; 3],
+        rows: vec![
+            Row { cells: vec![merged], header: false, fill: None },
+            Row { cells: Vec::new(), header: false, fill: None },
+        ],
+        ..Table::default()
+    };
+    doc.blocks.push(Block::Table(table));
+    let rendered = docx::render(&doc);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(rendered.bytes)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+    let rows: Vec<&str> = xml.split("<w:tr>").skip(1).collect();
+    assert_eq!(rows.len(), 2, "{xml}");
+    assert!(rows[0].contains("<w:gridSpan w:val=\"3\"/><w:vMerge w:val=\"restart\"/>"));
+    assert!(rows[1].contains("<w:gridSpan w:val=\"3\"/><w:vMerge/>"));
+    assert_eq!(rows[1].split("</w:tr>").next().unwrap().matches("<w:tc>").count(), 1);
 }
 
 #[test]

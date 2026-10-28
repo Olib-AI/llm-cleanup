@@ -3641,7 +3641,8 @@ mod tests {
             b"<< /Type /Font /Subtype /TrueType /BaseFont /Example /Encoding /WinAnsiEncoding /FirstChar 32 /Widths [0] /FontDescriptor << /MissingWidth 500 >> >>".to_vec(),
         ];
         let report = extract_layout(&assemble_pdf(&objects, 1, None)).unwrap();
-        let (doc, _) = cleanup_core::doc::analyze(&report.layout, &cleanup_core::doc::AnalyzeOptions::flat());
+        let (doc, _) =
+            cleanup_core::doc::analyze(&report.layout, &cleanup_core::doc::AnalyzeOptions::flat());
         let text = doc.plain_text();
         assert!(text.contains("Word gap"), "{text:?}");
         assert!(text.contains("A B"), "{text:?}");

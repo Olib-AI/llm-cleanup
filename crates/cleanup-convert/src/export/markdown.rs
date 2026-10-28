@@ -204,7 +204,10 @@ fn render_table(
     let complex = table.all_rows().any(|row| {
         row.cells.iter().any(|cell| {
             cell.blocks.len() > 1
-                || cell.blocks.iter().any(|block| !matches!(block, Block::Paragraph { .. }))
+                || cell
+                    .blocks
+                    .iter()
+                    .any(|block| !matches!(block, Block::Paragraph { .. }))
         })
     });
     if merged || multiline || complex {
@@ -334,7 +337,10 @@ fn html_cell(
             Block::Paragraph { inlines, .. } | Block::Heading { inlines, .. } => {
                 render_inlines(inlines, true).replace('\n', "<br />")
             }
-            Block::Code { lines, .. } => format!("<code>{}</code>", escape_html(&lines.join("\n")).replace('\n', "<br />")),
+            Block::Code { lines, .. } => format!(
+                "<code>{}</code>",
+                escape_html(&lines.join("\n")).replace('\n', "<br />")
+            ),
             Block::Figure(figure) => doc
                 .assets
                 .get(figure.asset)

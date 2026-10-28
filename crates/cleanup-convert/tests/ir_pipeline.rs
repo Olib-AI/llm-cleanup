@@ -751,7 +751,10 @@ fn compatibility_converters_use_the_structured_pipeline_and_do_not_drop_sidecars
     let pdf = fixture("rich_media.pdf");
     let (docx, _) = cleanup_convert::to_docx::convert(FormatId::Pdf, &pdf).unwrap();
     let xml = String::from_utf8(zip_part(&docx, "word/document.xml")).unwrap();
-    assert!(xml.contains("<w:drawing>"), "legacy DOCX path dropped figures");
+    assert!(
+        xml.contains("<w:drawing>"),
+        "legacy DOCX path dropped figures"
+    );
     assert!(cleanup_convert::to_markdown::convert(FormatId::Pdf, &pdf).is_err());
     let output = convert("rich_media.pdf", Target::Markdown);
     assert!(!output.assets.is_empty());

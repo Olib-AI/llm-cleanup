@@ -164,7 +164,10 @@ pub fn convert(from: FormatId, src: &[u8], to: Target) -> Result<(Vec<u8>, Conve
 /// when its bytes match. This avoids both traversal and clobbering another export.
 /// Call this before committing the main document so a failure cannot silently
 /// produce a document with missing image files.
-pub fn write_assets(destination: &std::path::Path, assets: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+pub fn write_assets(
+    destination: &std::path::Path,
+    assets: &[(String, Vec<u8>)],
+) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind, Write};
     use std::path::Component;
 
@@ -174,22 +177,38 @@ pub fn write_assets(destination: &std::path::Path, assets: &[(String, Vec<u8>)])
     for (name, _) in assets {
         let mut components = std::path::Path::new(name).components();
         if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-            return Err(Error::new(ErrorKind::InvalidInput, "invalid image asset name"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "invalid image asset name",
+            ));
         }
     }
-    let folder = destination.parent().unwrap_or_else(|| std::path::Path::new(".")).join("assets");
+    let folder = destination
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("assets");
     std::fs::create_dir_all(&folder)?;
     if std::fs::symlink_metadata(&folder)?.file_type().is_symlink() {
-        return Err(Error::new(ErrorKind::InvalidInput, "asset directory must not be a symlink"));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "asset directory must not be a symlink",
+        ));
     }
     for (name, data) in assets {
         let path = folder.join(name);
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(mut file) => file.write_all(data)?,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 let metadata = std::fs::symlink_metadata(&path)?;
                 if !metadata.is_file() || std::fs::read(&path)? != *data {
-                    return Err(Error::new(ErrorKind::AlreadyExists, format!("refusing to overwrite image asset {}", path.display())));
+                    return Err(Error::new(
+                        ErrorKind::AlreadyExists,
+                        format!("refusing to overwrite image asset {}", path.display()),
+                    ));
                 }
             }
             Err(error) => return Err(error),
@@ -280,16 +299,23 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("cleanup-assets-{}-{suffix}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("cleanup-assets-{}-{suffix}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let destination = root.join("report.md");
         let assets = vec![("figure.png".to_string(), vec![1, 2, 3])];
         write_assets(&destination, &assets).unwrap();
         write_assets(&destination, &assets).unwrap();
-        assert_eq!(std::fs::read(root.join("assets/figure.png")).unwrap(), [1, 2, 3]);
+        assert_eq!(
+            std::fs::read(root.join("assets/figure.png")).unwrap(),
+            [1, 2, 3]
+        );
         assert!(write_assets(&destination, &[("figure.png".to_string(), vec![4])]).is_err());
         assert!(write_assets(&destination, &[("../escape.png".to_string(), vec![4])]).is_err());
-        assert_eq!(std::fs::read(root.join("assets/figure.png")).unwrap(), [1, 2, 3]);
+        assert_eq!(
+            std::fs::read(root.join("assets/figure.png")).unwrap(),
+            [1, 2, 3]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

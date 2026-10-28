@@ -322,21 +322,26 @@ fn run_clean(job: Job) -> Result<()> {
         }
 
         // Clean-then-convert: apply the conversion to the cleaned native bytes.
-        let (final_bytes, assets, conv) = if let Some(t) = target.filter(|t| !t.is_same_as(fmt.id())) {
-            let converted = cleanup_convert::convert_document(
-                fmt.id(),
-                &output_bytes,
-                t,
-                &cleanup_convert::ConvertOptions {
-                    level,
-                    ..cleanup_convert::ConvertOptions::default()
-                },
-            )
-            .with_context(|| format!("converting {} to {}", input.display(), t.label()))?;
-            (converted.bytes, converted.assets, Some((t, converted.report)))
-        } else {
-            (output_bytes, Vec::new(), None)
-        };
+        let (final_bytes, assets, conv) =
+            if let Some(t) = target.filter(|t| !t.is_same_as(fmt.id())) {
+                let converted = cleanup_convert::convert_document(
+                    fmt.id(),
+                    &output_bytes,
+                    t,
+                    &cleanup_convert::ConvertOptions {
+                        level,
+                        ..cleanup_convert::ConvertOptions::default()
+                    },
+                )
+                .with_context(|| format!("converting {} to {}", input.display(), t.label()))?;
+                (
+                    converted.bytes,
+                    converted.assets,
+                    Some((t, converted.report)),
+                )
+            } else {
+                (output_bytes, Vec::new(), None)
+            };
 
         if in_place && converting {
             bail!("--in-place cannot change the file format; use -o <path> instead");
@@ -424,7 +429,10 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
         atomic_write(&dest, &converted.bytes)
             .with_context(|| format!("writing {}", dest.display()))?;
         if !converted.assets.is_empty() {
-            println!("  {} image asset(s) written to assets/", converted.assets.len());
+            println!(
+                "  {} image asset(s) written to assets/",
+                converted.assets.len()
+            );
         }
         println!(
             "{} → {}  ({} via {})",

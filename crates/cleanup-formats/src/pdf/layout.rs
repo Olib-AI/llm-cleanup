@@ -494,14 +494,20 @@ const FLAG_FIXED_PITCH: i64 = 1 << 0;
 const FLAG_ITALIC: i64 = 1 << 6;
 const FLAG_FORCE_BOLD: i64 = 1 << 18;
 
-fn descendant_font<'a>(pdf: &'a ParsedPdf, dict: &'a [(String, Value)]) -> Option<&'a [(String, Value)]> {
+fn descendant_font<'a>(
+    pdf: &'a ParsedPdf,
+    dict: &'a [(String, Value)],
+) -> Option<&'a [(String, Value)]> {
     let Value::Array(fonts) = pdf.resolve(dict_get(dict, "DescendantFonts")?) else {
         return None;
     };
     pdf.resolve_dict(fonts.first()?).map(Vec::as_slice)
 }
 
-fn font_descriptor<'a>(pdf: &'a ParsedPdf, dict: &'a [(String, Value)]) -> Option<&'a [(String, Value)]> {
+fn font_descriptor<'a>(
+    pdf: &'a ParsedPdf,
+    dict: &'a [(String, Value)],
+) -> Option<&'a [(String, Value)]> {
     let owner = descendant_font(pdf, dict).unwrap_or(dict);
     dict_get(owner, "FontDescriptor")
         .map(|value| pdf.resolve(value))
@@ -514,7 +520,11 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let descriptor = font_descriptor(pdf, dict);
     let base_raw = dict_get(dict, "BaseFont")
         .and_then(as_name)
-        .or_else(|| descriptor.and_then(|entries| dict_get(entries, "FontName")).and_then(as_name))
+        .or_else(|| {
+            descriptor
+                .and_then(|entries| dict_get(entries, "FontName"))
+                .and_then(as_name)
+        })
         .unwrap_or("");
     let canonical = fontmap::canonical_name(base_raw);
     let family = fontmap::family(&canonical);
@@ -665,7 +675,8 @@ fn parse_cid_widths(items: &[Value], out: &mut BTreeMap<u32, f32>) {
                     u32::try_from(first),
                     u32::try_from(last),
                     items.get(index + 2).and_then(as_f32),
-                ) && first <= last && last <= 65_535
+                ) && first <= last
+                    && last <= 65_535
                 {
                     for code in first..=last {
                         out.insert(code, width);
