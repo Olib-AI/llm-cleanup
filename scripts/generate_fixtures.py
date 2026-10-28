@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the reproducible PDF corpus used by the document-IR integration tests.
 
-    python3 -m pip install reportlab pillow
+    python3 -m pip install -r scripts/fixture-requirements.txt
     python3 scripts/generate_fixtures.py            # write tests/fixtures/*.pdf + manifest.json
     python3 scripts/generate_fixtures.py --verify  # prove a rerun is byte-identical
 
@@ -606,6 +606,19 @@ def kerning_and_typography(path: str) -> None:
         canvas.drawString(0.75 * inch, y, "The end of manual kerning tests.")
         canvas.restoreState()
         low_level_operators(canvas, doc)
+        # Always include genuine base-14 faces, even on minimal systems where the
+        # optional DejaVu oblique files are not installed. This exercises the PDF
+        # dictionary family/weight/italic fallback without relying on substitutions.
+        canvas.saveState()
+        for index, (font, label) in enumerate([
+            ("Helvetica", "Base14 regular face"),
+            ("Helvetica-Bold", "Base14 bold face"),
+            ("Helvetica-Oblique", "Base14 italic face"),
+            ("Helvetica-BoldOblique", "Base14 bold italic face"),
+        ]):
+            canvas.setFont(font, 10)
+            canvas.drawString(0.75 * inch, 3.9 * inch - index * 14, label)
+        canvas.restoreState()
 
     # Build with custom page handler for last page
     doc = BaseDocTemplate(
@@ -1332,18 +1345,36 @@ def main() -> int:
     parser.add_argument("--out", default=FIXTURES, help="output directory")
     args = parser.parse_args()
 
-    committed = generate(args.out)
-    if args.verify:
-        import tempfile
+    if not args.verify:
+        generate(args.out)
+        return 0
 
-        with tempfile.TemporaryDirectory() as scratch:
-            regenerated = generate(scratch)
-            if regenerated != committed:
-                for name in committed:
-                    if regenerated.get(name) != committed[name]:
-                        print(f"NON-DETERMINISTIC: {name}", file=sys.stderr)
-                return 1
-        print("all fixtures regenerate byte-identically")
+    # Never regenerate into the comparison directory: verification must report
+    # stale/missing/corrupt committed files without overwriting the evidence.
+    import tempfile
+
+    mismatches = []
+    with tempfile.TemporaryDirectory() as scratch:
+        generate(scratch)
+        for name in [*BUILDERS, "manifest.json"]:
+            expected = os.path.join(args.out, name)
+            generated = os.path.join(scratch, name)
+            try:
+                with open(expected, "rb") as handle:
+                    expected_hash = hashlib.sha256(handle.read()).hexdigest()
+            except OSError as error:
+                mismatches.append(f"{name}: {error}")
+                continue
+            with open(generated, "rb") as handle:
+                actual_hash = hashlib.sha256(handle.read()).hexdigest()
+            if expected_hash != actual_hash:
+                mismatches.append(f"{name}: committed {expected_hash}, generated {actual_hash}")
+    if mismatches:
+        for mismatch in mismatches:
+            print(f"MISMATCH: {mismatch}", file=sys.stderr)
+        print("verify ReportLab/Pillow versions and the installed DejaVu fonts", file=sys.stderr)
+        return 1
+    print("all fixtures and manifest match byte-for-byte")
     return 0
 
 

@@ -20,15 +20,18 @@ images stay in place while only the prose inside text-showing operators changes.
    `Differences`) and `ToUnicode` CMaps (for composite/Identity-H fonts) map encoded
    bytes to Unicode for the shared rule set, with an exact byte-boundary map back into
    the original string operand — including octal/hex escapes.
-4. **Splice, never re-render.** A rule's replacement is re-encoded in the same font and
-   written into the same string operand. `Tm`, `Td`, `Tf`, colour, path and image
-   operators are not touched, so text keeps its position, font, size and styling.
-5. **Repack byte-for-byte.** Unmodified objects — including every image XObject and
-   embedded font stream — are copied verbatim; only edited content-stream objects are
-   rewritten and the xref table is regenerated. With no edits, the output is the input,
-   byte for byte. The pipeline's structural self-check compares a canonical skeleton
-   (every object, image/font streams hashed, content-stream operators with prose
-   operands blanked) before and after, and aborts rather than emit a changed layout.
+4. **Edit without re-typesetting.** Replacements use the original font encoding. For each
+   affected string, declared font advances and `Tc`/`Tw` are used to insert a compensating
+   `TJ` displacement, so the following glyphs retain their original positions, including
+   under `Tz` and transformed text matrices. The original `Tm`, `Td`, `Tf`, colour, path,
+   and image operators are retained. A replacement wider than the removed text can still
+   overlap adjacent ink; no reflow is attempted.
+5. **Repack unchanged objects.** Unmodified objects — including image XObjects and embedded
+   font streams — are copied verbatim; edited content streams and the xref are regenerated.
+   With no edits, the output is byte-identical. The structural self-check fingerprints every
+   object and the original content operators after restoring text-free templates for the
+   generated compensations; original `TJ` adjustments are not ignored. Position regressions
+   additionally compare neighboring text coordinates before and after editing.
 
 ## Metadata and embedded images
 
@@ -51,9 +54,11 @@ Reported at every level, and scrubbed at **Aggressive**:
   embedded-JPEG handling above still applies.
 - **Text in fonts without a usable Unicode map** (e.g. a CID font with no `ToUnicode`)
   is reported (`container.pdf-undecodable-text`) and left untouched.
-- **Subset-font glyphs can be missing.** If a replacement character has no glyph in the
-  text's own font encoding, that single edit is skipped instead of rendering the wrong
-  glyph.
+- **Some edits cannot be positioned safely.** If a replacement glyph is missing, a font
+  width is unavailable, an edit splits a multi-character glyph, or text uses vertical or
+  non-Identity CID positioning, native editing returns an error rather than emitting a
+  potentially shifted result. Exact built-in metrics are used only for unembedded base-14
+  fonts; metric-compatible aliases are insufficient to guarantee native positions.
 - **Unsupported stream filters** (e.g. `LZWDecode`, `JBIG2Decode`, `JPXDecode` content)
   leave the affected stream untouched.
 - **Digital signatures** are reported: any cleaned copy necessarily stops validating.
@@ -67,9 +72,11 @@ Reported at every level, and scrubbed at **Aggressive**:
   per-chunk tokeniser produces. That conversion is still a re-render into a new
   container, so it is lossy by definition — choose “Same as input” / PDF output when the
   requirement is that the original layout be preserved exactly. A PDF→PDF conversion is an
-  identity operation; cleaning a PDF is the native byte-splice path described above, which
-  keeps the page tree, fonts and image XObjects byte-identical and only rewrites prose
-  operands (`native_pdf_clean_keeps_geometry_fonts_and_images` proves this in CI).
+  identity operation; native cleaning uses the position-compensated path described above.
+  Reconstructed conversion is approximate: rotated pages, inline images, image masks, and
+  image `/Decode` arrays are not fully supported. ICC image profiles are approximated by
+  component count rather than colour-managed. Unsupported features generate warnings where
+  detected, and the original PDF remains the best choice when fidelity is essential.
 
 A ready-made fixture is in `samples/pdf/report.pdf` (Flate content, split `TJ` runs, an
 embedded image, an AI-stamped Info dictionary and AI XMP):

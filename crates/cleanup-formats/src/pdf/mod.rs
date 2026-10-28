@@ -2841,12 +2841,12 @@ fn encode_replacement(profile: &FontProfile, replacement: &str) -> Option<Vec<u8
 fn advance_units(font: &FontInfo, state: &CleanupTextState, codes: &[u32]) -> Result<f64> {
     let size = state.font_size.filter(|size| size.is_finite() && size.abs() > 0.00001)
         .ok_or_else(|| CoreError::Encoding("PDF text has no usable font size; cannot preserve its position".to_string()))?;
-    if font.vertical || !state.char_spacing.is_finite() || !state.word_spacing.is_finite() {
-        return Err(CoreError::Encoding("vertical or invalid PDF text spacing cannot be edited safely".to_string()));
+    if font.vertical || !font.safe_cid_mapping || !state.char_spacing.is_finite() || !state.word_spacing.is_finite() {
+        return Err(CoreError::Encoding("vertical, non-Identity CID or invalid PDF text spacing cannot be edited safely".to_string()));
     }
     let mut advance = 0.0;
     for code in codes {
-        let width = font.known_width_em(*code).ok_or_else(|| {
+        let width = font.positioning_width_em(*code).ok_or_else(|| {
             CoreError::Encoding(format!("missing PDF font width for glyph {code}; cannot preserve text positions"))
         })?;
         advance += f64::from(width) * 1000.0 + state.char_spacing * 1000.0 / size;
@@ -2903,6 +2903,22 @@ fn append_hex_string(out: &mut Vec<u8>, bytes: &[u8]) {
     out.push(b'>');
 }
 
+fn is_pdf_padding(bytes: &[u8]) -> bool {
+    let mut index = 0;
+    while index < bytes.len() {
+        if is_pdf_ws(bytes[index]) {
+            index += 1;
+        } else if bytes[index] == b'%' {
+            while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                index += 1;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
 /// Rewrite one text-showing operand as a TJ array. Every original glyph after an
 /// edit starts at its former position; existing TJ adjustments remain untouched.
 /// Comments record a text-free structural template for the skeleton self-check.
@@ -2918,6 +2934,12 @@ fn position_segment(stream: &StreamCtx, edited: &mut EditedSegment) -> Result<(R
     };
     if end > stream.decoded.len() || string_end > end {
         return Err(CoreError::SelfCheck("invalid PDF showing operator range".to_string()));
+    }
+    if let Some(operator) = quote {
+        let gap_end = end.checked_sub(operator.len()).ok_or_else(|| CoreError::SelfCheck("invalid PDF operator".to_string()))?;
+        if gap_end < string_end || !is_pdf_padding(&stream.decoded[string_end..gap_end]) {
+            return Err(CoreError::Encoding("unexpected operands in PDF text operator; cannot preserve structure".to_string()));
+        }
     }
     let mut template = Vec::new();
     template.extend_from_slice(&stream.decoded[start..segment.local_range.start]);

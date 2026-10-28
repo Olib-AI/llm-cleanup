@@ -414,7 +414,10 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
             from,
             &bytes,
             target,
-            &cleanup_convert::ConvertOptions::default(),
+            &cleanup_convert::ConvertOptions {
+                sanitize: false,
+                ..cleanup_convert::ConvertOptions::default()
+            },
         )
         .with_context(|| format!("converting {} to {}", input.display(), target.label()))?;
         let rep = converted.report;
@@ -624,6 +627,20 @@ mod tests {
             ensure_output_extension(Path::new("out.markdown"), "md"),
             PathBuf::from("out.markdown")
         );
+    }
+
+    #[test]
+    fn standalone_convert_does_not_clean_content() {
+        let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("aiclean-convert-{}-{suffix}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.md");
+        let destination = dir.join("result.txt");
+        std::fs::write(&source, b"# Title\n\nCertainly! This is the original content.\n").unwrap();
+        run_convert(&[source], Some(destination.clone()), None).unwrap();
+        let result = std::fs::read_to_string(destination).unwrap();
+        assert!(result.contains("Certainly!"), "{result}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

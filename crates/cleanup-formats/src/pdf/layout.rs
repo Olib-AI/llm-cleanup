@@ -1,9 +1,8 @@
 //! Spatial reconstruction: PDF page content → glyphs, words, rules, fills and images.
 //!
-//! The lossless cleaner in the parent module reads text showing operators only, because it
-//! splices prose back into the same operands and never needs to know where anything is drawn.
-//! Conversion is the opposite problem: to rebuild a table, a column layout or a figure, we need
-//! the *geometry*. This module therefore interprets each page's content streams with the full
+//! Native cleaning uses the font metrics here to compensate for changed text advances without
+//! re-typesetting. Conversion additionally needs to reconstruct where everything is drawn to
+//! rebuild tables, columns and figures. This module interprets page content streams with the full
 //! graphics state:
 //!
 //! * `q`/`Q`/`cm` maintain the CTM; `BT`/`ET`/`Tm`/`Td`/`TD`/`T*`/`TL` maintain the text
@@ -394,6 +393,8 @@ impl PageGeometry {
 pub(super) struct FontInfo {
     pub(super) profile: FontProfile,
     pub(super) vertical: bool,
+    pub(super) safe_cid_mapping: bool,
+    native_base14: bool,
     metrics: FontMetrics,
     /// PostScript name with the subset tag stripped, e.g. `DejaVuSans-Bold`.
     canonical: String,
@@ -436,6 +437,16 @@ impl FontInfo {
             .or(self.metrics.default_width)
             .or_else(base_width)
             .map(|width| width / 1000.0)
+    }
+
+    /// Native editing may not use a merely metric-compatible substitute: a
+    /// small width error would move all subsequent text. Only explicit PDF
+    /// widths/defaults or the exact, unembedded standard 14 face are safe.
+    pub(super) fn positioning_width_em(&self, code: u32) -> Option<f32> {
+        self.metrics.declared(code)
+            .or(self.metrics.default_width)
+            .map(|width| width / 1000.0)
+            .or_else(|| if self.native_base14 { self.known_width_em(code) } else { None })
     }
 
     fn width_em(&self, code: u32) -> f32 {
@@ -582,11 +593,20 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
         .filter(|value| (0.1..=0.9).contains(value))
         .unwrap_or(base_space);
 
+    let encoding = dict_get(dict, "Encoding").map(|value| pdf.resolve(value)).and_then(as_name);
+    let is_cid = dict_get(dict, "Subtype").and_then(as_name) == Some("Type0");
+    let embedded = descriptor.is_some_and(|entries| ["FontFile", "FontFile2", "FontFile3"]
+        .iter().any(|name| dict_get(entries, name).is_some()));
+    let native_base14 = !embedded && matches!(base_raw,
+        "Helvetica" | "Helvetica-Bold" | "Helvetica-Oblique" | "Helvetica-BoldOblique" |
+        "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" |
+        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique"
+    );
     FontInfo {
         profile,
-        vertical: dict_get(dict, "Encoding")
-            .and_then(as_name)
-            .is_some_and(|name| name.ends_with("-V")),
+        vertical: encoding.is_some_and(|name| name.ends_with("-V")),
+        safe_cid_mapping: !is_cid || encoding == Some("Identity-H"),
+        native_base14,
         metrics,
         canonical,
         family,
@@ -966,7 +986,10 @@ impl<'a> Interpreter<'a> {
                         self.do_xobject(name, resources, &gs, geom, depth);
                     }
                 }
-                "BI" => lexer.skip_inline_image(),
+                "BI" => {
+                    lexer.skip_inline_image();
+                    self.warnings.push("inline PDF images are not yet extracted during conversion".to_string());
+                }
                 "gs" => {
                     // Extended graphics state (alpha, blend mode) carries no geometry we use.
                 }
@@ -1264,9 +1287,9 @@ impl<'a> Interpreter<'a> {
             return;
         }
         let filters = dict_filters(dict);
-        let is_jpeg = filters
+        let jpeg_filter = filters
             .iter()
-            .any(|filter| filter == "DCTDecode" || filter == "DCT");
+            .position(|filter| filter == "DCTDecode" || filter == "DCT");
         if filters.iter().any(|filter| filter == "JPXDecode") {
             self.warnings.push(
                 "skipped a JPEG 2000 image (JPXDecode is not supported); its position is lost"
@@ -1274,8 +1297,35 @@ impl<'a> Interpreter<'a> {
             );
             return;
         }
-        let (kind, data) = if is_jpeg {
-            (ImageKind::Jpeg, raw.to_vec())
+        if dict_get(dict, "SMask").is_some() || dict_get(dict, "Mask").is_some() {
+            self.warnings.push("image transparency masks are not preserved during conversion".to_string());
+        }
+        if dict_get(dict, "Decode").is_some() {
+            self.warnings.push("image Decode arrays are not applied during conversion".to_string());
+        }
+        if matches!(dict_get(dict, "ColorSpace").map(|v| self.pdf.resolve(v)), Some(Value::Array(items)) if items.first().and_then(as_name) == Some("ICCBased")) {
+            self.warnings.push("ICC image profiles are approximated by their component count; colour management is not applied".to_string());
+        }
+        let (kind, data) = if let Some(index) = jpeg_filter {
+            if index + 1 != filters.len() {
+                self.warnings.push("skipped an image with filters after DCTDecode".to_string());
+                return;
+            }
+            // DCT data may itself be wrapped in ASCII85, ASCIIHex, or Flate.
+            // Only the bytes *after* these wrappers are a usable JPEG asset.
+            let mut prefix = dict.to_vec();
+            set_dict_entry(&mut prefix, "Filter", Value::Array(
+                filters[..index].iter().cloned().map(Value::Name).collect()
+            ));
+            let Ok(jpeg) = decode_stream_data(&prefix, raw) else {
+                self.warnings.push("skipped a JPEG with an unsupported outer filter".to_string());
+                return;
+            };
+            if !jpeg.starts_with(&[0xFF, 0xD8]) {
+                self.warnings.push("skipped an image with an invalid JPEG payload".to_string());
+                return;
+            }
+            (ImageKind::Jpeg, jpeg)
         } else {
             let Ok(decoded) = decode_stream_data(dict, raw) else {
                 self.warnings

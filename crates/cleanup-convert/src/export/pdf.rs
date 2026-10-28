@@ -974,12 +974,20 @@ fn image_payload(asset: &ImageAsset) -> Option<(String, Vec<u8>)> {
         return None;
     }
     match asset.kind {
-        ImageKind::Jpeg => Some((
-            format!(
-                "/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode"
-            ),
-            asset.data.clone(),
-        )),
+        ImageKind::Jpeg => {
+            let color_space = match cleanup_core::doc::raster::jpeg_components(&asset.data)? {
+                1 => "DeviceGray",
+                3 => "DeviceRGB",
+                4 => "DeviceCMYK",
+                _ => return None,
+            };
+            Some((
+                format!(
+                    "/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /{color_space} /BitsPerComponent 8 /Filter /DCTDecode"
+                ),
+                asset.data.clone(),
+            ))
+        },
         ImageKind::Png => {
             let raster = decode_png(&asset.data)?;
             let mut encoder =

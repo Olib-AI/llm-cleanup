@@ -222,6 +222,15 @@ pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 
 /// Width/height of a JPEG from its first `SOFn` marker.
 pub fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    jpeg_frame(bytes).map(|(width, height, _)| (width, height))
+}
+
+/// Number of colour components declared by the first JPEG frame header.
+pub fn jpeg_components(bytes: &[u8]) -> Option<u8> {
+    jpeg_frame(bytes).map(|(_, _, components)| components)
+}
+
+fn jpeg_frame(bytes: &[u8]) -> Option<(u32, u32, u8)> {
     if !bytes.starts_with(&[0xFF, 0xD8]) {
         return None;
     }
@@ -246,15 +255,16 @@ pub fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         let is_sof =
             (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
         if is_sof {
-            if pos + 7 > bytes.len() {
+            if pos + 8 > bytes.len() {
                 return None;
             }
             let height = u32::from(u16::from_be_bytes([bytes[pos + 3], bytes[pos + 4]]));
             let width = u32::from(u16::from_be_bytes([bytes[pos + 5], bytes[pos + 6]]));
-            if width == 0 || height == 0 {
+            let components = bytes[pos + 7];
+            if width == 0 || height == 0 || components == 0 {
                 return None;
             }
-            return Some((width, height));
+            return Some((width, height, components));
         }
         pos += length;
     }
@@ -306,5 +316,6 @@ mod tests {
         jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x40, 0x00, 0x80, 0x03]);
         jpeg.extend_from_slice(&[0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
         assert_eq!(jpeg_dimensions(&jpeg), Some((128, 64)));
+        assert_eq!(jpeg_components(&jpeg), Some(3));
     }
 }

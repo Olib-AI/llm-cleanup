@@ -11,7 +11,7 @@
 
 ---
 
-llm-cleanup strips the tell-tale residue that large language models and AI export pipelines leave behind (em dashes, curly quotes, the narrow no-break space, invisible "smuggling" characters, SNOW trailing whitespace steganography, Mathematical Alphanumeric fake-bold styling, chat-template tokens, ChatGPT and Gemini/NotebookLM citation plumbing, C2PA / Content Credentials manifests, agent attribution trailers, overused wording) from Markdown, plain text, HTML, Word documents (`.docx`), PDF documents (`.pdf`), and standalone images (`.png`, `.jpg`, `.webp`, `.svg`). Language-neutral cleanup works on any script, and review-only French and Spanish phrasing cues are enabled alongside English so mixed-language documents are handled in one pass. It does this without breaking a single byte of your formatting or re-encoding image pixels: headings, bold, italic, lists, tables, links, code blocks, scripts, shapes, and pixel streams are preserved exactly. There is no network call and no LLM at runtime.
+llm-cleanup strips the tell-tale residue that large language models and AI export pipelines leave behind (em dashes, curly quotes, the narrow no-break space, invisible "smuggling" characters, SNOW trailing whitespace steganography, Mathematical Alphanumeric fake-bold styling, chat-template tokens, ChatGPT and Gemini/NotebookLM citation plumbing, C2PA / Content Credentials manifests, agent attribution trailers, overused wording) from Markdown, plain text, HTML, Word documents (`.docx`), PDF documents (`.pdf`), and standalone images (`.png`, `.jpg`, `.webp`, `.svg`). Language-neutral cleanup works on any script, and review-only French and Spanish phrasing cues are enabled alongside English so mixed-language documents are handled in one pass. Native cleanup preserves unaffected document structures and image pixels; cross-format conversion reconstructs layout and can be lossy. PDF edits are rejected when font metrics are insufficient to preserve neighboring text positions. There is no network call and no LLM at runtime.
 
 The rule set is reviewed against the model landscape each release. Coverage as of **October 2026** spans GPT-5.5/5.6/6, Claude Opus 5.x and Fable/Mythos 5.1, Gemini 3.x, Llama 4, Grok 4/5, Mistral Large 3, DeepSeek V4, Qwen3.8, Kimi K2.5–K3, GLM-5, Copilot, Perplexity Sonar and the 2026 crop of coding agents. Run `aiclean coverage` to print it, or read [docs/FINGERPRINTS.md](docs/FINGERPRINTS.md) for the sources.
 
@@ -121,7 +121,7 @@ Convert while cleaning (the output extension picks the target format):
 ```bash
 aiclean clean report.docx -o report.md      # clean, then convert to Markdown
 aiclean clean notes.md --to docx            # clean, then convert to Word
-aiclean clean report.docx -o report.pdf     # clean, then create a text-only PDF
+aiclean clean report.docx -o report.pdf     # clean, then reconstruct the document as PDF
 aiclean convert report.docx -o report.txt   # convert only, no cleaning
 aiclean clean report.pdf -o cleaned-report  # missing extension added for you: cleaned-report.pdf
 ```
