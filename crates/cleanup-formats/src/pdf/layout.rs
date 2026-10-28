@@ -914,8 +914,8 @@ impl<'a> Interpreter<'a> {
 
         // Cluster glyphs into word-level TextRuns using geometric gap threshold
         // Gap = x_curr - (x_prev + width_prev) in text space, converted via scale
-        let space_threshold = (gs.font_size * 0.25).max(1.0) * gs.hscale;
         let (x0, y0) = apply(trm, 0.0, 0.0);
+        let _space_threshold = (gs.font_size * 0.25).max(1.0) * gs.hscale;
         let top = self.page_height - y0 - size * 0.8 - gs.rise * scale;
         let bold = fonts.get(&font_name_raw).map(|f| f.bold).unwrap_or(false);
         let italic = fonts.get(&font_name_raw).map(|f| f.italic).unwrap_or(false);
@@ -930,7 +930,7 @@ impl<'a> Interpreter<'a> {
         let mut cursor = 0.0f32; // current glyph's x in text space (before CTM)
 
         // Helper to flush current word as a TextRun
-        let mut flush_word =
+        let flush_word =
             |word_text: &mut String, word_start: f32, word_adv: f32, geom: &mut PageGeometry| {
                 if word_text.trim().is_empty() {
                     return;
