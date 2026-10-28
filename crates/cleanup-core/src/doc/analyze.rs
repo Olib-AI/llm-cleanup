@@ -673,7 +673,10 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
                     chosen = position;
                 }
             }
-            match by_column.iter_mut().find(|(position, _)| *position == chosen) {
+            match by_column
+                .iter_mut()
+                .find(|(position, _)| *position == chosen)
+            {
                 Some((_, column_lines)) => column_lines.push(index),
                 None => by_column.push((chosen, vec![index])),
             }
