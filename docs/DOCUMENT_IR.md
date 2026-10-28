@@ -191,10 +191,10 @@ covers all three: its third page is drawn with raw `TJ` arrays, `Tc`/`Tw` regist
 `python3 -m pip install -r scripts/fixture-requirements.txt`, then run
 `python3 scripts/generate_fixtures.py --verify` to regenerate in a temporary directory and
 compare without modifying committed files. The checked-in corpus was generated with Debian
-`fonts-dejavu-core` 2.37-6 (regular, bold, mono and mono-bold) **without** optional oblique
-font files; installing different fonts, including optional italic variants, changes the PDFs.
-The typography fixture also draws genuine base-14 bold/oblique faces independent of those
-optional fonts. The PDFs and ground-truth manifest are committed, so `cargo test` needs no
+`fonts-dejavu-core` 2.37-6 (regular, bold, mono and mono-bold). Different font versions can
+change the PDFs; optional system italic fonts are intentionally not used by the generator.
+The typography fixture draws genuine base-14 bold/oblique faces independently of them.
+The PDFs and ground-truth manifest are committed, so `cargo test` needs no
 Python or network access:
 
 | Fixture | Ground truth asserted |

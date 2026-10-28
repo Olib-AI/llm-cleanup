@@ -149,10 +149,15 @@ pub struct ConvertOutput {
 /// instead of returning a Markdown document with broken image links; use
 /// [`convert_document`] and [`write_assets`] for multi-file conversions.
 pub fn convert(from: FormatId, src: &[u8], to: Target) -> Result<(Vec<u8>, ConvertReport)> {
-    let output = convert_document(from, src, to, &ConvertOptions {
-        sanitize: false,
-        ..ConvertOptions::default()
-    })?;
+    let output = convert_document(
+        from,
+        src,
+        to,
+        &ConvertOptions {
+            sanitize: false,
+            ..ConvertOptions::default()
+        },
+    )?;
     if !output.assets.is_empty() {
         return Err(ConvertError::Failed(
             "conversion contains image assets; use convert_document to retain them".to_string(),

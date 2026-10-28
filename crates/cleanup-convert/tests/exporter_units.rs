@@ -390,10 +390,24 @@ fn docx_continues_combined_row_and_column_spans_through_empty_rows() {
     merged.colspan = 3;
     merged.rowspan = 2;
     let table = Table {
-        columns: vec![ColumnSpec { width: 1.0, align: Align::Left }; 3],
+        columns: vec![
+            ColumnSpec {
+                width: 1.0,
+                align: Align::Left
+            };
+            3
+        ],
         rows: vec![
-            Row { cells: vec![merged], header: false, fill: None },
-            Row { cells: Vec::new(), header: false, fill: None },
+            Row {
+                cells: vec![merged],
+                header: false,
+                fill: None,
+            },
+            Row {
+                cells: Vec::new(),
+                header: false,
+                fill: None,
+            },
         ],
         ..Table::default()
     };
@@ -401,12 +415,21 @@ fn docx_continues_combined_row_and_column_spans_through_empty_rows() {
     let rendered = docx::render(&doc);
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(rendered.bytes)).unwrap();
     let mut xml = String::new();
-    std::io::Read::read_to_string(&mut archive.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+    std::io::Read::read_to_string(&mut archive.by_name("word/document.xml").unwrap(), &mut xml)
+        .unwrap();
     let rows: Vec<&str> = xml.split("<w:tr>").skip(1).collect();
     assert_eq!(rows.len(), 2, "{xml}");
     assert!(rows[0].contains("<w:gridSpan w:val=\"3\"/><w:vMerge w:val=\"restart\"/>"));
     assert!(rows[1].contains("<w:gridSpan w:val=\"3\"/><w:vMerge/>"));
-    assert_eq!(rows[1].split("</w:tr>").next().unwrap().matches("<w:tc>").count(), 1);
+    assert_eq!(
+        rows[1]
+            .split("</w:tr>")
+            .next()
+            .unwrap()
+            .matches("<w:tc>")
+            .count(),
+        1
+    );
 }
 
 #[test]

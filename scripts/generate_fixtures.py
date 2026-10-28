@@ -74,16 +74,13 @@ FIXTURES = os.path.join(HERE, "tests", "fixtures")
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 REGULAR = os.path.join(FONT_DIR, "DejaVuSans.ttf")
 BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
-ITALIC = os.path.join(FONT_DIR, "DejaVuSans-Oblique.ttf")
-BOLDITALIC = os.path.join(FONT_DIR, "DejaVuSans-BoldOblique.ttf")
+# Keep these aliases fixed: the committed corpus was generated with core-only
+# DejaVu fonts. Optional system packages must not change fixture bytes. Genuine
+# italic/bold-italic faces are exercised independently with base-14 fonts below.
+ITALIC = REGULAR
+BOLDITALIC = REGULAR
 MONO = os.path.join(FONT_DIR, "DejaVuSansMono.ttf")
 MONO_BOLD = os.path.join(FONT_DIR, "DejaVuSansMono-Bold.ttf")
-
-# Try alternative italic names
-for alt in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"]:
-    if os.path.exists(alt) and not os.path.exists(ITALIC):
-        ITALIC = alt
 
 # Fixed sentinel vocabulary. The Rust tests read the same strings from manifest.json.
 SYMBOLS = [

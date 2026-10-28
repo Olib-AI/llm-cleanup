@@ -483,7 +483,8 @@ impl<'a> Writer<'a> {
             for cell in &row.cells {
                 while column < columns && continuations[row_index][column] > 0 {
                     let span = continuations[row_index][column];
-                    self.body.push_str(&Self::merge_continuation(&widths, column, span));
+                    self.body
+                        .push_str(&Self::merge_continuation(&widths, column, span));
                     column += span;
                 }
                 if column >= columns {
@@ -524,7 +525,8 @@ impl<'a> Writer<'a> {
             while column < columns {
                 let span = continuations[row_index][column];
                 if span > 0 {
-                    self.body.push_str(&Self::merge_continuation(&widths, column, span));
+                    self.body
+                        .push_str(&Self::merge_continuation(&widths, column, span));
                     column += span;
                 } else {
                     self.body.push_str(&format!(

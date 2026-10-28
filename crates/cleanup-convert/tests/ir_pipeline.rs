@@ -337,11 +337,19 @@ fn rich_media_preserves_raster_assets_and_vectors() {
             "asset {width}x{height} was not extracted with its real dimensions"
         );
     }
-    let jpeg = doc.assets.iter()
+    let jpeg = doc
+        .assets
+        .iter()
         .find(|asset| asset.kind == cleanup_core::doc::ImageKind::Jpeg)
         .expect("JPEG figure missing");
-    assert!(jpeg.data.starts_with(&[0xFF, 0xD8]), "PDF filter wrapper leaked into JPEG asset");
-    assert_eq!(cleanup_core::doc::raster::jpeg_dimensions(&jpeg.data), Some((jpeg.width_px, jpeg.height_px)));
+    assert!(
+        jpeg.data.starts_with(&[0xFF, 0xD8]),
+        "PDF filter wrapper leaked into JPEG asset"
+    );
+    assert_eq!(
+        cleanup_core::doc::raster::jpeg_dimensions(&jpeg.data),
+        Some((jpeg.width_px, jpeg.height_px))
+    );
     assert!(
         doc.assets.iter().any(|asset| asset.dpi_x.is_some()),
         "no placement DPI was recorded"
@@ -405,7 +413,12 @@ fn rich_media_preserves_raster_assets_and_vectors() {
         .filter(|name| name.starts_with("word/media/"))
         .collect();
     assert!(media.len() >= minimum, "only {:?} media parts", media);
-    assert!(media.iter().any(|name| zip_part(&docx.bytes, name) == jpeg.data), "JPEG payload changed inside DOCX");
+    assert!(
+        media
+            .iter()
+            .any(|name| zip_part(&docx.bytes, name) == jpeg.data),
+        "JPEG payload changed inside DOCX"
+    );
     for name in &media {
         assert!(!zip_part(&docx.bytes, name).is_empty(), "{name} is empty");
     }
@@ -1036,7 +1049,9 @@ fn typography_metadata_is_recovered_from_the_font_dictionary() {
         ("Helvetica-Oblique", false, true),
         ("Helvetica-BoldOblique", true, true),
     ] {
-        let face = runs.iter().find(|run| run.font_name == name)
+        let face = runs
+            .iter()
+            .find(|run| run.font_name == name)
             .unwrap_or_else(|| panic!("missing standard PDF font {name}"));
         assert_eq!(face.font_family, "Helvetica");
         assert_eq!(face.bold, expected_bold, "{name}");

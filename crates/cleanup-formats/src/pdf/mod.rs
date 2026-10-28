@@ -1768,10 +1768,7 @@ fn font_profile(pdf: &ParsedPdf, font_dict: &[(String, Value)]) -> FontProfile {
     FontProfile::from_decode(1, decode)
 }
 
-fn fonts_for_resources(
-    pdf: &ParsedPdf,
-    resources: Option<&Value>,
-) -> BTreeMap<String, FontInfo> {
+fn fonts_for_resources(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, FontInfo> {
     layout::fonts_for(pdf, resources)
 }
 
@@ -1910,7 +1907,10 @@ fn push_content_stream(
     if !seen.insert(reference) {
         // The same stream can inherit different resources or graphics state in
         // different contexts. Do not pretend one invocation proves all others.
-        if let Some(existing) = streams.iter_mut().find(|stream| stream.reference == reference) {
+        if let Some(existing) = streams
+            .iter_mut()
+            .find(|stream| stream.reference == reference)
+        {
             existing.known_initial_text = false;
             existing.safe_fonts = Some(BTreeSet::new());
         }
@@ -1972,7 +1972,15 @@ fn collect_form_streams(
         for (name, profile) in own_fonts {
             fonts.insert(name, profile);
         }
-        push_content_stream(pdf, streams, seen, reference, fonts.clone(), false, Some(safe_fonts));
+        push_content_stream(
+            pdf,
+            streams,
+            seen,
+            reference,
+            fonts.clone(),
+            false,
+            Some(safe_fonts),
+        );
         collect_form_streams(
             pdf,
             own_resources.as_ref().or(Some(resources)),
@@ -2439,13 +2447,22 @@ fn tokenize_stream(
                     }
                     "Tj" | "'" => {
                         let operation = if operator == "Tj" {
-                            ShowOperation::Text { operator_end: lexer.pos }
+                            ShowOperation::Text {
+                                operator_end: lexer.pos,
+                            }
                         } else {
-                            ShowOperation::NextLine { operator_end: lexer.pos }
+                            ShowOperation::NextLine {
+                                operator_end: lexer.pos,
+                            }
                         };
                         if let Some(Operand::Str(string)) = operands.into_iter().next()
                             && let Some(segment) = make_segment(
-                                stream_index, fonts, &state, operation, &string, unsupported,
+                                stream_index,
+                                fonts,
+                                &state,
+                                operation,
+                                &string,
+                                unsupported,
                             )
                         {
                             segments.push(segment);
@@ -2460,10 +2477,17 @@ fn tokenize_stream(
                             state.word_spacing = Some(*word);
                             state.char_spacing = Some(*character);
                         }
-                        let operation = ShowOperation::NextLineWithSpacing { operator_end: lexer.pos };
+                        let operation = ShowOperation::NextLineWithSpacing {
+                            operator_end: lexer.pos,
+                        };
                         if let Some(Operand::Str(string)) = operands.into_iter().last()
                             && let Some(segment) = make_segment(
-                                stream_index, fonts, &state, operation, &string, unsupported,
+                                stream_index,
+                                fonts,
+                                &state,
+                                operation,
+                                &string,
+                                unsupported,
                             )
                         {
                             segments.push(segment);
@@ -2476,8 +2500,12 @@ fn tokenize_stream(
                             for item in items {
                                 if let Operand::Str(string) = item
                                     && let Some(segment) = make_segment(
-                                        stream_index, fonts, &state, ShowOperation::ArrayItem,
-                                        &string, unsupported,
+                                        stream_index,
+                                        fonts,
+                                        &state,
+                                        ShowOperation::ArrayItem,
+                                        &string,
+                                        unsupported,
                                     )
                                 {
                                     segments.push(segment);
@@ -2854,7 +2882,8 @@ fn encode_replacement(profile: &FontProfile, replacement: &str) -> Option<Vec<u8
     let mut encoded = Vec::new();
     for ch in replacement.chars() {
         let code = *profile.encode.get(&ch)?;
-        if profile.code_len == 0 || profile.code_len > 4
+        if profile.code_len == 0
+            || profile.code_len > 4
             || (profile.code_len < 4 && (code >> (profile.code_len * 8)) != 0)
         {
             return None;
@@ -2876,19 +2905,31 @@ fn adjustment_units(
     original: &[u32],
     replacement: &[u32],
 ) -> Result<f64> {
-    let size = state.font_size.filter(|size| size.is_finite() && size.abs() > 0.00001)
-        .ok_or_else(|| CoreError::Encoding("PDF text has no usable font size; cannot preserve its position".to_string()))?;
-    if font.vertical || !font.safe_cid_mapping
+    let size = state
+        .font_size
+        .filter(|size| size.is_finite() && size.abs() > 0.00001)
+        .ok_or_else(|| {
+            CoreError::Encoding(
+                "PDF text has no usable font size; cannot preserve its position".to_string(),
+            )
+        })?;
+    if font.vertical
+        || !font.safe_cid_mapping
         || state.char_spacing.is_some_and(|value| !value.is_finite())
         || state.word_spacing.is_some_and(|value| !value.is_finite())
     {
-        return Err(CoreError::Encoding("vertical, non-Identity CID or invalid PDF text spacing cannot be edited safely".to_string()));
+        return Err(CoreError::Encoding(
+            "vertical, non-Identity CID or invalid PDF text spacing cannot be edited safely"
+                .to_string(),
+        ));
     }
     let width = |codes: &[u32]| -> Result<f64> {
         let mut total = 0.0;
         for code in codes {
             let glyph = font.positioning_width_em(*code).ok_or_else(|| {
-                CoreError::Encoding(format!("missing PDF font width for glyph {code}; cannot preserve text positions"))
+                CoreError::Encoding(format!(
+                    "missing PDF font width for glyph {code}; cannot preserve text positions"
+                ))
             })?;
             total += f64::from(glyph) * 1000.0;
         }
@@ -2897,23 +2938,31 @@ fn adjustment_units(
     let mut adjustment = width(replacement)? - width(original)?;
     let glyph_delta = replacement.len() as f64 - original.len() as f64;
     if glyph_delta != 0.0 {
-        let spacing = state.char_spacing.ok_or_else(|| CoreError::Encoding(
-            "inherited PDF character spacing is unknown; cannot preserve text positions".to_string()
-        ))?;
+        let spacing = state.char_spacing.ok_or_else(|| {
+            CoreError::Encoding(
+                "inherited PDF character spacing is unknown; cannot preserve text positions"
+                    .to_string(),
+            )
+        })?;
         adjustment += glyph_delta * spacing * 1000.0 / size;
     }
     if font.profile.code_len == 1 {
         let spaces = |codes: &[u32]| codes.iter().filter(|code| **code == 32).count() as f64;
         let space_delta = spaces(replacement) - spaces(original);
         if space_delta != 0.0 {
-            let spacing = state.word_spacing.ok_or_else(|| CoreError::Encoding(
-                "inherited PDF word spacing is unknown; cannot preserve text positions".to_string()
-            ))?;
+            let spacing = state.word_spacing.ok_or_else(|| {
+                CoreError::Encoding(
+                    "inherited PDF word spacing is unknown; cannot preserve text positions"
+                        .to_string(),
+                )
+            })?;
             adjustment += space_delta * spacing * 1000.0 / size;
         }
     }
     if !adjustment.is_finite() || adjustment.abs() > 1_000_000_000.0 {
-        return Err(CoreError::Encoding("PDF text advance is outside the safe range".to_string()));
+        return Err(CoreError::Encoding(
+            "PDF text advance is outside the safe range".to_string(),
+        ));
     }
     Ok(adjustment)
 }
@@ -2924,17 +2973,34 @@ fn positioned_change(
     range: Range<usize>,
     replacement: &str,
 ) -> Result<PositionedChange> {
-    let first = segment.codes.iter().position(|glyph| glyph.text.start == range.start)
-        .ok_or_else(|| CoreError::Encoding("PDF edit would split a multi-character glyph".to_string()))?;
-    let last = segment.codes.iter().position(|glyph| glyph.text.end == range.end)
+    let first = segment
+        .codes
+        .iter()
+        .position(|glyph| glyph.text.start == range.start)
+        .ok_or_else(|| {
+            CoreError::Encoding("PDF edit would split a multi-character glyph".to_string())
+        })?;
+    let last = segment
+        .codes
+        .iter()
+        .position(|glyph| glyph.text.end == range.end)
         .filter(|last| *last >= first)
-        .ok_or_else(|| CoreError::Encoding("PDF edit would split a multi-character glyph".to_string()))?;
-    let original: Vec<u32> = segment.codes[first..=last].iter().map(|glyph| glyph.code).collect();
+        .ok_or_else(|| {
+            CoreError::Encoding("PDF edit would split a multi-character glyph".to_string())
+        })?;
+    let original: Vec<u32> = segment.codes[first..=last]
+        .iter()
+        .map(|glyph| glyph.code)
+        .collect();
     let encoded = encode_replacement(&font.profile, replacement).ok_or_else(|| {
-        CoreError::Encoding("a replacement glyph is missing from the PDF font; the original was kept".to_string())
+        CoreError::Encoding(
+            "a replacement glyph is missing from the PDF font; the original was kept".to_string(),
+        )
     })?;
-    let replacement_codes: Vec<u32> = encoded.chunks(font.profile.code_len.max(1))
-        .map(hex_bytes_to_u32).collect();
+    let replacement_codes: Vec<u32> = encoded
+        .chunks(font.profile.code_len.max(1))
+        .map(hex_bytes_to_u32)
+        .collect();
     let adjustment = adjustment_units(font, &segment.state, &original, &replacement_codes)?;
     Ok(PositionedChange {
         encoded_range: segment.codes[first].encoded.start..segment.codes[last].encoded.end,
@@ -2979,10 +3045,21 @@ fn is_pdf_padding(bytes: &[u8]) -> bool {
 /// Rewrite one text-showing operand as a TJ array. Every original glyph after an
 /// edit starts at its former position; existing TJ adjustments remain untouched.
 /// Comments record a text-free structural template for the skeleton self-check.
-fn position_segment(stream: &StreamCtx, edited: &mut EditedSegment) -> Result<(Range<usize>, Vec<u8>)> {
+fn position_segment(
+    stream: &StreamCtx,
+    edited: &mut EditedSegment,
+) -> Result<(Range<usize>, Vec<u8>)> {
     let segment = &edited.segment;
-    let start = segment.local_range.start.checked_sub(1).ok_or_else(|| CoreError::SelfCheck("invalid PDF string start".to_string()))?;
-    let string_end = segment.local_range.end.checked_add(1).ok_or_else(|| CoreError::SelfCheck("invalid PDF string end".to_string()))?;
+    let start = segment
+        .local_range
+        .start
+        .checked_sub(1)
+        .ok_or_else(|| CoreError::SelfCheck("invalid PDF string start".to_string()))?;
+    let string_end = segment
+        .local_range
+        .end
+        .checked_add(1)
+        .ok_or_else(|| CoreError::SelfCheck("invalid PDF string end".to_string()))?;
     let (end, quote) = match segment.operation {
         ShowOperation::ArrayItem => (string_end, None),
         ShowOperation::Text { operator_end } => (operator_end, Some("Tj")),
@@ -2990,12 +3067,18 @@ fn position_segment(stream: &StreamCtx, edited: &mut EditedSegment) -> Result<(R
         ShowOperation::NextLineWithSpacing { operator_end } => (operator_end, Some("\"")),
     };
     if end > stream.decoded.len() || string_end > end {
-        return Err(CoreError::SelfCheck("invalid PDF showing operator range".to_string()));
+        return Err(CoreError::SelfCheck(
+            "invalid PDF showing operator range".to_string(),
+        ));
     }
     if let Some(operator) = quote {
-        let gap_end = end.checked_sub(operator.len()).ok_or_else(|| CoreError::SelfCheck("invalid PDF operator".to_string()))?;
+        let gap_end = end
+            .checked_sub(operator.len())
+            .ok_or_else(|| CoreError::SelfCheck("invalid PDF operator".to_string()))?;
         if gap_end < string_end || !is_pdf_padding(&stream.decoded[string_end..gap_end]) {
-            return Err(CoreError::Encoding("unexpected operands in PDF text operator; cannot preserve structure".to_string()));
+            return Err(CoreError::Encoding(
+                "unexpected operands in PDF text operator; cannot preserve structure".to_string(),
+            ));
         }
     }
     let mut template = Vec::new();
@@ -3004,9 +3087,13 @@ fn position_segment(stream: &StreamCtx, edited: &mut EditedSegment) -> Result<(R
     template.extend_from_slice(if segment.is_hex { b"54455854" } else { b"TEXT" });
     template.extend_from_slice(&stream.decoded[segment.local_range.end..end]);
     if template.len() > 32_768 {
-        return Err(CoreError::Encoding("PDF showing operator contains an oversized comment".to_string()));
+        return Err(CoreError::Encoding(
+            "PDF showing operator contains an oversized comment".to_string(),
+        ));
     }
-    edited.changes.sort_by_key(|change| change.encoded_range.start);
+    edited
+        .changes
+        .sort_by_key(|change| change.encoded_range.start);
     let mut out = Vec::new();
     out.extend_from_slice(CLEANUP_BEGIN);
     append_hex(&mut out, &template);
@@ -3016,13 +3103,19 @@ fn position_segment(stream: &StreamCtx, edited: &mut EditedSegment) -> Result<(R
         Some("'") => out.extend_from_slice(b"() ' [ "),
         Some("\"") => out.extend_from_slice(b"() \" [ "),
         None => {}
-        _ => return Err(CoreError::SelfCheck("unknown PDF showing operator".to_string())),
+        _ => {
+            return Err(CoreError::SelfCheck(
+                "unknown PDF showing operator".to_string(),
+            ));
+        }
     }
     let mut cursor = 0usize;
     let mut piece = Vec::new();
     for change in &edited.changes {
         if change.encoded_range.start < cursor || change.encoded_range.end > segment.encoded.len() {
-            return Err(CoreError::SelfCheck("overlapping PDF glyph edits".to_string()));
+            return Err(CoreError::SelfCheck(
+                "overlapping PDF glyph edits".to_string(),
+            ));
         }
         piece.extend_from_slice(&segment.encoded[cursor..change.encoded_range.start]);
         piece.extend_from_slice(&change.replacement);
@@ -3052,9 +3145,17 @@ fn restore_position_templates(source: &[u8]) -> Vec<u8> {
     let mut cursor = 0usize;
     while let Some(begin) = find_subslice(source, cursor, CLEANUP_BEGIN) {
         let header = begin + CLEANUP_BEGIN.len();
-        let Some(line_end) = source[header..].iter().position(|byte| *byte == b'\n').map(|n| header + n) else { break };
+        let Some(line_end) = source[header..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|n| header + n)
+        else {
+            break;
+        };
         let digits = &source[header..line_end];
-        if digits.is_empty() || digits.len() % 2 != 0 || digits.len() > 65_536
+        if digits.is_empty()
+            || digits.len() % 2 != 0
+            || digits.len() > 65_536
             || !digits.iter().all(|byte| hex_value(*byte).is_some())
         {
             result.extend_from_slice(&source[cursor..header]);
@@ -3068,11 +3169,16 @@ fn restore_position_templates(source: &[u8]) -> Vec<u8> {
             let next_begin = find_subslice(source, search, CLEANUP_BEGIN);
             let next_end = find_subslice(source, search, CLEANUP_END);
             match (next_begin, next_end) {
-                (Some(b), Some(e)) if b < e => { depth += 1; search = b + CLEANUP_BEGIN.len(); }
+                (Some(b), Some(e)) if b < e => {
+                    depth += 1;
+                    search = b + CLEANUP_BEGIN.len();
+                }
                 (_, Some(e)) => {
                     depth -= 1;
                     search = e + CLEANUP_END.len();
-                    if depth == 0 { matched = Some(search); }
+                    if depth == 0 {
+                        matched = Some(search);
+                    }
                 }
                 _ => break,
             }
@@ -3084,7 +3190,11 @@ fn restore_position_templates(source: &[u8]) -> Vec<u8> {
                 result.push(high * 16 + low);
             }
         }
-        cursor = if source.get(end) == Some(&b'\n') { end + 1 } else { end };
+        cursor = if source.get(end) == Some(&b'\n') {
+            end + 1
+        } else {
+            end
+        };
     }
     result.extend_from_slice(&source[cursor..]);
     result
@@ -3306,12 +3416,15 @@ impl Format for Pdf {
         for edit in &edits.edits {
             let Some(segments) = derived.span_segments.get(edit.span_index) else {
                 return Err(CoreError::SelfCheck(format!(
-                    "edit references missing PDF span {}", edit.span_index
+                    "edit references missing PDF span {}",
+                    edit.span_index
                 )));
             };
             let total: usize = segments.iter().map(|segment| segment.text.len()).sum();
             if edit.range.start >= edit.range.end || edit.range.end > total {
-                return Err(CoreError::SelfCheck("PDF edit range is invalid".to_string()));
+                return Err(CoreError::SelfCheck(
+                    "PDF edit range is invalid".to_string(),
+                ));
             }
             let mut logical = 0usize;
             let mut first = true;
@@ -3324,31 +3437,50 @@ impl Format for Pdf {
                 if overlap_start >= overlap_end {
                     continue;
                 }
-                let stream = derived.streams.get(segment.stream_index)
-                    .ok_or_else(|| CoreError::SelfCheck("missing PDF content stream".to_string()))?;
-                if stream.safe_fonts.as_ref().is_some_and(|fonts| !fonts.contains(&segment.font_name)) {
+                let stream = derived.streams.get(segment.stream_index).ok_or_else(|| {
+                    CoreError::SelfCheck("missing PDF content stream".to_string())
+                })?;
+                if stream
+                    .safe_fonts
+                    .as_ref()
+                    .is_some_and(|fonts| !fonts.contains(&segment.font_name))
+                {
                     return Err(CoreError::Encoding("PDF stream uses an inherited or ambiguous font resource; cannot preserve text positions".to_string()));
                 }
-                let font = stream.fonts.get(&segment.font_name)
-                    .ok_or_else(|| CoreError::Encoding("missing PDF font; cannot preserve text positions".to_string()))?;
+                let font = stream.fonts.get(&segment.font_name).ok_or_else(|| {
+                    CoreError::Encoding(
+                        "missing PDF font; cannot preserve text positions".to_string(),
+                    )
+                })?;
                 let replacement = if first { edit.replacement.as_str() } else { "" };
                 let change = positioned_change(
-                    segment, font,
+                    segment,
+                    font,
                     overlap_start - segment_start..overlap_end - segment_start,
                     replacement,
                 )?;
-                positioned.entry((segment.stream_index, segment.local_range.start))
-                    .or_insert_with(|| EditedSegment { segment: segment.clone(), changes: Vec::new() })
-                    .changes.push(change);
+                positioned
+                    .entry((segment.stream_index, segment.local_range.start))
+                    .or_insert_with(|| EditedSegment {
+                        segment: segment.clone(),
+                        changes: Vec::new(),
+                    })
+                    .changes
+                    .push(change);
                 first = false;
             }
         }
 
         let mut per_stream: BTreeMap<usize, ByteEdits> = BTreeMap::new();
         for ((stream_index, _), mut edited) in positioned {
-            let stream = derived.streams.get(stream_index)
+            let stream = derived
+                .streams
+                .get(stream_index)
                 .ok_or_else(|| CoreError::SelfCheck("missing PDF content stream".to_string()))?;
-            per_stream.entry(stream_index).or_default().push(position_segment(stream, &mut edited)?);
+            per_stream
+                .entry(stream_index)
+                .or_default()
+                .push(position_segment(stream, &mut edited)?);
         }
 
         if per_stream.is_empty() {
@@ -3403,7 +3535,9 @@ impl Format for Pdf {
             let mut segments = Vec::new();
             let mut unsupported = 0;
             tokenize_stream(0, &streams, &mut spans, &mut segments, &mut unsupported);
-            let edits: Vec<(Range<usize>, Vec<u8>)> = segments.iter().flatten()
+            let edits: Vec<(Range<usize>, Vec<u8>)> = segments
+                .iter()
+                .flatten()
                 .map(|segment| (segment.local_range.clone(), b"TEXT".to_vec()))
                 .collect();
             let canonical = splice_bytes(&streams[0].decoded, &edits)?;
@@ -3726,9 +3860,8 @@ mod tests {
             "(A REMOVE Z) ' ( Q) Tj",
             "2 1 (A REMOVE Z) \" ( Q) Tj",
         ] {
-            let content = format!(
-                "BT /F1 12 Tf 1 Tc 2 Tw 75 Tz 18 TL 1 .2 -.1 1 40 700 Tm {showing} ET\n"
-            );
+            let content =
+                format!("BT /F1 12 Tf 1 Tc 2 Tw 75 Tz 18 TL 1 .2 -.1 1 40 700 Tm {showing} ET\n");
             let objects = vec![
                 b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
                 b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
@@ -3739,24 +3872,67 @@ mod tests {
             let bytes = assemble_pdf(&objects, 1, None);
             let doc = Pdf.parse(&bytes).unwrap();
             let start = doc.spans[0].text.find("REMOVE").unwrap();
-            let edit = Edit { span_index: 0, range: start..start + 6, replacement: "OK".to_string(), rule_id: "test".to_string() };
+            let edit = Edit {
+                span_index: 0,
+                range: start..start + 6,
+                replacement: "OK".to_string(),
+                rule_id: "test".to_string(),
+            };
             let out = Pdf.render(&doc, &EditSet { edits: vec![edit] }).unwrap();
             let before = extract_layout(&bytes).unwrap();
             let after = extract_layout(&out).unwrap();
             for letter in ["Z", "Q"] {
-                let a = before.layout.pages[0].runs.iter().find(|glyph| glyph.text == letter).unwrap();
-                let b = after.layout.pages[0].runs.iter().find(|glyph| glyph.text == letter).unwrap();
-                assert!((a.rect.x - b.rect.x).abs() < 0.002, "{showing}: {a:?} vs {b:?}");
-                assert!((a.baseline - b.baseline).abs() < 0.002, "{showing}: {a:?} vs {b:?}");
+                let a = before.layout.pages[0]
+                    .runs
+                    .iter()
+                    .find(|glyph| glyph.text == letter)
+                    .unwrap();
+                let b = after.layout.pages[0]
+                    .runs
+                    .iter()
+                    .find(|glyph| glyph.text == letter)
+                    .unwrap();
+                assert!(
+                    (a.rect.x - b.rect.x).abs() < 0.002,
+                    "{showing}: {a:?} vs {b:?}"
+                );
+                assert!(
+                    (a.baseline - b.baseline).abs() < 0.002,
+                    "{showing}: {a:?} vs {b:?}"
+                );
             }
-            assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap(), "{showing}");
+            assert_eq!(
+                Pdf.skeleton(&bytes).unwrap(),
+                Pdf.skeleton(&out).unwrap(),
+                "{showing}"
+            );
             // Editing a previously generated TJ fragment is also position-safe and idempotent.
             let second = Pdf.parse(&out).unwrap();
             let z = second.spans[0].text.find('Z').unwrap();
-            let out2 = Pdf.render(&second, &EditSet { edits: vec![Edit { span_index: 0, range: z..z + 1, replacement: String::new(), rule_id: "test".to_string() }] }).unwrap();
+            let out2 = Pdf
+                .render(
+                    &second,
+                    &EditSet {
+                        edits: vec![Edit {
+                            span_index: 0,
+                            range: z..z + 1,
+                            replacement: String::new(),
+                            rule_id: "test".to_string(),
+                        }],
+                    },
+                )
+                .unwrap();
             let after2 = extract_layout(&out2).unwrap();
-            let q1 = after.layout.pages[0].runs.iter().find(|glyph| glyph.text == "Q").unwrap();
-            let q2 = after2.layout.pages[0].runs.iter().find(|glyph| glyph.text == "Q").unwrap();
+            let q1 = after.layout.pages[0]
+                .runs
+                .iter()
+                .find(|glyph| glyph.text == "Q")
+                .unwrap();
+            let q2 = after2.layout.pages[0]
+                .runs
+                .iter()
+                .find(|glyph| glyph.text == "Q")
+                .unwrap();
             assert!((q1.rect.x - q2.rect.x).abs() < 0.002, "{showing}");
             assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out2).unwrap());
         }
@@ -3775,17 +3951,35 @@ mod tests {
         let bytes = assemble_pdf(&objects, 1, None);
         let doc = Pdf.parse(&bytes).unwrap();
         let start = doc.spans[0].text.find("REMOVE").unwrap();
-        let edit = |replacement: &str| EditSet { edits: vec![Edit {
-            span_index: 0, range: start..start + 6, replacement: replacement.to_string(), rule_id: "test".to_string()
-        }] };
+        let edit = |replacement: &str| EditSet {
+            edits: vec![Edit {
+                span_index: 0,
+                range: start..start + 6,
+                replacement: replacement.to_string(),
+                rule_id: "test".to_string(),
+            }],
+        };
         let error = Pdf.render(&doc, &edit("")).unwrap_err();
-        assert!(error.to_string().contains("inherited PDF character spacing"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("inherited PDF character spacing"),
+            "{error}"
+        );
         // Equal glyph/space counts cancel the unknown inherited spacing exactly.
         let out = Pdf.render(&doc, &edit("CHANGE")).unwrap();
         let before = extract_layout(&bytes).unwrap();
         let after = extract_layout(&out).unwrap();
-        let z1 = before.layout.pages[0].runs.iter().find(|run| run.text == "Z").unwrap();
-        let z2 = after.layout.pages[0].runs.iter().find(|run| run.text == "Z").unwrap();
+        let z1 = before.layout.pages[0]
+            .runs
+            .iter()
+            .find(|run| run.text == "Z")
+            .unwrap();
+        let z2 = after.layout.pages[0]
+            .runs
+            .iter()
+            .find(|run| run.text == "Z")
+            .unwrap();
         assert!((z1.rect.x - z2.rect.x).abs() < 0.002);
         assert_eq!(Pdf.skeleton(&bytes).unwrap(), Pdf.skeleton(&out).unwrap());
     }
@@ -3799,21 +3993,58 @@ mod tests {
                 b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
                 stream_body("", content, false), font.to_vec(),
             ];
-            if let Some(cmap) = cmap { objects.push(stream_body("", cmap, false)); }
+            if let Some(cmap) = cmap {
+                objects.push(stream_body("", cmap, false));
+            }
             assemble_pdf(&objects, 1, None)
         };
-        let unknown = make(b"<< /Type /Font /Subtype /TrueType /BaseFont /Custom /Encoding /WinAnsiEncoding >>", b"BT /F1 12 Tf (abc) Tj ET", None);
+        let unknown = make(
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /Custom /Encoding /WinAnsiEncoding >>",
+            b"BT /F1 12 Tf (abc) Tj ET",
+            None,
+        );
         let doc = Pdf.parse(&unknown).unwrap();
-        let edit = |range| EditSet { edits: vec![Edit { span_index: 0, range, replacement: "x".to_string(), rule_id: "test".to_string() }] };
-        assert!(Pdf.render(&doc, &edit(0..1)).unwrap_err().to_string().contains("width"));
-        let alias = make(b"<< /Type /Font /Subtype /TrueType /BaseFont /ArialMT /Encoding /WinAnsiEncoding >>", b"BT /F1 12 Tf (abc) Tj ET", None);
+        let edit = |range| EditSet {
+            edits: vec![Edit {
+                span_index: 0,
+                range,
+                replacement: "x".to_string(),
+                rule_id: "test".to_string(),
+            }],
+        };
+        assert!(
+            Pdf.render(&doc, &edit(0..1))
+                .unwrap_err()
+                .to_string()
+                .contains("width")
+        );
+        let alias = make(
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /ArialMT /Encoding /WinAnsiEncoding >>",
+            b"BT /F1 12 Tf (abc) Tj ET",
+            None,
+        );
         let alias_doc = Pdf.parse(&alias).unwrap();
-        assert!(Pdf.render(&alias_doc, &edit(0..1)).unwrap_err().to_string().contains("width"), "metric-compatible aliases must not be used as exact widths");
+        assert!(
+            Pdf.render(&alias_doc, &edit(0..1))
+                .unwrap_err()
+                .to_string()
+                .contains("width"),
+            "metric-compatible aliases must not be used as exact widths"
+        );
         let cmap = b"1 beginbfchar\n<41> <00660069>\nendbfchar\n";
-        let ligature = make(b"<< /Type /Font /Subtype /TrueType /BaseFont /Custom /ToUnicode 6 0 R >>", b"BT /F1 12 Tf (A) Tj ET", Some(cmap));
+        let ligature = make(
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /Custom /ToUnicode 6 0 R >>",
+            b"BT /F1 12 Tf (A) Tj ET",
+            Some(cmap),
+        );
         let doc = Pdf.parse(&ligature).unwrap();
         assert_eq!(doc.spans[0].text, "fi");
-        assert!(Pdf.render(&doc, &edit(0..1)).unwrap_err().to_string().contains("split"));
+        assert!(
+            Pdf.render(&doc, &edit(0..1))
+                .unwrap_err()
+                .to_string()
+                .contains("split")
+        );
     }
 
     #[test]

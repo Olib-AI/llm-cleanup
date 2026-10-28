@@ -987,7 +987,7 @@ fn image_payload(asset: &ImageAsset) -> Option<(String, Vec<u8>)> {
                 ),
                 asset.data.clone(),
             ))
-        },
+        }
         ImageKind::Png => {
             let raster = decode_png(&asset.data)?;
             let mut encoder =
