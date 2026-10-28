@@ -374,11 +374,17 @@ def low_level_operators(canvas, doc) -> None:
 
     # 1. `TJ` array: +40 tightens a letter pair (a real kerning adjustment), -250 opens a
     #    word gap without any space character. Neither may split or join the wrong words.
+    #    Every word boundary here is a `-250` displacement (0.25 em, wider than half of DejaVu
+    #    Sans's 0.318 em space), and the only `+40` sits *inside* "words", so a correct reader
+    #    produces "Kerning TJ array keeps words whole" and a naive one produces either
+    #    "Kern ing TJ array …" or "KerningTJarray keepswordswhole".
     text = canvas.beginText(0.75 * inch, y)
     text.setFont("Body", 10)
     text.textOut("Kern")
     text._code.append("[40(ing)] TJ")
-    text._code.append("[(TJ)40(array)-250(keeps)40(words)40(whole)] TJ")
+    #    The array opens with `-250` so the word gap after "Kerning" is geometry too: there
+    #    is no space character anywhere in this line.
+    text._code.append("[-250(TJ)-250(array)-250(keeps)-250(word)40(s)-250(whole)] TJ")
     canvas.drawText(text)
     y -= 16
 
