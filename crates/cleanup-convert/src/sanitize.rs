@@ -24,6 +24,11 @@ pub struct SanitizeOptions {
     pub level: CleanupLevel,
     /// Remove blocks that consist only of assistant boilerplate.
     pub drop_boilerplate: bool,
+    /// Keep source typography (curly quotes, dashes, ellipses, ligatures) during conversion.
+    /// The `typo.*` rules are AI-*cleaning* rules; applying them while converting to another
+    /// container would silently rewrite legitimate Unicode, which is a fidelity regression.
+    /// Hidden/zero-width characters are still removed by the `unicode.*` rules.
+    pub preserve_typography: bool,
 }
 
 impl Default for SanitizeOptions {
@@ -31,6 +36,7 @@ impl Default for SanitizeOptions {
         SanitizeOptions {
             level: CleanupLevel::Standard,
             drop_boilerplate: true,
+            preserve_typography: true,
         }
     }
 }
@@ -41,6 +47,9 @@ pub struct SanitizeReport {
     pub edits_applied: usize,
     pub blocks_removed: usize,
     pub applied_by_rule: Vec<(String, usize)>,
+    /// Structural IR warnings found after filtering (empty containers, orphaned assets, …).
+    /// Normally empty; surfaced so a caller can spot an analyser regression.
+    pub normalization_warnings: Vec<String>,
 }
 
 impl SanitizeReport {
@@ -66,17 +75,39 @@ impl SanitizeReport {
 }
 
 /// Sanitize a document in place.
+///
+/// Order matters: furniture-zone filtering runs first (a running header is not prose), then the
+/// shared rule catalogue and the IR-specific artifact passes, then `Doc::normalize` prunes the
+/// containers those deletions emptied and re-checks every anchor. Exporters therefore always
+/// see a consistent tree.
 pub fn sanitize(doc: &mut Doc, options: &SanitizeOptions) -> SanitizeReport {
     let rules = cleanup_rules::builtin_rules();
+    let active: Vec<&dyn Rule> = rules
+        .iter()
+        .filter(|rule| {
+            !options.preserve_typography
+                || !rule.id().starts_with("typo.")
+                // Invisible/zero-width characters are artifacts, not typography: they must be
+                // removed even when the source's quotes, dashes and ellipses are preserved.
+                || rule.id() == "typo.invisibles.strip"
+        })
+        .map(|rule| rule.as_ref())
+        .collect();
     let cx = Ctx::new(options.level);
     let mut report = SanitizeReport::default();
-    sanitize_blocks(&mut doc.blocks, &rules, &cx, options, &mut report);
+    if options.drop_boilerplate {
+        filter_furniture_zones(doc, &mut report);
+    }
+    sanitize_blocks(&mut doc.blocks, &active, &cx, options, &mut report);
+    for warning in doc.normalize() {
+        report.normalization_warnings.push(warning);
+    }
     report
 }
 
 fn sanitize_blocks(
     blocks: &mut Vec<Block>,
-    rules: &[Box<dyn Rule>],
+    rules: &[&dyn Rule],
     cx: &Ctx,
     options: &SanitizeOptions,
     report: &mut SanitizeReport,
@@ -110,7 +141,7 @@ fn sanitize_blocks(
                     }
                 }
             }
-            Block::Figure(_) | Block::Divider(_) => {}
+            Block::Figure(_) | Block::Vector(_) | Block::Divider(_) => {}
         }
     }
 
@@ -134,7 +165,7 @@ fn sanitize_blocks(
 
 fn sanitize_inlines(
     inlines: &mut Vec<Inline>,
-    rules: &[Box<dyn Rule>],
+    rules: &[&dyn Rule],
     cx: &Ctx,
     report: &mut SanitizeReport,
 ) {
@@ -174,6 +205,7 @@ fn sanitize_inlines(
             finding.rule_id.clone(),
         ));
     }
+    let contains_code = inlines.iter().any(|inline| inline.style.is_code());
     if cx.level >= CleanupLevel::Standard {
         for (range, rule_id) in boilerplate_sentence_ranges(&text) {
             if on_char_boundary(&text, range.start) && on_char_boundary(&text, range.end) {
@@ -188,11 +220,40 @@ fn sanitize_inlines(
                 edits.push((range, String::new(), "ir.disclaimer".to_string()));
             }
         }
+        // Zero-width/invisible characters are always artifacts in prose, regardless of the
+        // typography-preserving setting. The shared `typo.invisibles.strip` rule removes most;
+        // ZWNJ/ZWJ/word-joiner need an explicit IR pass at Standard level.
+        if !contains_code {
+            for range in invisible_ranges(&text) {
+                edits.push((range, String::new(), "ir.invisible".to_string()));
+            }
+        }
+        // Chat-template / markup residue is never prose. Code-bearing blocks are exempt: their
+        // brackets, backticks and asterisks are intentional syntax.
+        if !contains_code {
+            for range in format_token_ranges(&text) {
+                if on_char_boundary(&text, range.start) && on_char_boundary(&text, range.end) {
+                    edits.push((range, String::new(), "ir.format-token".to_string()));
+                }
+            }
+            for range in wrapper_quote_ranges(&text) {
+                if on_char_boundary(&text, range.start) && on_char_boundary(&text, range.end) {
+                    edits.push((range, String::new(), "ir.wrapper-quotes".to_string()));
+                }
+            }
+            for range in repetition_ranges(&text) {
+                if on_char_boundary(&text, range.start) && on_char_boundary(&text, range.end) {
+                    edits.push((range, String::new(), "ir.repetition".to_string()));
+                }
+            }
+        }
     }
     if edits.is_empty() {
         return;
     }
-    edits.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.end.cmp(&b.0.end)));
+    // Longest edit wins at equal start offsets, matching the byte-splice pipeline. Otherwise a
+    // one-character wrapper quote at offset 0 would shadow a whole preamble sentence.
+    edits.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)));
     let mut accepted: Vec<(std::ops::Range<usize>, String, String)> = Vec::new();
     let mut cursor = 0usize;
     for edit in edits {
@@ -279,6 +340,381 @@ fn apply_to_inlines(
 }
 
 // ---------------------------------------------------------------------------
+// Formatting tokens, wrapper quotes and hallucinated repetition
+// ---------------------------------------------------------------------------
+
+/// Literal serialization artifacts that only appear when a chat response was pasted into a
+/// document without rendering it. None of these can be legitimate prose punctuation.
+const FORMAT_TOKENS: &[&str] = &[
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|endoftext|>",
+    "[/INST]",
+    "[INST]",
+    "<<SYS>>",
+    "<</SYS>>",
+    "[END]",
+    "[START]",
+    "```markdown",
+    "```",
+    "~~~",
+    "</s>",
+    "<s>",
+    "**",
+    "`",
+];
+
+const FURNITURE_WORDS: &[&str] = &[
+    "confidential",
+    "internal",
+    "draft",
+    "copyright",
+    "all rights reserved",
+    "page",
+];
+
+fn looks_like_html_tag(inner: &str) -> bool {
+    let trimmed = inner.trim();
+    let name: String = trimmed
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphabetic() || *ch == '/' || *ch == '!' || *ch == '-')
+        .collect();
+    let name = name
+        .trim_start_matches('/')
+        .trim_start_matches('!')
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "p" | "div"
+            | "span"
+            | "br"
+            | "hr"
+            | "b"
+            | "i"
+            | "em"
+            | "strong"
+            | "code"
+            | "pre"
+            | "ul"
+            | "ol"
+            | "li"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "blockquote"
+            | "a"
+            | "img"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tr"
+            | "td"
+            | "th"
+    )
+}
+
+/// Byte ranges of formatting/invisible characters that never carry meaning in prose.
+fn invisible_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    text.char_indices()
+        .filter(|(_, ch)| {
+            matches!(
+                *ch,
+                '\u{200B}'..='\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{FEFF}'
+                    | '\u{00AD}'
+            )
+        })
+        .map(|(offset, ch)| offset..offset + ch.len_utf8())
+        .collect()
+}
+
+/// Byte ranges of chat-template tokens and orphaned HTML tags in a prose block.
+fn format_token_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    for token in FORMAT_TOKENS {
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(token) {
+            let start = from + rel;
+            let end = start + token.len();
+            ranges.push(start..end);
+            from = end;
+        }
+    }
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'<' {
+            let limit = (index + 96).min(bytes.len());
+            let end = bytes[index + 1..limit]
+                .iter()
+                .position(|byte| *byte == b'>')
+                .map(|rel| index + 1 + rel);
+            if let Some(end) = end
+                && looks_like_html_tag(&text[index + 1..end])
+            {
+                ranges.push(index..end + 1);
+                index = end + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    ranges.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    ranges
+}
+
+/// Strip an artificial pair of quotes wrapped around an entire paragraph.
+///
+/// Deliberately conservative: the block must be a real sentence (six or more words), must have
+/// no other quote characters inside, and the quotes must be a matching pair at the very start
+/// and end. A genuine short quotation or a quotation with an embedded citation is preserved.
+fn wrapper_quote_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut forward = text.char_indices().filter(|(_, ch)| !ch.is_whitespace());
+    let mut backward = text
+        .char_indices()
+        .rev()
+        .filter(|(_, ch)| !ch.is_whitespace());
+    let (Some((start, first)), Some((end, last))) = (forward.next(), backward.next()) else {
+        return Vec::new();
+    };
+    if end <= start {
+        return Vec::new();
+    }
+    let matched = matches!(
+        (first, last),
+        ('"', '"') | ('“', '”') | ('‘', '’') | ('\'', '\'')
+    );
+    if !matched {
+        return Vec::new();
+    }
+    let inner = &text[start + first.len_utf8()..end];
+    let has_inner_quote = inner
+        .chars()
+        .any(|ch| matches!(ch, '"' | '“' | '”' | '‘' | '’' | '\''));
+    if has_inner_quote || inner.split_whitespace().count() < 6 {
+        return Vec::new();
+    }
+    vec![start..start + first.len_utf8(), end..end + last.len_utf8()]
+}
+
+#[derive(Debug)]
+struct Token {
+    start: usize,
+    end: usize,
+    normalized: String,
+}
+
+fn word_tokens(text: &str) -> Vec<Token> {
+    let mut out = Vec::new();
+    let mut current: Option<(usize, String)> = None;
+    for (offset, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if let Some((start, word)) = current.take() {
+                out.push(Token {
+                    start,
+                    end: offset,
+                    normalized: normalize_word(&word),
+                });
+            }
+        } else {
+            let entry = current.get_or_insert_with(|| (offset, String::new()));
+            entry.1.push(ch);
+        }
+    }
+    if let Some((start, word)) = current {
+        out.push(Token {
+            start,
+            end: text.len(),
+            normalized: normalize_word(&word),
+        });
+    }
+    out
+}
+
+fn normalize_word(word: &str) -> String {
+    word.trim_matches(|ch: char| ch.is_ascii_punctuation())
+        .to_lowercase()
+}
+
+/// Collapse runs of three or more identical words, and three or more repeats of a two-word
+/// phrase — the classic loop a chat model falls into when it loses context.
+fn repetition_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let tokens = word_tokens(text);
+    let mut ranges = Vec::new();
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let mut stop = index + 1;
+        while stop < tokens.len()
+            && !tokens[index].normalized.is_empty()
+            && tokens[stop].normalized == tokens[index].normalized
+        {
+            stop += 1;
+        }
+        if stop - index >= 3 {
+            ranges.push(tokens[index].end..tokens[stop - 1].end);
+        }
+        index = stop;
+    }
+    if tokens.len() >= 6 {
+        for index in 0..=tokens.len() - 6 {
+            let first = &tokens[index].normalized;
+            let second = &tokens[index + 1].normalized;
+            if first.is_empty() || second.is_empty() {
+                continue;
+            }
+            let repeats = (0..3).all(|step| {
+                tokens[index + step * 2].normalized == *first
+                    && tokens[index + step * 2 + 1].normalized == *second
+            });
+            if repeats {
+                ranges.push(tokens[index + 2].start..tokens[index + 5].end);
+            }
+        }
+    }
+    ranges.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    ranges
+}
+
+// ---------------------------------------------------------------------------
+// Header/footer zone filtering
+// ---------------------------------------------------------------------------
+
+fn furniture_key(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            out.push('#');
+        } else if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
+        } else if ch.is_whitespace() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    out.trim().to_string()
+}
+
+fn carries_prose(block: &Block) -> bool {
+    matches!(
+        block,
+        Block::Heading { .. } | Block::Paragraph { .. } | Block::List { .. }
+    )
+}
+
+fn looks_like_furniture(key: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    let words = key.split_whitespace().count();
+    if words > 14 {
+        return false;
+    }
+    if FURNITURE_WORDS.iter().any(|word| key.contains(word)) {
+        return true;
+    }
+    key.chars()
+        .all(|ch| ch.is_ascii_digit() || ch == '#' || ch.is_whitespace() || ch == '©')
+}
+
+/// Remove text that lives entirely inside a recorded header/footer band.
+///
+/// The spatial analyser already strips *repeated* running furniture from the line stream. This
+/// pass is the IR-level safety net for single-page documents, first/last pages and readers that
+/// produce their own anchors: a short line in a furniture band is dropped only when it repeats
+/// elsewhere, was recognised as running furniture by the analyser, or looks like a page stamp.
+/// Survivors keep their anchors, so reading order and hierarchy are untouched.
+fn filter_furniture_zones(doc: &mut Doc, report: &mut SanitizeReport) {
+    if doc.info.page_boundaries.is_empty() {
+        return;
+    }
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for block in doc.walk() {
+        if !carries_prose(block) || block.anchor().is_none() {
+            continue;
+        }
+        let key = furniture_key(&block.plain_text());
+        if key.split_whitespace().count() <= 14 {
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    let repeated: Vec<String> = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= 2)
+        .map(|(key, _)| key)
+        .collect();
+    let known: Vec<String> = doc
+        .info
+        .running_headers
+        .iter()
+        .chain(doc.info.running_footers.iter())
+        .map(|text| furniture_key(text))
+        .collect();
+    let boundaries = doc.info.page_boundaries.clone();
+    prune_furniture_blocks(&mut doc.blocks, &boundaries, &repeated, &known, report);
+}
+
+fn prune_furniture_blocks(
+    blocks: &mut Vec<Block>,
+    boundaries: &[cleanup_core::doc::PageBoundary],
+    repeated: &[String],
+    known: &[String],
+    report: &mut SanitizeReport,
+) {
+    blocks.retain_mut(|block| {
+        match block {
+            Block::Callout { blocks, .. } => {
+                prune_furniture_blocks(blocks, boundaries, repeated, known, report);
+            }
+            Block::Columns { columns, .. } => {
+                for column in columns.iter_mut() {
+                    prune_furniture_blocks(&mut column.blocks, boundaries, repeated, known, report);
+                }
+            }
+            Block::Table(table) => {
+                for row in table.headers.iter_mut().chain(table.rows.iter_mut()) {
+                    for cell in row.cells.iter_mut() {
+                        prune_furniture_blocks(
+                            &mut cell.blocks,
+                            boundaries,
+                            repeated,
+                            known,
+                            report,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !carries_prose(block) {
+            return true;
+        }
+        let Some(anchor) = block.anchor() else {
+            return true;
+        };
+        let Some(boundary) = boundaries.get(anchor.page) else {
+            return true;
+        };
+        if !boundary.in_furniture_zone(&anchor.rect) {
+            return true;
+        }
+        let key = furniture_key(&block.plain_text());
+        let drop = !key.is_empty()
+            && (repeated.contains(&key) || known.contains(&key) || looks_like_furniture(&key));
+        if drop {
+            report.blocks_removed += 1;
+        }
+        !drop
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Boilerplate
 // ---------------------------------------------------------------------------
 
@@ -302,6 +738,10 @@ const PURE_BOILERPLATE: &[&str] = &[
     "generated by an ai",
     "this is a hypothetical scenario",
     "please note that this is a hypothetical",
+    "here is your summary",
+    "below you will find",
+    "prepared in the format you requested",
+    "in the format you requested",
     "i hope this helps",
     "hope this helps!",
     "let me know if you'd like me to",
@@ -331,6 +771,8 @@ const PREAMBLE_SENTENCES: &[&str] = &[
     "here's a summary",
     "here is a summary",
     "here is the summary",
+    "here is your summary",
+    "below you will find",
     "below is the summary",
     "here is the breakdown",
     "i'd be happy to help",
@@ -577,6 +1019,9 @@ pub(crate) fn merge_into(report: &SanitizeReport, target: &mut ConvertReport) {
         target.warnings.push(format!(
             "IR sanitizer: most active rule `{rule}` ({count} edit(s))"
         ));
+    }
+    for warning in &report.normalization_warnings {
+        target.warnings.push(format!("IR sanitizer: {warning}"));
     }
 }
 

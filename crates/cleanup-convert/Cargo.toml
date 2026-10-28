@@ -18,5 +18,9 @@ flate2 = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
 
+[dev-dependencies]
+# The integration tests read tests/fixtures/manifest.json, the generator's ground truth.
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

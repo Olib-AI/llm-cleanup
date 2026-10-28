@@ -124,9 +124,16 @@ impl<'a> EmbeddedFont<'a> {
 type Piece = (String, RunStyle, f32);
 type Line = Vec<Piece>;
 
+/// A clickable link region in PDF user space (origin bottom-left).
+struct LinkAnnotation {
+    rect: (f32, f32, f32, f32),
+    url: String,
+}
+
 struct PageContent {
     content: String,
     images: BTreeSet<usize>,
+    links: Vec<LinkAnnotation>,
 }
 
 impl PageContent {
@@ -134,6 +141,7 @@ impl PageContent {
         PageContent {
             content: String::new(),
             images: BTreeSet::new(),
+            links: Vec::new(),
         }
     }
 
@@ -336,6 +344,29 @@ impl<'a> Layout<'a> {
                     ));
                 }
             }
+            Block::Vector(shape) => {
+                let color = shape
+                    .stroke
+                    .map(|rgb| {
+                        (
+                            f32::from(rgb.0) / 255.0,
+                            f32::from(rgb.1) / 255.0,
+                            f32::from(rgb.2) / 255.0,
+                        )
+                    })
+                    .unwrap_or((0.6, 0.6, 0.6));
+                self.ensure(12.0);
+                let x0 = self.left() + indent;
+                let length = (self.width() - indent).min(shape.rect.width.max(24.0));
+                if shape.axis == cleanup_core::doc::Axis::Horizontal {
+                    self.stroke_line(x0, self.y, x0 + length, self.y, color, shape.stroke_width);
+                    self.y += 8.0;
+                } else {
+                    let height = shape.rect.height.clamp(12.0, 72.0);
+                    self.stroke_line(x0, self.y, x0, self.y + height, color, shape.stroke_width);
+                    self.y += height + 4.0;
+                }
+            }
             Block::Divider(_) => {
                 self.ensure(10.0);
                 self.fill_rect(
@@ -413,7 +444,7 @@ impl<'a> Layout<'a> {
             let mut x = self.left() + indent;
             let baseline = self.y + size * 0.85;
             for (text, style, advance) in line {
-                self.draw(&text, style, size, x, baseline);
+                self.draw(&text, &style, size, x, baseline);
                 x += advance;
             }
             self.y += leading;
@@ -448,10 +479,10 @@ impl<'a> Layout<'a> {
                 if used + advance > width && !current.is_empty() && !piece.trim().is_empty() {
                     lines.push(std::mem::take(&mut current));
                     piece = piece.trim_start().to_string();
-                    current.push((piece.clone(), style, font.measure(&piece, size)));
+                    current.push((piece.clone(), style.clone(), font.measure(&piece, size)));
                     used = font.measure(&piece, size);
                 } else {
-                    current.push((piece, style, advance));
+                    current.push((piece, style.clone(), advance));
                     used += advance;
                 }
             }
@@ -470,7 +501,8 @@ impl<'a> Layout<'a> {
         lines
     }
 
-    fn draw(&mut self, text: &str, style: RunStyle, size: f32, x: f32, baseline: f32) {
+    fn draw(&mut self, text: &str, style: &RunStyle, size: f32, x: f32, baseline: f32) {
+        let advance = self.font(style.bold).measure(text, size);
         let encoded = if style.bold {
             self.bold.encode(text)
         } else {
@@ -481,14 +513,55 @@ impl<'a> Layout<'a> {
         }
         let resource = if style.bold { "F2" } else { "F1" };
         let y = self.page().height - baseline;
+        if let Some(color) = style.color {
+            self.current.content.push_str(&format!(
+                "q {:.3} {:.3} {:.3} rg\n",
+                f32::from(color.0) / 255.0,
+                f32::from(color.1) / 255.0,
+                f32::from(color.2) / 255.0
+            ));
+        }
         self.current.content.push_str(&format!(
             "BT /{resource} {size:.2} Tf 1 0 0 1 {x:.2} {y:.2} Tm <{encoded}> Tj ET\n"
         ));
+        if style.color.is_some() {
+            self.current.content.push_str("Q\n");
+        }
+        if let Some(url) = &style.link {
+            self.current.links.push(LinkAnnotation {
+                rect: (x, y - size * 0.25, x + advance, y + size * 0.85),
+                url: url.clone(),
+            });
+        }
         for ch in text.chars() {
             if !ch.is_whitespace() && self.font(style.bold).glyph(ch) == 0 {
                 self.missing.insert(ch);
             }
         }
+    }
+
+    /// A stroked vector line in PDF user space, used for decorative rules and dividers.
+    fn stroke_line(
+        &mut self,
+        x0: f32,
+        top0: f32,
+        x1: f32,
+        top1: f32,
+        color: (f32, f32, f32),
+        width: f32,
+    ) {
+        let height = self.page().height;
+        self.current.content.push_str(&format!(
+            "q {:.3} {:.3} {:.3} RG {:.2} w {:.2} {:.2} m {:.2} {:.2} l S Q\n",
+            color.0,
+            color.1,
+            color.2,
+            width.clamp(0.25, 6.0),
+            x0,
+            height - top0,
+            x1,
+            height - top1
+        ));
     }
 
     fn show(&mut self, text: &str, size: f32, x: f32, baseline: f32, bold: bool) {
@@ -751,10 +824,32 @@ impl<'a> Layout<'a> {
                 resources.push_str(&format!(" /XObject << {} >>", xobjects.join(" ")));
             }
             resources.push_str(" >>");
+            let mut annot_ids: Vec<usize> = Vec::new();
+            for link in &page.links {
+                let (x0, y0, x1, y1) = link.rect;
+                let annot = format!(
+                    "<< /Type /Annot /Subtype /Link /Rect [{x0:.2} {y0:.2} {x1:.2} {y1:.2}] /Border [0 0 0] /A << /Type /Action /S /URI /URI ({}) >> >>",
+                    pdf_string(&link.url)
+                );
+                objects.push(annot.into_bytes());
+                annot_ids.push(objects.len() - 1);
+            }
+            let annots = if annot_ids.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " /Annots [{}]",
+                    annot_ids
+                        .iter()
+                        .map(|id| format!("{id} 0 R"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            };
             let page_id = objects.len();
             objects.push(
                 format!(
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources {resources} /Contents {content_id} 0 R >>",
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources {resources} /Contents {content_id} 0 R{annots} >>",
                     self.page().width,
                     self.page().height
                 )
@@ -793,6 +888,21 @@ impl<'a> Layout<'a> {
 
 fn image_name(asset: usize) -> String {
     format!("Im{}", asset + 1)
+}
+
+/// Escape a Rust string as a PDF literal string without injecting operators.
+fn pdf_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match *byte {
+            b'\\' => out.push_str("\\\\"),
+            b'(' => out.push_str("\\("),
+            b')' => out.push_str("\\)"),
+            0x20..=0x7e => out.push(*byte as char),
+            other => out.push_str(&format!("\\{:03o}", other)),
+        }
+    }
+    out
 }
 
 /// Emit `Type0` / `CIDFontType2` / descriptor / font file / `ToUnicode`; return the `Type0` id.

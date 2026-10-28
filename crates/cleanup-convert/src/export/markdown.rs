@@ -60,10 +60,10 @@ fn render_block(
             }
         }
         Block::List { ordered, items, .. } => {
-            for item in items {
+            for (index, item) in items.iter().enumerate() {
                 let indent = "  ".repeat(item.depth);
                 let marker = if *ordered {
-                    format!("{}.", 1)
+                    format!("{}.", index + 1)
                 } else {
                     "-".to_string()
                 };
@@ -103,6 +103,12 @@ fn render_block(
                     escape_alt(&figure.alt),
                     asset.file_name()
                 ));
+                if let Some(dpi) = asset.dpi_label() {
+                    out.push_str(&format!(
+                        "*{} — {}×{} px at {}*\n\n",
+                        asset.name, asset.width_px, asset.height_px, dpi
+                    ));
+                }
             }
             if let Some(caption) = &figure.caption {
                 let text = render_inlines(caption, false);
@@ -110,6 +116,12 @@ fn render_block(
                     out.push_str(&format!("*{}*\n\n", text.trim()));
                 }
             }
+        }
+        Block::Vector(shape) => {
+            // GFM allows inline HTML. The SVG keeps the source stroke colour, thickness and
+            // aspect ratio instead of degrading to a literal `---` rule.
+            out.push_str(&shape.svg);
+            out.push_str("\n\n");
         }
         Block::Divider(_) => out.push_str("---\n\n"),
         Block::Callout { kind, blocks, .. } => {
@@ -131,8 +143,20 @@ fn render_block(
                     out.push('\n');
                 }
                 Kind::Box | Kind::Note => {
-                    out.push_str(inner);
-                    out.push_str("\n\n");
+                    // GFM alerts are the semantic Markdown equivalent of a tinted box. The
+                    // source fill is recorded as a data attribute on the first line so a
+                    // downstream renderer can recover the colour without inventing structure.
+                    let tone = match kind {
+                        Kind::Note => "[!NOTE]",
+                        _ => "[!IMPORTANT]",
+                    };
+                    out.push_str(&format!("> {tone}\n"));
+                    for line in inner.lines() {
+                        out.push_str("> ");
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                    out.push('\n');
                 }
             }
         }
@@ -231,16 +255,33 @@ fn render_table(
 fn render_html_table(
     table: &Table,
     doc: &Doc,
-    _used_assets: &mut Vec<usize>,
+    used_assets: &mut Vec<usize>,
     _warnings: &mut Vec<String>,
 ) -> String {
     let mut out = String::from("<table>\n");
+    // Explicit column widths are part of the ground truth: a semantic fallback that forgets
+    // them loses the layout even though the text survived.
+    if !table.columns.is_empty() {
+        let total: f32 = table
+            .columns
+            .iter()
+            .map(|column| column.width.max(0.1))
+            .sum();
+        if total > 0.0 {
+            out.push_str("  <colgroup>\n");
+            for column in &table.columns {
+                let percent = column.width.max(0.1) * 100.0 / total;
+                out.push_str(&format!("    <col style=\"width:{percent:.1}%\" />\n"));
+            }
+            out.push_str("  </colgroup>\n");
+        }
+    }
     if table.headers.iter().any(|row| !row.cells.is_empty()) {
         out.push_str("  <thead>\n");
         for row in &table.headers {
             out.push_str("    <tr>\n");
             for cell in &row.cells {
-                out.push_str(&html_cell(cell, "th", doc));
+                out.push_str(&html_cell(cell, "th", doc, used_assets));
             }
             out.push_str("    </tr>\n");
         }
@@ -250,7 +291,7 @@ fn render_html_table(
     for row in &table.rows {
         out.push_str("    <tr>\n");
         for cell in &row.cells {
-            out.push_str(&html_cell(cell, "td", doc));
+            out.push_str(&html_cell(cell, "td", doc, used_assets));
         }
         out.push_str("    </tr>\n");
     }
@@ -258,7 +299,12 @@ fn render_html_table(
     out
 }
 
-fn html_cell(cell: &cleanup_core::doc::Cell, tag: &str, doc: &Doc) -> String {
+fn html_cell(
+    cell: &cleanup_core::doc::Cell,
+    tag: &str,
+    doc: &Doc,
+    used_assets: &mut Vec<usize>,
+) -> String {
     let mut attributes = String::new();
     if cell.colspan > 1 {
         attributes.push_str(&format!(" colspan=\"{}\"", cell.colspan));
@@ -283,6 +329,7 @@ fn html_cell(cell: &cleanup_core::doc::Cell, tag: &str, doc: &Doc) -> String {
                 .assets
                 .get(figure.asset)
                 .map(|asset| {
+                    used_assets.push(figure.asset);
                     format!(
                         "![{}](assets/{})",
                         escape_alt(&figure.alt),
@@ -329,44 +376,75 @@ pub(crate) fn render_inlines(inlines: &[Inline], html: bool) -> String {
             out.push('\n');
             continue;
         }
-        let text = if html {
+        // Underline and colour have no GFM syntax. Emitting inline HTML for those runs means
+        // the run's own text must be HTML-escaped, and emphasis markers inside it must become
+        // tags too (GFM does not parse Markdown inside an inline HTML element).
+        let raw_html = html || inline.style.color.is_some() || inline.style.underline;
+        let text = if raw_html {
             escape_html(&inline.text)
         } else {
             escape_markdown(&inline.text)
         };
-        if text.is_empty() {
+        if text.trim().is_empty() {
+            out.push_str(&text);
             continue;
         }
-        let mut rendered = text;
+        // Whitespace around a styled run must stay *outside* the emphasis markers, otherwise
+        // `**bold **` is not valid GFM and renders as literal asterisks.
+        let leading = text.len() - text.trim_start_matches(char::is_whitespace).len();
+        let trailing = text.len() - text.trim_end_matches(char::is_whitespace).len();
+        let core_end = text.len() - trailing;
+        let (prefix, core, suffix) = (
+            &text[..leading],
+            &text[leading..core_end],
+            &text[core_end..],
+        );
+        let mut rendered = core.to_string();
         if inline.style.code {
-            let fence = if rendered.contains('`') { "``" } else { "`" };
-            rendered = format!("{fence}{rendered}{fence}");
+            if raw_html {
+                rendered = format!("<code>{rendered}</code>");
+            } else {
+                let fence = if rendered.contains('`') { "``" } else { "`" };
+                rendered = format!("{fence}{rendered}{fence}");
+            }
         }
         if inline.style.strike {
-            rendered = if html {
+            rendered = if raw_html {
                 format!("<del>{rendered}</del>")
             } else {
                 format!("~~{rendered}~~")
             };
         }
         if inline.style.italic {
-            rendered = if html {
+            rendered = if raw_html {
                 format!("<em>{rendered}</em>")
             } else {
                 format!("*{rendered}*")
             };
         }
         if inline.style.bold {
-            rendered = if html {
+            rendered = if raw_html {
                 format!("<strong>{rendered}</strong>")
             } else {
                 format!("**{rendered}**")
             };
         }
-        if let Some(link) = &inline.style.link {
-            rendered = format!("[{rendered}]({})", link.replace(')', "%29"));
+        if inline.style.underline {
+            rendered = format!("<u>{rendered}</u>");
         }
+        if let Some(color) = inline.style.color {
+            rendered = format!("<span style=\"color:#{}\">{}</span>", color.hex(), rendered);
+        }
+        if let Some(link) = &inline.style.link {
+            rendered = if raw_html {
+                format!("<a href=\"{}\">{}</a>", escape_html(link), rendered)
+            } else {
+                format!("[{rendered}]({})", link.replace(')', "%29"))
+            };
+        }
+        out.push_str(prefix);
         out.push_str(&rendered);
+        out.push_str(suffix);
     }
     out
 }

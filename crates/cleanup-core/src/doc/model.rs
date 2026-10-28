@@ -294,6 +294,11 @@ pub struct ImageAsset {
     pub data: Vec<u8>,
     pub width_px: u32,
     pub height_px: u32,
+    /// Horizontal/vertical resolution derived from the first placement of this asset.
+    /// `None` for readers that do not know the physical display size (e.g. a standalone
+    /// Markdown image reference).
+    pub dpi_x: Option<f32>,
+    pub dpi_y: Option<f32>,
 }
 
 impl ImageAsset {
@@ -311,6 +316,31 @@ impl ImageAsset {
 
     pub fn is_empty(&self) -> bool {
         self.data.is_empty() || self.width_px == 0 || self.height_px == 0
+    }
+
+    /// Record the resolution of a placement once, so exporters can report DPI without
+    /// re-reading the source geometry.
+    pub fn observe_dpi(&mut self, rect: &Rect) {
+        if self.dpi_x.is_none()
+            && let Some(dpi) = self.dpi(rect)
+            && dpi.is_finite()
+            && dpi > 0.0
+        {
+            self.dpi_x = Some(dpi);
+            let aspect = if rect.height > 1.0 && self.width_px > 0 {
+                self.height_px as f32 / self.width_px as f32 * rect.width / rect.height
+            } else {
+                1.0
+            };
+            self.dpi_y = Some(dpi * aspect);
+        }
+    }
+
+    /// A human-readable DPI label, e.g. `"200 dpi"`.
+    pub fn dpi_label(&self) -> Option<String> {
+        self.dpi_x
+            .filter(|dpi| dpi.is_finite() && *dpi > 0.0)
+            .map(|dpi| format!("{:.0} dpi", dpi.round()))
     }
 }
 
@@ -373,6 +403,11 @@ impl Anchor {
 
 /// Inline character style. Inline nodes carry only text; the style flags are what the
 /// exporters map onto `**…**`, `<w:b/>`, `\x1b[1m`-free plain text, and PDF font switching.
+///
+/// `color` is an optional *source* colour tag: plain text exporters ignore it, Markdown emits
+/// an inline `<span>`, DOCX a `w:color`, and the PDF renderer an `rg` fill operator. Keeping it
+/// in the IR (instead of re-reading the source at export time) is why coloured runs survive a
+/// PDF → DOCX → PDF round trip.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InlineStyle {
     pub bold: bool,
@@ -381,6 +416,7 @@ pub struct InlineStyle {
     pub underline: bool,
     pub strike: bool,
     pub link: Option<String>,
+    pub color: Option<Rgb>,
 }
 
 impl InlineStyle {
@@ -421,6 +457,13 @@ impl InlineStyle {
             && !self.underline
             && !self.strike
             && self.link.is_none()
+            && self.color.is_none()
+    }
+
+    /// True when this run is part of intentional code and must never be rewritten by the
+    /// AI-artifact cleaner.
+    pub fn is_code(&self) -> bool {
+        self.code
     }
 }
 
@@ -717,6 +760,9 @@ pub struct Figure {
     pub alt: String,
     /// The box the image occupied in the source, when known (points).
     pub display_size: Option<Rect>,
+    /// True when the image shared a text baseline in the source. Inline figures are exported
+    /// as `wp:inline` drawings and Markdown `![…](…)`; block figures may be anchored.
+    pub inline: bool,
 }
 
 /// A divider rule that carried meaning (a horizontal rule between sections).
@@ -724,6 +770,98 @@ pub struct Figure {
 pub struct Divider {
     pub anchor: Option<Anchor>,
     pub axis: Axis,
+}
+
+/// The primitive behind a decorative vector object recovered from a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorKind {
+    /// A stroked line (horizontal, vertical or diagonal).
+    Line,
+    /// A stroked and/or filled rectangle.
+    Rect,
+    /// An ellipse or rounded rectangle (approximated by its bounding box).
+    Ellipse,
+}
+
+/// A vector shape (rule, divider, card outline, SVG-like rule set) kept in the IR.
+///
+/// `svg` is a complete, self-contained `<svg>` element with a `viewBox` in the shape's own
+/// point-sized coordinate system. Markdown emits it inline (GFM allows raw HTML), DOCX maps it
+/// to a VML shape, plain text writes a labelled marker, and the PDF renderer draws the
+/// equivalent path operators. Keeping both the geometry and the SVG means no exporter has to
+/// guess what the source path looked like.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorShape {
+    pub anchor: Option<Anchor>,
+    pub rect: Rect,
+    pub kind: VectorKind,
+    pub axis: Axis,
+    pub stroke: Option<Rgb>,
+    pub stroke_width: f32,
+    pub fill: Option<Rgb>,
+    pub svg: String,
+}
+
+impl VectorShape {
+    /// Build the inline SVG for a stroked/filled primitive in its own coordinate space.
+    pub fn new(
+        anchor: Option<Anchor>,
+        rect: Rect,
+        kind: VectorKind,
+        stroke: Option<Rgb>,
+        stroke_width: f32,
+        fill: Option<Rgb>,
+    ) -> Self {
+        let width = rect.width.max(0.5);
+        let height = rect.height.max(0.5);
+        let stroke_attr = stroke
+            .map(|color| format!(" stroke=\"#{}\"", color.hex()))
+            .unwrap_or_default();
+        let weight = stroke_width.clamp(0.25, 12.0);
+        let fill_attr = fill
+            .map(|color| format!(" fill=\"#{}\"", color.hex()))
+            .unwrap_or_else(|| " fill=\"none\"".to_string());
+        let axis = if rect.width >= rect.height {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        };
+        let shape = match kind {
+            VectorKind::Line => {
+                let (x2, y2) = if axis == Axis::Horizontal {
+                    (width, 0.0)
+                } else {
+                    (0.0, height)
+                };
+                format!(
+                    "<line x1=\"0\" y1=\"0\" x2=\"{x2:.1}\" y2=\"{y2:.1}\"{stroke_attr} stroke-width=\"{weight:.2}\"/>"
+                )
+            }
+            VectorKind::Rect => format!(
+                "<rect x=\"0\" y=\"0\" width=\"{width:.1}\" height=\"{height:.1}\"{fill_attr}{stroke_attr} stroke-width=\"{weight:.2}\"/>"
+            ),
+            VectorKind::Ellipse => format!(
+                "<ellipse cx=\"{:.1}\" cy=\"{:.1}\" rx=\"{:.1}\" ry=\"{:.1}\"{fill_attr}{stroke_attr} stroke-width=\"{weight:.2}\"/>",
+                width / 2.0,
+                height / 2.0,
+                width / 2.0,
+                height / 2.0
+            ),
+        };
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.1}\" height=\"{height:.1}\" viewBox=\"0 0 {width:.1} {height:.1}\" role=\"img\" aria-label=\"vector {kind:?}\">{shape}</svg>"
+        );
+        VectorShape {
+            anchor,
+            rect,
+            kind,
+            axis,
+            stroke,
+            stroke_width: weight,
+            fill,
+            svg,
+        }
+    }
 }
 
 /// A run of consecutive lines that share one column geometry.
@@ -759,6 +897,7 @@ pub enum Block {
     },
     Table(Table),
     Figure(Figure),
+    Vector(VectorShape),
     Divider(Divider),
     Callout {
         kind: CalloutKind,
@@ -783,6 +922,7 @@ impl Block {
             | Block::Callout { anchor, .. }
             | Block::Columns { anchor, .. } => *anchor,
             Block::Table(table) => table.anchor,
+            Block::Vector(shape) => shape.anchor,
             Block::Divider(divider) => divider.anchor,
         }
     }
@@ -797,6 +937,7 @@ impl Block {
             | Block::Columns { anchor: slot, .. } => *slot = anchor,
             Block::Figure(figure) => figure.anchor = anchor,
             Block::Table(table) => table.anchor = anchor,
+            Block::Vector(shape) => shape.anchor = anchor,
             Block::Divider(divider) => divider.anchor = anchor,
         }
     }
@@ -826,7 +967,7 @@ impl Block {
                 .collect::<Vec<_>>()
                 .join("\n"),
             Block::Figure(figure) => figure.alt.clone(),
-            Block::Divider(_) => String::new(),
+            Block::Vector(_) | Block::Divider(_) => String::new(),
             Block::Callout { blocks, .. } => blocks
                 .iter()
                 .map(Block::plain_text)
@@ -864,10 +1005,43 @@ impl Block {
 
     pub fn is_empty(&self) -> bool {
         match self {
-            Block::Divider(_) => false,
+            Block::Divider(_) | Block::Vector(_) => false,
             Block::Table(table) => table.row_count() == 0,
             Block::Figure(_) => false,
             other => other.plain_text().trim().is_empty(),
+        }
+    }
+
+    /// Recursively remove empty containers after content filtering. Returns `false` when the
+    /// block itself should be dropped (empty callout, empty column group, empty table).
+    pub fn prune(&mut self) -> bool {
+        match self {
+            Block::Callout { blocks, .. } => {
+                blocks.retain_mut(Block::prune);
+                !blocks.is_empty()
+            }
+            Block::Columns { columns, .. } => {
+                for column in columns.iter_mut() {
+                    column.blocks.retain_mut(Block::prune);
+                }
+                columns.retain(|column| !column.blocks.is_empty());
+                !columns.is_empty()
+            }
+            Block::Table(table) => {
+                for row in table.headers.iter_mut().chain(table.rows.iter_mut()) {
+                    for cell in row.cells.iter_mut() {
+                        cell.blocks.retain_mut(Block::prune);
+                    }
+                }
+                table.row_count() > 0
+            }
+            Block::List { items, .. } => {
+                items.retain(|item| !inlines_text(&item.inlines).trim().is_empty());
+                !items.is_empty()
+            }
+            Block::Code { lines, .. } => !lines.is_empty(),
+            Block::Figure(_) | Block::Vector(_) | Block::Divider(_) => true,
+            _ => !self.plain_text().trim().is_empty(),
         }
     }
 }
@@ -932,6 +1106,49 @@ impl SourceKind {
     }
 }
 
+/// Geometry and furniture zones for one source page.
+///
+/// Page boundaries are *metadata*, not block ranges: block indices would go stale as soon as
+/// the sanitizer removes a paragraph or the analyser stitches a cross-page table. Consumers
+/// derive the blocks belonging to a page from [`Anchor::page`] instead (see
+/// [`Doc::blocks_on_page`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageBoundary {
+    /// Zero-based source page index (matches [`Anchor::page`]).
+    pub index: usize,
+    pub width: f32,
+    pub height: f32,
+    /// Union of all text/image ink on the page.
+    pub content: Rect,
+    /// Bands reserved for running furniture, in page coordinates.
+    pub header_zone: Rect,
+    pub footer_zone: Rect,
+    /// Detected column count for this page (1 = plain flow).
+    pub columns: u8,
+}
+
+impl PageBoundary {
+    /// A page with no recoverable geometry: full-page zones are still derived from the size.
+    pub fn new(index: usize, width: f32, height: f32) -> Self {
+        let band = (height * 0.085).clamp(28.0, 64.0);
+        PageBoundary {
+            index,
+            width,
+            height,
+            content: Rect::new(0.0, 0.0, width, height),
+            header_zone: Rect::new(0.0, 0.0, width, band),
+            footer_zone: Rect::new(0.0, (height - band).max(0.0), width, band),
+            columns: 1,
+        }
+    }
+
+    /// True when `rect` lies completely inside either furniture band.
+    pub fn in_furniture_zone(&self, rect: &Rect) -> bool {
+        let vertical = |zone: &Rect| rect.y >= zone.y && rect.bottom() <= zone.bottom();
+        vertical(&self.header_zone) || vertical(&self.footer_zone)
+    }
+}
+
 /// Document-level metadata that survives conversion.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DocInfo {
@@ -943,6 +1160,22 @@ pub struct DocInfo {
     /// Running header/footer text that was recognised and lifted out of the flow.
     pub running_headers: Vec<String>,
     pub running_footers: Vec<String>,
+    /// Explicit page boundaries, margins (derived from `content`), column counts and
+    /// header/footer zones. Populated by the spatial PDF analyser; a single synthetic entry is
+    /// used by non-paginated readers.
+    pub page_boundaries: Vec<PageBoundary>,
+}
+
+impl DocInfo {
+    /// Highest column count across all source pages.
+    pub fn column_count(&self) -> u8 {
+        self.page_boundaries
+            .iter()
+            .map(|page| page.columns)
+            .max()
+            .unwrap_or(1)
+            .max(1)
+    }
 }
 
 /// The interpreted document: what every exporter consumes.
@@ -1035,6 +1268,103 @@ impl Doc {
     /// Find the asset index for a figure, if it still exists.
     pub fn asset(&self, index: usize) -> Option<&ImageAsset> {
         self.assets.get(index)
+    }
+
+    /// Geometry for one source page, if the reader recorded page boundaries.
+    pub fn page_boundary(&self, index: usize) -> Option<&PageBoundary> {
+        self.info.page_boundaries.get(index)
+    }
+
+    /// Top-level blocks whose anchor belongs to `page`, in source reading order.
+    pub fn blocks_on_page(&self, page: usize) -> impl Iterator<Item = &Block> {
+        self.blocks
+            .iter()
+            .filter(move |block| block.anchor().is_some_and(|anchor| anchor.page == page))
+    }
+
+    /// Highest detected column count across the source pages (at least 1).
+    pub fn column_count(&self) -> u8 {
+        self.info.column_count()
+    }
+
+    /// Drop empty containers and figures that point at missing assets, then check the
+    /// invariants the exporters rely on. Called after every mutation of the IR (currently the
+    /// sanitizer), so reading order, anchors and hierarchy cannot drift after filtering.
+    pub fn normalize(&mut self) -> Vec<String> {
+        self.blocks.retain_mut(Block::prune);
+        self.blocks.retain(|block| match block {
+            Block::Figure(figure) => self.assets.get(figure.asset).is_some(),
+            _ => true,
+        });
+        self.validate()
+    }
+
+    /// Structural invariants. Returns human-readable warnings; an empty vector means the IR is
+    /// internally consistent. Deliberately a *check*, not a repair — exporters are pure
+    /// functions and must never silently mutate the document.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for (index, block) in self.blocks.iter().enumerate() {
+            if block.is_empty()
+                && !matches!(
+                    block,
+                    Block::Figure(_) | Block::Divider(_) | Block::Vector(_)
+                )
+            {
+                warnings.push(format!("block {index} is empty"));
+            }
+            if let Block::Figure(figure) = block
+                && self.assets.get(figure.asset).is_none()
+            {
+                warnings.push(format!("block {index} references a missing image asset"));
+            }
+            if let Some(anchor) = block.anchor() {
+                let Some(page) = self.page_boundary(anchor.page) else {
+                    if !self.info.page_boundaries.is_empty() {
+                        warnings.push(format!(
+                            "block {index} points outside the recorded page boundaries"
+                        ));
+                    }
+                    continue;
+                };
+                let rect = anchor.rect;
+                if rect.x < -1.0
+                    || rect.y < -1.0
+                    || rect.right() > page.width + 1.0
+                    || rect.bottom() > page.height + 1.0
+                {
+                    warnings.push(format!("block {index} has an out-of-page anchor"));
+                }
+            }
+            if let Block::Table(table) = block {
+                if table.columns.iter().any(|column| column.width <= 0.0) {
+                    warnings.push(format!("table at block {index} has a zero-width column"));
+                }
+                if table.all_rows().any(|row| {
+                    row.cells
+                        .iter()
+                        .any(|cell| cell.colspan == 0 || cell.rowspan == 0)
+                }) {
+                    warnings.push(format!("table at block {index} has a zero span"));
+                }
+            }
+        }
+        for (index, asset) in self.assets.iter().enumerate() {
+            if asset.is_empty() {
+                warnings.push(format!("image asset {index} has no pixel data"));
+            }
+        }
+        // Reading order: page indices of anchored top-level blocks may never decrease.
+        let mut last_page = 0usize;
+        for (index, block) in self.blocks.iter().enumerate() {
+            if let Some(anchor) = block.anchor() {
+                if anchor.page < last_page {
+                    warnings.push(format!("block {index} breaks page reading order"));
+                }
+                last_page = last_page.max(anchor.page);
+            }
+        }
+        warnings
     }
 }
 

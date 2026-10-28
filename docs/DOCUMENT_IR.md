@@ -15,6 +15,10 @@ deliberately explicit about **root causes**, because the fix is not "add more CS
 | Images vanished | `Docx`/`Markdown`/`Text` exporters only ever received `Vec<String>` paragraphs. Image XObjects were reachable from the PDF adapter but had no representation in `Document`, and the DOCX exporter had no `word/media` writer. |
 | Typography collapsed to plain runs | The Markdown→DOCX converter emitted `Paragraph::new().add_run(Run::new().add_text(..))` — no `w:pPr`, no `w:tbl`, no `w:sectPr`, no styles part. Bold/italic were tracked in a flag but only applied to `Run`s; tables and images were explicitly dropped with a warning. |
 | Unicode characters disappeared | Converters extracted text through `Vec<String>` join/filter paths, so runs split mid-grapheme (or in a different font) were re-joined without space logic, and characters outside the embedded font's `cmap` were silently replaced at PDF render time. |
+| A whole page became one table cell | A page frame, callout card or code-block border is also a closed rectangle of vector rules. Any rule component with two vertical and two horizontal lines was accepted as a table grid, so the decorative box swallowed the page. |
+| Two-column bodies still interleaved | A full-width banner (or a callout line straddling the gutter) filled the coverage bitmap used to find white corridors, so no gutter was found. Paint order also returned from the right column to the left; a negative horizontal gap was treated as "close enough" and the runs were merged into one interleaved line. |
+| Table text was emitted twice | Detecting a grid never marked its text lines as consumed, so the same cell text appeared once as `w:tc`/`<td>` and once as a giant concatenated paragraph. Those duplicate blocks also sat between page fragments and prevented multi-page stitching. |
+| Curly quotes, ellipses and en-dashes changed during conversion | The `typo.*` rules are AI-*cleaning* rules. Applying them while converting a typeset document rewrites legitimate Unicode; preserving typography must be a conversion option, not an accident. |
 
 ## What the new pipeline does
 
@@ -35,8 +39,15 @@ deliberately explicit about **root causes**, because the fix is not "add more CS
                                     ▼
             ┌────────────────────────────────────────────────────────────┐
             │ ir_sanitize — the whole rule catalogue runs on IR blocks;  │
-            │               dropped statements are removed at block/cell │
-            │               granularity, coordinates of survivors kept   │
+            │               furniture-zone filtering, chat tokens,       │
+            │               wrapper quotes and repetition collapse;      │
+            │               code blocks are never rewritten              │
+            └────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+            ┌────────────────────────────────────────────────────────────┐
+            │ Doc::normalize — prune emptied containers, drop orphaned   │
+            │                 figures, validate every anchor/asset/span  │
             └────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -51,6 +62,13 @@ Key invariants:
    box in the source page — so exporters can lay out with the original intent, and tests
    can prove that a trimmed paragraph stayed where it was.
 3. **Sanitization is the only mutation point.** Exporters are pure functions of the IR.
+4. **The IR is self-describing.** `DocInfo.page_boundaries` records each source page's ink
+   bounds, furniture zones and detected column count; `ImageAsset` records pixel dimensions
+   *and* measured placement DPI; `InlineStyle` carries source RGB and hyperlink targets;
+   `VectorShape` carries both geometry and a ready-to-emit inline `<svg>`.
+5. **The IR re-validates itself after cleaning.** `Doc::normalize()` prunes emptied containers
+   and `Doc::validate()` checks anchors, assets, column widths, spans and page order. Empty
+   warnings are asserted by the integration suite for every fixture.
 
 ## IR shape
 
@@ -58,8 +76,10 @@ Key invariants:
 
 * `model` — raw page geometry (`LayoutDoc`, `TextRun`, `RuleSegment`, `FillRect`,
   `ImagePlacement`) and the interpreted IR (`Doc`, `Block`, `Inline`, `Table`, `Row`,
-  `Cell`, `Figure`, `Callout`, `Columns`). Raw geometry is what the PDF reader produces;
-  the IR is what everything downstream consumes.
+  `Cell`, `Figure`, `VectorShape`, `PageBoundary`, `Callout`, `Columns`). Raw geometry is
+  what the PDF reader produces; the IR is what everything downstream consumes.
+  `InlineStyle` carries bold/italic/underline/strike/code plus an optional RGB colour and
+  link target; `Figure.inline` distinguishes a baseline icon from an anchored block image.
 * `analyze` — pure, deterministic layout analysis. It is unit-tested against synthetic
   `LayoutDoc`s, so the hard geometry rules are testable without a PDF.
 * `png` — a small PNG encoder (for extracted raster XObjects) and decoder (for embedding
@@ -69,29 +89,44 @@ Key invariants:
 
 | Target | Fidelity strategy |
 | --- | --- |
-| Markdown | GFM tables when the grid is rectangular; semantic HTML `<table>` with `colspan`/`rowspan` when cells are merged or multi-paragraph. Images are written to `./assets/` and referenced relatively. |
-| Plain text | Linearised reading order (columns are emitted column-by-column, never interleaved), box-drawing tables, `[figure: …]` markers. |
-| DOCX | Hand-written OpenXML: `styles.xml` with real heading/quote/code styles, `w:tbl` with `w:tblBorders`/`w:tcMar`/`w:gridSpan`/`w:vMerge`, inline `wp:inline` drawings against `word/media/*` parts, `w:sectPr` with `w:cols` for multi-column regions, page geometry taken from the source page. |
-| PDF | Native byte-splice cleaning for PDF→PDF (layout untouched by construction); the IR renderer re-typesets other sources with an embedded font, rules, tables and raster images. |
+| Markdown | GFM tables when the grid is rectangular; semantic HTML `<table>` with `<colgroup>` widths, `colspan`/`rowspan` and cell fills when cells are merged or multi-paragraph. GFM alerts (`> [!NOTE]`) for callouts, inline `<span style="color:#…">`/`<u>` for colour and underline, inline `<svg>` for vector rules. Images are written to `./assets/` with a measured-DPI caption and referenced relatively. |
+| Plain text | Linearised reading order (columns are emitted column-by-column, never interleaved), aligned box-drawing tables, `[figure: …]` / `[vector: …]` markers with DPI, and residual markup stripped from prose while code blocks stay verbatim. |
+| DOCX | Hand-written OpenXML: `styles.xml` with real heading/quote/code styles, `w:tbl` with `w:tblBorders`/`w:tcMar`/`w:gridSpan`/`w:vMerge`/`w:tblHeader`, `w:hyperlink` + external relationships, `w:color`, VML shapes for vector rules, `wp:inline` for icons and `wp:anchor` for block images against `word/media/*` parts, `w:sectPr` with `w:cols` for multi-column regions, page geometry taken from the source page. |
+| PDF | Native byte-splice cleaning for PDF→PDF (layout untouched by construction); the IR renderer re-typesets other sources with embedded fonts, stroked vector paths, `rg` text colour, `/Annots` `/URI` link annotations, tables and raster images. |
 
 ## Module map (as built)
 
 | Path | Role |
 | --- | --- |
-| `cleanup-core/src/doc/model.rs` | The IR types. `LayoutDoc`/`PageLayout`/`TextRun`/`RuleSegment`/`FillRect`/`ImagePlacement` are the raw geometry; `Doc`/`Block`/`Table`/`Cell`/`Figure`/`Callout` are the interpreted structure. Every block keeps an `Option<Anchor>`. |
+| `cleanup-core/src/doc/model.rs` | The IR types. `LayoutDoc`/`PageLayout`/`TextRun`/`RuleSegment`/`FillRect`/`ImagePlacement` are the raw geometry; `Doc`/`Block`/`Table`/`Cell`/`Figure`/`VectorShape`/`PageBoundary`/`Callout` are the interpreted structure. Every block keeps an `Option<Anchor>`; `Doc::normalize`/`validate` enforce the invariants. |
 | `cleanup-core/src/doc/raster.rs` | Dependency-free PNG encode/decode and PNG/JPEG dimension probing, so an extracted raster needs no image crate. |
-| `cleanup-core/src/doc/analyze.rs` | Pure `LayoutDoc → (Doc, Vec<String>)`: words→lines, column bands, headings, lists, code, callouts, captions, rule-cluster tables (with merged cells and alignment voting), cross-page table stitching, running furniture. |
+| `cleanup-core/src/doc/analyze.rs` | Pure `LayoutDoc → (Doc, Vec<String>)`: words→lines, column bands, headings, lists, code, callouts, captions, rule-cluster tables (with merged cells, alignment voting and internal-separator validation), vector shapes with inline SVG, cross-page table stitching, running furniture, page boundaries and placement DPI. |
 | `cleanup-formats/src/pdf/layout.rs` | The spatial PDF reader: text state (`Tc`/`Tw`/`Tz`/`TL`/`Ts`), `Tm`/`Td`/`TD`/`T*`, paths, clipping, Form XObjects, images (JPEG passthrough, otherwise PNG), `/Rotate` warnings. |
 | `cleanup-convert/src/input.rs` | Readers for Markdown (pulldown-cmark), HTML and DOCX (quick-xml), plain text, and PDF (via the two modules above). `input::build` is the single entry point. |
-| `cleanup-convert/src/sanitize.rs` | The only mutation point: shared rule catalogue over block text plus block-level boilerplate removal. |
+| `cleanup-convert/src/sanitize.rs` | The only mutation point: shared rule catalogue over block text, typography-preserving filtering, header/footer-zone removal, chat-token/wrapper-quote/repetition cleanup, block-level boilerplate removal, and `Doc::normalize`. |
 | `cleanup-convert/src/export/{markdown,text,docx,pdf}.rs` | One renderer per target; each is `&Doc → Rendered`. |
 | `cleanup-convert/src/lib.rs` | `convert_document` wires reader → sanitizer → exporter and returns bytes, side-car assets and a report. |
 
 ## Reading-order and grid heuristics worth remembering
 
 * **A baseline is not always one line.** Runs that share a baseline are merged only while the
-  horizontal gap stays under ~1.6 em; a wider gap is a column gutter, and merging across it is
-  exactly how two-column pages used to interleave.
+  horizontal gap stays under ~1.6 em **and is not negative**. A producer that paints the whole
+  left column before the right one returns to a smaller x on the next line; a negative gap used
+  to pass the "close enough" test and produce `left-1, right-1, left-2` in one line.
+* **Only narrow lines may vote on a gutter.** Full-width banners and callout lines that straddle
+  a column gap erase the white corridor in a coverage bitmap. Lines wider than 55% of the page's
+  ink are excluded from gutter detection; a short final line of a banner is reclassified as
+  full-width when it has no twin at the same height across a gutter.
+* **A table needs internal separators.** `grid_separator` requires a horizontal rule between two
+  rows spanning ≥50% of the grid width and a vertical rule between two columns spanning ≥40% of
+  its height, plus at least three clustered column coordinates. A page frame, a rounded card and
+  a code-block border have no internal separators and are rejected.
+* **Grid text must be consumed.** After a table is built, every line whose centre falls inside
+  the rule bounds is marked consumed, otherwise cell text is emitted a second time as prose and
+  the duplicates block cross-page stitching.
+* **Vector leftovers become nodes, not glyphs.** Meaningful rules that are not table grids or
+  page-frame furniture are emitted as `Block::Vector` with a self-contained `<svg>`; they are
+  excluded from callout boxing so a code frame never becomes a quote.
 * **Columnar lines group by band, not by row.** Full-width lines (banners, section breaks) cut the
   page into bands; inside a band every columnar line is assigned to a gutter-derived span and the
   bands render as `Block::Columns`. Grouping row-by-row produced one `Columns` block per visual
@@ -108,9 +143,21 @@ Key invariants:
 
 ## Fixtures and tests
 
-`scripts/generate_fixtures.py` writes five deterministic PDFs into
-`crates/cleanup-convert/tests/fixtures/` (reportlab + pillow; the PDFs are committed so `cargo test`
-needs no Python). `crates/cleanup-convert/tests/ir_pipeline.rs` then asserts, per fixture, that
-table cells and spans survive, that rasters are extracted and re-embedded, that the DOCX package is
-well-formed OpenXML, that columns linearise left-to-right, that assistant slop is removed while
-genuine content stays, and that no Unicode character is dropped.
+`scripts/generate_fixtures.py` writes five deterministic PDFs plus `manifest.json` into
+`tests/fixtures/` (reportlab + pillow; `rl_config.invariant` makes regeneration byte-identical —
+verify with `python3 scripts/generate_fixtures.py --verify`). The PDFs and the ground-truth
+manifest are committed so `cargo test` needs no Python or network access:
+
+| Fixture | Ground truth asserted |
+| --- | --- |
+| `complex_tables.pdf` | 61 rows × 5 columns stitched across three pages (`Table.pages`), repeated header, a second grid with `colspan=3`, `rowspan=2` and multi-line cells, explicit `<colgroup>` widths, native DOCX `w:gridSpan`/`w:vMerge`/`w:tblHeader`. |
+| `rich_media.pdf` | 900×500 PNG, 1200×700 JPEG, 320×180 PNG and a 48×24 inline icon, measured DPI, `wp:inline` + `wp:anchor`, VML/SVG vector rules, tinted callouts, relative `assets/` references. |
+| `typographic_symbols.pdf` | Greek/Cyrillic/extended-Latin/math/arrow/currency/combining symbols unchanged in `.txt`, `.md` and `word/document.xml`; zero-width probes removed; source RGB colour tags preserved; monospaced code block intact. |
+| `multi_column_mixed.pdf` | Four pages of 1→2→3→2→1 column transitions linearised left-to-right, marker order from the manifest, `PageBoundary.columns`, DOCX `w:cols` sections. |
+| `ai_slop_samples.pdf` | Preambles, disclaimers, closers, repeated tokens, wrapper quotes and chat-template tokens removed from prose; every genuine numeric fact retained; the intentional code block (containing the same tokens) untouched. |
+
+`crates/cleanup-convert/tests/ir_pipeline.rs` reads the manifest and asserts structure, package
+validity, Unicode integrity, anchor stability after cleaning, native PDF byte-splice geometry
+preservation, and that all five fixtures convert to all four targets.
+`crates/cleanup-convert/tests/exporter_units.rs` builds a synthetic IR to cover hyperlinks,
+underline/strike, RGB runs, VML shapes, PDF `/URI` annotations and sanitizer edge cases.

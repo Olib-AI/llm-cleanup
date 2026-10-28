@@ -12,7 +12,8 @@ pub use analyze::{AnalyzeOptions, analyze};
 pub use model::{
     Align, Anchor, Axis, Block, CalloutKind, Cell, Column, ColumnSpec, Divider, Doc, DocInfo,
     Figure, FillRect, ImageAsset, ImageKind, ImagePlacement, Inline, InlineStyle, LayoutDoc,
-    ListItem, PageLayout, PageSpec, ParagraphStyle, Rect, Rgb, Row, RuleSegment, SourceKind, Table,
-    TableBorders, TextRun, inlines_text, normalize_spaces,
+    ListItem, PageBoundary, PageLayout, PageSpec, ParagraphStyle, Rect, Rgb, Row, RuleSegment,
+    SourceKind, Table, TableBorders, TextRun, VectorKind, VectorShape, inlines_text,
+    normalize_spaces,
 };
 pub use raster::{RasterImage, decode_png, dimensions as raster_dimensions, encode_png};

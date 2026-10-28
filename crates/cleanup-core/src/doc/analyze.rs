@@ -52,6 +52,7 @@ struct Word {
     bold: bool,
     italic: bool,
     mono: bool,
+    color: Option<Rgb>,
 }
 
 /// A visual line: the words that share a baseline.
@@ -163,6 +164,11 @@ fn split_run_into_words(run: &TextRun) -> Vec<Word> {
             bold: run.bold,
             italic: run.italic,
             mono: run.mono,
+            color: if run.color == Rgb::BLACK {
+                None
+            } else {
+                Some(run.color)
+            },
         });
     };
     for (index, ch) in chars.iter().enumerate() {
@@ -192,9 +198,16 @@ fn build_lines(page: &PageLayout, page_index: usize) -> Vec<Line> {
             let tolerance = (line.font_size.max(run.font_size) * 0.45).max(1.5);
             // Words on one baseline belong to one line, unless the gap between them is a
             // column gutter: merging across a gutter would interleave the reading order.
+            // A *negative* gap means this run starts behind the line's current right edge —
+            // the paint order returned to the other column. That must open a new line too,
+            // otherwise `left-1, right-1, left-2` becomes one interleaved line.
             let gap = run.rect.x - line.rect.right();
             let split = (line.font_size.max(run.font_size) * 1.6).max(8.0);
-            if (line.center_y() - run.rect.center_y()).abs() <= tolerance && gap <= split {
+            let min_gap = -(line.font_size.max(run.font_size) * 0.35).max(1.5);
+            if (line.center_y() - run.rect.center_y()).abs() <= tolerance
+                && gap >= min_gap
+                && gap <= split
+            {
                 for word in split_run_into_words(run) {
                     line.words.push(word);
                 }
@@ -263,6 +276,50 @@ pub fn analyze(layout: &LayoutDoc, options: &AnalyzeOptions) -> (Doc, Vec<String
     let mut doc = Doc::new(page_spec);
     doc.blocks = blocks;
     doc.assets = layout.assets.clone();
+    // Record the effective resolution of every extracted raster from its first placement.
+    // Dimensions alone cannot tell a 900 px icon from a 900 px poster; DPI can.
+    for page in &layout.pages {
+        for placement in &page.images {
+            if let Some(asset) = doc.assets.get_mut(placement.asset) {
+                asset.observe_dpi(&placement.rect);
+            }
+        }
+    }
+    // Per-page geometry: ink bounds, furniture zones and the detected column count. These are
+    // metadata, not block ranges, so stitching a cross-page table cannot make them stale.
+    let mut columns_by_page: BTreeMap<usize, u8> = BTreeMap::new();
+    for block in &doc.blocks {
+        if let Block::Columns {
+            columns,
+            anchor: Some(anchor),
+            ..
+        } = block
+        {
+            let count = columns.len().clamp(1, u8::MAX as usize) as u8;
+            let entry = columns_by_page.entry(anchor.page).or_insert(1);
+            *entry = (*entry).max(count);
+        }
+    }
+    let page_boundaries = layout
+        .pages
+        .iter()
+        .enumerate()
+        .map(|(index, page)| {
+            let mut boundary = PageBoundary::new(index, page.width.max(1.0), page.height.max(1.0));
+            let mut ink: Option<Rect> = None;
+            for run in page.runs.iter().filter(|run| !run.is_blank()) {
+                ink = Some(ink.map_or(run.rect, |rect| rect.union(&run.rect)));
+            }
+            for placement in &page.images {
+                ink = Some(ink.map_or(placement.rect, |rect| rect.union(&placement.rect)));
+            }
+            if let Some(ink) = ink {
+                boundary.content = ink;
+            }
+            boundary.columns = *columns_by_page.get(&index).unwrap_or(&1);
+            boundary
+        })
+        .collect();
     doc.info = DocInfo {
         title: first_heading_text(&doc.blocks),
         author: None,
@@ -270,9 +327,13 @@ pub fn analyze(layout: &LayoutDoc, options: &AnalyzeOptions) -> (Doc, Vec<String
         source: SourceKind::Pdf,
         running_headers,
         running_footers,
+        page_boundaries,
     };
     if doc.blocks.is_empty() {
         warnings.push("no text could be recovered from the document".to_string());
+    }
+    for warning in doc.validate() {
+        warnings.push(format!("IR: {warning}"));
     }
     (doc, warnings)
 }
@@ -452,26 +513,11 @@ fn analyze_page(
         });
     }
 
-    for rule in &page.rules {
-        if !rule.is_horizontal() || rule.thickness > 3.0 {
-            continue;
-        }
-        if table_rects
-            .iter()
-            .any(|rect| rule.rect.intersection(rect).is_some())
-        {
-            continue;
-        }
-        if rule.rect.width < 40.0 || rule.rect.width / page.width.max(1.0) < 0.2 {
-            continue;
-        }
+    for (rect, shape) in detect_vector_shapes(page_index, page, &table_rects) {
         elements.push(Element {
-            sort_y: rule.rect.y,
-            sort_x: rule.rect.x,
-            block: Block::Divider(Divider {
-                anchor: Some(Anchor::new(page_index, rule.rect)),
-                axis: Axis::Horizontal,
-            }),
+            sort_y: rect.y,
+            sort_x: rect.x,
+            block: Block::Vector(shape),
         });
     }
 
@@ -600,6 +646,30 @@ fn build_slices(lines: &[Line], options: &AnalyzeOptions) -> Vec<Slice> {
             columnar.push(*index);
         }
     }
+    // A short last line of a full-width banner is narrower than the column threshold and has
+    // no twin at the same height on the other side of a gutter. Without this pass it would be
+    // pulled into column 0 and orphaned from the banner it belongs to.
+    let span_of = |line: &Line| -> Option<usize> {
+        let center = line.rect.center_x();
+        column_spans
+            .iter()
+            .position(|(x0, x1)| center >= *x0 - 1.0 && center <= *x1 + 1.0)
+    };
+    let mut solo = Vec::new();
+    for (position, index) in columnar.iter().enumerate() {
+        let line = &lines[*index];
+        let own_span = span_of(line);
+        let has_twin = columnar.iter().enumerate().any(|(other_position, other)| {
+            other_position != position
+                && (lines[*other].rect.center_y() - line.rect.center_y()).abs() <= avg_size * 0.8
+                && span_of(&lines[*other]) != own_span
+        });
+        if !has_twin && line.rect.x <= bounds.x + 2.0 {
+            solo.push(*index);
+            full_width.push(*index);
+        }
+    }
+    columnar.retain(|index| !solo.contains(index));
     full_width.sort_by(|a, b| compare_f32(lines[*a].rect.y, lines[*b].rect.y));
 
     let mut bands: Vec<(f32, f32, Vec<usize>)> = Vec::new();
@@ -745,6 +815,13 @@ fn find_gutters(lines: &[Line], indices: &[usize], bounds: &Rect) -> Vec<(f32, f
     let mut covered = vec![false; bins];
     for index in indices {
         let line = &lines[*index];
+        // A full-width banner sits *above* the columns and a callout box can straddle the
+        // gutter lower down; letting either fill the coverage bitmap erases the white corridor
+        // and the columns get interleaved. Only lines narrower than 55% of the page's ink can
+        // vote on where a gutter is — a real column line never spans half the page.
+        if line.rect.width > bounds.width * 0.55 {
+            continue;
+        }
         let start = ((line.rect.x - bounds.x).max(0.0) as usize).min(bins - 1);
         let end = ((line.rect.right() - bounds.x).max(0.0) as usize).min(bins - 1);
         for slot in covered.iter_mut().take(end + 1).skip(start) {
@@ -1171,6 +1248,7 @@ fn inlines_from_words(words: &[Word]) -> Vec<Inline> {
             bold: word.bold,
             italic: word.italic,
             code: word.mono,
+            color: word.color,
             ..InlineStyle::default()
         };
         match current.as_mut() {
@@ -1183,6 +1261,10 @@ fn inlines_from_words(words: &[Word]) -> Vec<Inline> {
             _ => {
                 if let Some((existing, text)) = current.take() {
                     inlines.push(Inline::new(text, existing));
+                    // A style change does not delete the space between two words. Keep the
+                    // separator as its own plain run so a coloured/bold span never inherits a
+                    // leading space (which would break Markdown's emphasis parsing).
+                    inlines.push(Inline::plain(" "));
                 }
                 current = Some((style, word.text.clone()));
             }
@@ -1213,7 +1295,17 @@ fn apply_callout_boxes(page_index: usize, page: &PageLayout, elements: &mut [Ele
         return;
     }
     for element in elements.iter_mut() {
-        if matches!(element.block, Block::Callout { .. }) {
+        // Code blocks already carry their own shaded container; tables and vector rules are
+        // structure, not prose that needs a callout wrapper. Wrapping any of them would turn a
+        // code frame into a quote box and hide the fence from GFM.
+        if matches!(
+            element.block,
+            Block::Callout { .. }
+                | Block::Code { .. }
+                | Block::Table(_)
+                | Block::Vector(_)
+                | Block::Divider(_)
+        ) {
             continue;
         }
         let Some(anchor) = element.block.anchor() else {
@@ -1242,6 +1334,76 @@ fn apply_callout_boxes(page_index: usize, page: &PageLayout, elements: &mut [Ele
     }
 }
 
+/// Keep the meaningful vector decorations of a page as IR shapes with inline SVG.
+///
+/// Table rules are excluded (they are already represented as cells), as are the four edges of a
+/// page-sized frame and the outlines of callout boxes (those become `Block::Callout`). What is
+/// left — section rules, vertical dividers, dashed rule sets — is exactly the vector layer that
+/// used to disappear between PDF and Markdown/DOCX.
+fn detect_vector_shapes(
+    page_index: usize,
+    page: &PageLayout,
+    table_rects: &[Rect],
+) -> Vec<(Rect, VectorShape)> {
+    let page_rect = page.rect();
+    let callouts: Vec<FillRect> = page
+        .fills
+        .iter()
+        .copied()
+        .filter(|fill| fill.is_callout_sized(&page_rect))
+        .collect();
+    let mut shapes: Vec<(Rect, VectorShape)> = Vec::new();
+    for rule in &page.rules {
+        let rect = rule.rect;
+        if rect.width.max(rect.height) < 20.0 || rule.thickness > 8.0 {
+            continue;
+        }
+        if table_rects
+            .iter()
+            .any(|grid| rect.intersection(grid).is_some())
+        {
+            continue;
+        }
+        if callouts
+            .iter()
+            .any(|fill| rect.intersection(&fill.rect).is_some())
+        {
+            continue;
+        }
+        // Page-frame edges are furniture; exporting four full-page SVGs is noise, not fidelity.
+        let near_left = rect.x < page.width * 0.09;
+        let near_right = rect.right() > page.width * 0.91;
+        let near_top = rect.y < page.height * 0.09;
+        let near_bottom = rect.bottom() > page.height * 0.91;
+        let is_frame = if rule.is_horizontal() {
+            (near_top || near_bottom) && rect.width > page.width * 0.8
+        } else {
+            (near_left || near_right) && rect.height > page.height * 0.8
+        };
+        if is_frame {
+            continue;
+        }
+        if shapes.iter().any(|(existing, _)| {
+            (existing.x - rect.x).abs() < 2.0 && (existing.y - rect.y).abs() < 2.0
+        }) {
+            continue;
+        }
+        let shape = VectorShape::new(
+            Some(Anchor::new(page_index, rect)),
+            rect,
+            VectorKind::Line,
+            Some(rule.color),
+            rule.thickness.max(0.4),
+            None,
+        );
+        shapes.push((rect, shape));
+        if shapes.len() >= 16 {
+            break;
+        }
+    }
+    shapes
+}
+
 fn block_rect(block: &Block) -> Option<Rect> {
     match block {
         Block::Heading { anchor, .. }
@@ -1253,6 +1415,7 @@ fn block_rect(block: &Block) -> Option<Rect> {
         Block::Table(table) => table.anchor.map(|a| a.rect),
         Block::Figure(figure) => figure.anchor.map(|a| a.rect).or(figure.display_size),
         Block::Divider(divider) => divider.anchor.map(|a| a.rect),
+        Block::Vector(shape) => shape.anchor.map(|a| a.rect),
     }
 }
 
@@ -1289,6 +1452,14 @@ fn detect_figures(
             ));
             continue;
         }
+        // An inline icon shares a baseline with a text line and is no taller than two lines
+        // of body text. Keeping that distinction lets DOCX anchor block images while leaving
+        // icons as inline drawings.
+        let inline = lines.iter().any(|line| {
+            !line.consumed
+                && rect.height <= line.font_size * 2.4
+                && (rect.center_y() - line.center_y()).abs() <= line.font_size.max(rect.height)
+        });
         let caption = take_caption(lines, &rect);
         figures.push((
             rect,
@@ -1304,6 +1475,7 @@ fn detect_figures(
                     asset.kind.mime()
                 ),
                 display_size: Some(rect),
+                inline,
             },
         ));
     }
@@ -1364,7 +1536,16 @@ fn detect_tables(page_index: usize, page: &PageLayout, lines: &mut [Line]) -> Ve
         let Some(table) = build_table(page_index, page, &component, lines) else {
             continue;
         };
-        tables.push((component.bounds, table));
+        // Cell text belongs to the table, not to the prose flow. Without this, every table is
+        // emitted twice (once as cells, once as a giant "paragraph" of concatenated cell text)
+        // and the duplicate blocks also prevent cross-page tables from being stitched.
+        let bounds = component.bounds;
+        for line in lines.iter_mut() {
+            if !line.consumed && bounds.contains(line.rect.center_x(), line.rect.center_y()) {
+                line.consumed = true;
+            }
+        }
+        tables.push((bounds, table));
     }
     tables
 }
@@ -1421,6 +1602,56 @@ fn rule_components(page: &PageLayout) -> Vec<RuleComponent> {
     components
 }
 
+/// Longest union of rule segments lying on one grid coordinate.
+///
+/// `entries` is `(position, start, end)`; `positions` are the clustered grid coordinates. A
+/// separator must be *internal* (not the outer border) and cover at least `min_fraction` of the
+/// ruled extent. This is what distinguishes a table grid from a page frame or a rounded card.
+fn grid_separator(
+    entries: &[(f32, f32, f32)],
+    positions: &[f32],
+    extent: f32,
+    min_fraction: f32,
+) -> bool {
+    if positions.len() < 3 || extent <= 0.0 {
+        return false;
+    }
+    for position in positions.iter().skip(1).take(positions.len() - 2) {
+        let mut segments: Vec<(f32, f32)> = entries
+            .iter()
+            .filter(|(value, _, _)| (value - *position).abs() <= 3.5)
+            .map(|(_, start, end)| (*start, *end))
+            .collect();
+        segments.sort_by(|a, b| compare_f32(a.0, b.0));
+        let mut covered = 0.0f32;
+        let mut reach = f32::MIN;
+        for (start, end) in segments {
+            if end <= start {
+                continue;
+            }
+            if start > reach {
+                covered += end - start;
+            } else if end > reach {
+                covered += end - reach;
+            }
+            reach = reach.max(end);
+        }
+        if covered >= extent * min_fraction {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_internal_separators(component: &RuleComponent, xs: &[f32], ys: &[f32]) -> bool {
+    let width = (xs[xs.len() - 1] - xs[0]).max(1.0);
+    let height = (ys[ys.len() - 1] - ys[0]).max(1.0);
+    let rows = grid_separator(&component.horizontal, ys, width, 0.5);
+    let columns = grid_separator(&component.vertical, xs, height, 0.4);
+    // A one-column "table" is a bordered box (code, card, frame), never a data grid.
+    rows && columns && xs.len() >= 3
+}
+
 fn cluster(values: &[f32], tolerance: f32) -> Vec<f32> {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| compare_f32(*a, *b));
@@ -1463,6 +1694,19 @@ fn build_table(
         3.0,
     );
     if xs.len() < 2 || ys.len() < 2 {
+        return None;
+    }
+    // A page frame, a callout card and a code-block border are also closed rectangles of
+    // rules. Treating one as a table swallowed whole pages into a single bogus cell in the
+    // previous iteration. A real grid has *internal* separators: at least one horizontal rule
+    // between two rows spanning most of the grid width, and at least one vertical rule between
+    // two columns spanning most of its height. Both are measured after clustering, so a rule
+    // split by a merged cell still counts.
+    let page_rect = page.rect();
+    if bounds.width > page_rect.width * 0.86 && bounds.height > page_rect.height * 0.86 {
+        return None;
+    }
+    if !has_internal_separators(component, &xs, &ys) {
         return None;
     }
     // An open table (rules only between columns, no closing border) stops short of its own

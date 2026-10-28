@@ -121,6 +121,8 @@ struct Writer<'a> {
     /// Relationship id per asset index.
     media: BTreeMap<usize, String>,
     media_parts: Vec<(String, Vec<u8>)>,
+    /// Relationship id per external hyperlink target.
+    links: BTreeMap<String, String>,
     next_relationship: usize,
     drawing_id: usize,
 }
@@ -133,9 +135,21 @@ impl<'a> Writer<'a> {
             warnings: Vec::new(),
             media: BTreeMap::new(),
             media_parts: Vec::new(),
+            links: BTreeMap::new(),
             next_relationship: 3,
             drawing_id: 1,
         }
+    }
+
+    /// Allocate (or reuse) a relationship id for an external hyperlink.
+    fn link_id(&mut self, target: &str) -> String {
+        if let Some(id) = self.links.get(target) {
+            return id.clone();
+        }
+        let id = format!("rId{}", self.next_relationship);
+        self.next_relationship += 1;
+        self.links.insert(target.to_string(), id.clone());
+        id
     }
 
     fn twips(points: f32) -> i64 {
@@ -214,6 +228,33 @@ impl<'a> Writer<'a> {
             }
             Block::Table(table) => self.table(table),
             Block::Figure(figure) => self.figure(figure),
+            Block::Vector(shape) => {
+                // VML is the interoperable way to keep an arbitrary stroked shape editable in
+                // Word; a plain bordered paragraph cannot express a vertical divider or a
+                // dashed rule set. `xmlns:v` is declared on the document root.
+                let color = shape
+                    .stroke
+                    .map(|rgb| rgb.hex())
+                    .unwrap_or_else(|| "7F7F7F".to_string());
+                let width = shape.rect.width.max(1.0);
+                let height = shape.rect.height.max(1.0);
+                let element = match shape.kind {
+                    cleanup_core::doc::VectorKind::Line => format!(
+                        "<v:line id=\"_x0000_s{}\" style=\"position:absolute\" from=\"0,0\" to=\"{width:.1},{height:.1}\" strokecolor=\"#{color}\" strokeweight=\"{:.2}pt\"/>",
+                        self.drawing_id, shape.stroke_width
+                    ),
+                    cleanup_core::doc::VectorKind::Rect => format!(
+                        "<v:rect id=\"_x0000_s{}\" style=\"position:absolute;width:{width:.1}pt;height:{height:.1}pt\" strokecolor=\"#{color}\" strokeweight=\"{:.2}pt\" filled=\"f\"/>",
+                        self.drawing_id, shape.stroke_width
+                    ),
+                    cleanup_core::doc::VectorKind::Ellipse => format!(
+                        "<v:oval id=\"_x0000_s{}\" style=\"position:absolute;width:{width:.1}pt;height:{height:.1}pt\" strokecolor=\"#{color}\" strokeweight=\"{:.2}pt\" filled=\"f\"/>",
+                        self.drawing_id, shape.stroke_width
+                    ),
+                };
+                self.drawing_id += 1;
+                self.paragraph("", &format!("<w:r><w:pict>{element}</w:pict></w:r>"));
+            }
             Block::Divider(_) => {
                 let properties = "<w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"BFBFBF\"/></w:pBdr><w:spacing w:before=\"120\" w:after=\"120\"/>";
                 self.paragraph(properties, "");
@@ -285,6 +326,9 @@ impl<'a> Writer<'a> {
                     "<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/>",
                 );
             }
+            if let Some(color) = style.color {
+                properties.push_str(&format!("<w:color w:val=\"{}\"/>", color.hex()));
+            }
             if (scale - 1.0).abs() > 0.01 {
                 let half_points = (10.5 * scale * 2.0).round() as i64;
                 properties.push_str(&format!("<w:sz w:val=\"{half_points}\"/>"));
@@ -292,10 +336,18 @@ impl<'a> Writer<'a> {
             if !properties.is_empty() {
                 properties = format!("<w:rPr>{properties}</w:rPr>");
             }
-            out.push_str(&format!(
+            let run = format!(
                 "<w:r>{properties}<w:t xml:space=\"preserve\">{}</w:t></w:r>",
                 escape_xml(&inline.text)
-            ));
+            );
+            if let Some(link) = style.link.as_deref() {
+                let id = self.link_id(link);
+                out.push_str(&format!(
+                    "<w:hyperlink r:id=\"{id}\" w:history=\"1\">{run}</w:hyperlink>"
+                ));
+            } else {
+                out.push_str(&run);
+            }
         }
         if out.is_empty() {
             out.push_str("<w:r><w:t xml:space=\"preserve\"></w:t></w:r>");
@@ -312,12 +364,14 @@ impl<'a> Writer<'a> {
                 warnings: Vec::new(),
                 media: BTreeMap::new(),
                 media_parts: Vec::new(),
+                links: self.links.clone(),
                 next_relationship: self.next_relationship,
                 drawing_id: self.drawing_id,
             };
             nested.block(block);
             self.media.extend(nested.media);
             self.media_parts.extend(nested.media_parts);
+            self.links = nested.links;
             self.next_relationship = nested.next_relationship;
             self.drawing_id = nested.drawing_id;
             self.warnings.extend(nested.warnings);
@@ -486,16 +540,31 @@ impl<'a> Writer<'a> {
         let id = self.drawing_id;
         self.drawing_id += 1;
         let name = format!("figure-{id}");
+        // Block figures are anchored floating drawings; inline icons stay inline so Word keeps
+        // them on the text baseline. Both share the same picture payload and relationship.
+        let (frame_open, frame_close) = if figure.inline {
+            (
+                format!(
+                    "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:docPr id=\"{id}\" name=\"{name}\"/><wp:cNvGraphicFramePr/>"
+                ),
+                "</wp:inline>",
+            )
+        } else {
+            (
+                format!(
+                    "<wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{id}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"column\"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"paragraph\"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapNone/><wp:docPr id=\"{id}\" name=\"{name}\"/><wp:cNvGraphicFramePr/>"
+                ),
+                "</wp:anchor>",
+            )
+        };
         let drawing = format!(
-            "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">\
-             <wp:extent cx=\"{width}\" cy=\"{height}\"/>\
-             <wp:docPr id=\"{id}\" name=\"{name}\"/>\
+            "<w:r><w:drawing>{frame_open}\
              <a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">\
              <pic:pic><pic:nvPicPr><pic:cNvPr id=\"{id}\" name=\"{file}\"/><pic:cNvPicPr/></pic:nvPicPr>\
              <pic:blipFill><a:blip r:embed=\"{relationship}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>\
              <pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>\
              <a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>\
-             </pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>",
+             </pic:pic></a:graphicData></a:graphic>{frame_close}</w:drawing></w:r>",
             file = escape_xml(&asset.file_name())
         );
         self.paragraph("<w:jc w:val=\"center\"/>", &drawing);
@@ -512,7 +581,7 @@ impl<'a> Writer<'a> {
         let page = &self.doc.page;
         let mut out = String::from(XML_HEADER);
         out.push_str(&format!(
-            "<w:document xmlns:w=\"{W_NS}\" xmlns:r=\"{R_NS}\" xmlns:wp=\"{WP_NS}\" xmlns:a=\"{A_NS}\" xmlns:pic=\"{PIC_NS}\"><w:body>"
+            "<w:document xmlns:w=\"{W_NS}\" xmlns:r=\"{R_NS}\" xmlns:wp=\"{WP_NS}\" xmlns:a=\"{A_NS}\" xmlns:pic=\"{PIC_NS}\" xmlns:v=\"urn:schemas-microsoft-com:vml\"><w:body>"
         ));
         out.push_str(&self.body);
         out.push_str("<w:sectPr>");
@@ -549,6 +618,12 @@ impl<'a> Writer<'a> {
                     escape_xml(&asset.file_name())
                 ));
             }
+        }
+        for (target, id) in &self.links {
+            out.push_str(&format!(
+                "<Relationship Id=\"{id}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"{}\" TargetMode=\"External\"/>",
+                escape_xml(target)
+            ));
         }
         out.push_str("</Relationships>");
         (out, self.media_parts.clone())

@@ -115,8 +115,13 @@ pub struct ConvertOptions {
     /// assistant's preamble is usually not what the caller wanted.
     pub sanitize: bool,
     pub level: CleanupLevel,
-    /// Remove blocks that consist *only* of assistant boilerplate.
+    /// Remove blocks that consist *only* of assistant boilerplate, and filter running
+    /// header/footer zones recorded in the IR.
     pub drop_boilerplate: bool,
+    /// Keep source typography intact while converting (see `SanitizeOptions`). Turning this
+    /// off applies the `typo.*` rules too, which is useful when the input is known to be raw
+    /// model output rather than a typeset document.
+    pub preserve_typography: bool,
 }
 
 impl Default for ConvertOptions {
@@ -125,6 +130,7 @@ impl Default for ConvertOptions {
             sanitize: true,
             level: CleanupLevel::Standard,
             drop_boilerplate: true,
+            preserve_typography: true,
         }
     }
 }
@@ -171,6 +177,7 @@ pub fn convert_document(
             &SanitizeOptions {
                 level: options.level,
                 drop_boilerplate: options.drop_boilerplate,
+                preserve_typography: options.preserve_typography,
             },
         );
         let mut sanitize_report = ConvertReport::default();
