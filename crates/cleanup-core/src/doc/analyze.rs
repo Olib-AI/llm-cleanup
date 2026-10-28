@@ -143,7 +143,7 @@ fn compare_f32(a: f32, b: f32) -> Ordering {
     a.partial_cmp(&b).unwrap_or(Ordering::Equal)
 }
 
-/// Canonicalize a font name by stripping PDF subset prefix e.g. "ABCDEF+Helvetica" -> "Helvetica".
+#[allow(dead_code)]
 fn canonical_font_family(name: &str) -> String {
     if let Some(plus) = name.find('+') {
         let prefix = &name[..plus];
