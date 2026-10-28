@@ -201,7 +201,16 @@ fn render_table(
     }
     let merged = table.has_merged_cells();
     let multiline = table.has_multiline_cells();
-    if merged || multiline {
+    let complex = table.all_rows().any(|row| {
+        row.cells.iter().any(|cell| {
+            cell.blocks.len() > 1
+                || cell
+                    .blocks
+                    .iter()
+                    .any(|block| !matches!(block, Block::Paragraph { .. }))
+        })
+    });
+    if merged || multiline || complex {
         out.push_str(&render_html_table(table, doc, used_assets, warnings));
         out.push('\n');
         if merged {
@@ -218,7 +227,11 @@ fn render_table(
     for row in table.all_rows() {
         let mut cells: Vec<String> = Vec::new();
         for cell in &row.cells {
-            cells.push(escape_cell(&cell.text().replace('\n', " ")));
+            let text = match cell.blocks.first() {
+                Some(Block::Paragraph { inlines, .. }) => render_inlines(inlines, false),
+                _ => String::new(),
+            };
+            cells.push(escape_cell(&text.replace('\n', " ")));
         }
         while cells.len() < columns {
             cells.push(String::new());
@@ -276,8 +289,21 @@ fn render_html_table(
             out.push_str("  </colgroup>\n");
         }
     }
-    if table.headers.iter().any(|row| !row.cells.is_empty()) {
+    // HTML row spans cannot cross from a thead into a tbody. Keep crossing
+    // header cells and their body continuations in one row group; they remain
+    // semantic <th> cells even though the table cannot use a separate <thead>.
+    let crosses_header = table.headers.iter().enumerate().any(|(index, row)| {
+        row.cells
+            .iter()
+            .any(|cell| cell.rowspan > table.headers.len() - index)
+    });
+    let has_headers = table.headers.iter().any(|row| !row.cells.is_empty());
+    if crosses_header {
+        out.push_str("  <tbody>\n");
+    } else if has_headers {
         out.push_str("  <thead>\n");
+    }
+    if has_headers {
         for row in &table.headers {
             out.push_str("    <tr>\n");
             for cell in &row.cells {
@@ -285,9 +311,13 @@ fn render_html_table(
             }
             out.push_str("    </tr>\n");
         }
+    }
+    if !crosses_header && has_headers {
         out.push_str("  </thead>\n");
     }
-    out.push_str("  <tbody>\n");
+    if !crosses_header {
+        out.push_str("  <tbody>\n");
+    }
     for row in &table.rows {
         out.push_str("    <tr>\n");
         for cell in &row.cells {
@@ -322,24 +352,30 @@ fn html_cell(
     for block in &cell.blocks {
         let text = match block {
             Block::Paragraph { inlines, .. } | Block::Heading { inlines, .. } => {
-                render_inlines(inlines, true)
+                render_inlines(inlines, true).replace('\n', "<br />")
             }
-            Block::Code { lines, .. } => format!("<code>{}</code>", escape_html(&lines.join("\n"))),
+            Block::Code { lines, .. } => format!(
+                "<code>{}</code>",
+                escape_html(&lines.join("\n")).replace('\n', "<br />")
+            ),
             Block::Figure(figure) => doc
                 .assets
                 .get(figure.asset)
                 .map(|asset| {
                     used_assets.push(figure.asset);
                     format!(
-                        "![{}](assets/{})",
-                        escape_alt(&figure.alt),
-                        asset.file_name()
+                        "<img src=\"assets/{}\" alt=\"{}\" />",
+                        escape_html(&asset.file_name()),
+                        escape_html(&figure.alt)
                     )
                 })
                 .unwrap_or_default(),
             _ => escape_html(&block.plain_text()),
         };
         if !text.trim().is_empty() {
+            if !inner.is_empty() {
+                inner.push_str("<br />");
+            }
             inner.push_str(&text);
         }
     }

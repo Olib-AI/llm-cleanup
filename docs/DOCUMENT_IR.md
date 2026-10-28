@@ -105,7 +105,7 @@ Key invariants:
 | Markdown | GFM tables when the grid is rectangular; semantic HTML `<table>` with `<colgroup>` widths, `colspan`/`rowspan` and cell fills when cells are merged or multi-paragraph. GFM alerts (`> [!NOTE]`) for callouts, inline `<span style="color:#…">`/`<u>` for colour and underline, inline `<svg>` for vector rules. Images are written to `./assets/` with a measured-DPI caption and referenced relatively. |
 | Plain text | Linearised reading order (columns are emitted column-by-column, never interleaved), aligned box-drawing tables, `[figure: …]` / `[vector: …]` markers with DPI, and residual markup stripped from prose while code blocks stay verbatim. |
 | DOCX | Hand-written OpenXML: `styles.xml` with real heading/quote/code styles, `w:tbl` with `w:tblBorders`/`w:tcMar`/`w:gridSpan`/`w:vMerge`/`w:tblHeader`, `w:hyperlink` + external relationships, `w:color`, VML shapes for vector rules, `wp:inline` for icons and `wp:anchor` for block images against `word/media/*` parts, `w:sectPr` with `w:cols` for multi-column regions, page geometry taken from the source page. |
-| PDF | Native byte-splice cleaning for PDF→PDF (layout untouched by construction); the IR renderer re-typesets other sources with embedded fonts, stroked vector paths, `rg` text colour, `/Annots` `/URI` link annotations, tables and raster images. |
+| PDF | Native cleaning uses font metrics and compensating `TJ` adjustments to preserve following text positions, and rejects edits it cannot position safely; the IR renderer re-typesets other sources with embedded fonts, stroked vector paths, `rg` text colour, `/Annots` `/URI` link annotations, tables and raster images. |
 
 ## Module map (as built)
 
@@ -186,10 +186,16 @@ covers all three: its third page is drawn with raw `TJ` arrays, `Tc`/`Tw` regist
 
 ## Fixtures and tests
 
-`scripts/generate_fixtures.py` writes five deterministic PDFs plus `manifest.json` into
-`tests/fixtures/` (reportlab + pillow; `rl_config.invariant` makes regeneration byte-identical —
-verify with `python3 scripts/generate_fixtures.py --verify`). The PDFs and the ground-truth
-manifest are committed so `cargo test` needs no Python or network access:
+`scripts/generate_fixtures.py` writes five canonical PDFs, four compatibility fixtures, and
+`manifest.json` into `tests/fixtures/`. Install the pinned versions with
+`python3 -m pip install -r scripts/fixture-requirements.txt`, then run
+`python3 scripts/generate_fixtures.py --verify` to regenerate in a temporary directory and
+compare without modifying committed files. The checked-in corpus was generated with Debian
+`fonts-dejavu-core` 2.37-6 (regular, bold, mono and mono-bold). Different font versions can
+change the PDFs; optional system italic fonts are intentionally not used by the generator.
+The typography fixture draws genuine base-14 bold/oblique faces independently of them.
+The PDFs and ground-truth manifest are committed, so `cargo test` needs no
+Python or network access:
 
 | Fixture | Ground truth asserted |
 | --- | --- |

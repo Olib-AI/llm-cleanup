@@ -337,6 +337,19 @@ fn rich_media_preserves_raster_assets_and_vectors() {
             "asset {width}x{height} was not extracted with its real dimensions"
         );
     }
+    let jpeg = doc
+        .assets
+        .iter()
+        .find(|asset| asset.kind == cleanup_core::doc::ImageKind::Jpeg)
+        .expect("JPEG figure missing");
+    assert!(
+        jpeg.data.starts_with(&[0xFF, 0xD8]),
+        "PDF filter wrapper leaked into JPEG asset"
+    );
+    assert_eq!(
+        cleanup_core::doc::raster::jpeg_dimensions(&jpeg.data),
+        Some((jpeg.width_px, jpeg.height_px))
+    );
     assert!(
         doc.assets.iter().any(|asset| asset.dpi_x.is_some()),
         "no placement DPI was recorded"
@@ -400,6 +413,12 @@ fn rich_media_preserves_raster_assets_and_vectors() {
         .filter(|name| name.starts_with("word/media/"))
         .collect();
     assert!(media.len() >= minimum, "only {:?} media parts", media);
+    assert!(
+        media
+            .iter()
+            .any(|name| zip_part(&docx.bytes, name) == jpeg.data),
+        "JPEG payload changed inside DOCX"
+    );
     for name in &media {
         assert!(!zip_part(&docx.bytes, name).is_empty(), "{name} is empty");
     }
@@ -747,6 +766,23 @@ fn native_pdf_clean_keeps_geometry_fonts_and_images() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn compatibility_converters_use_the_structured_pipeline_and_do_not_drop_sidecars() {
+    let pdf = fixture("rich_media.pdf");
+    let (docx, _) = cleanup_convert::to_docx::convert(FormatId::Pdf, &pdf).unwrap();
+    let xml = String::from_utf8(zip_part(&docx, "word/document.xml")).unwrap();
+    assert!(
+        xml.contains("<w:drawing>"),
+        "legacy DOCX path dropped figures"
+    );
+    assert!(cleanup_convert::to_markdown::convert(FormatId::Pdf, &pdf).is_err());
+    let output = convert("rich_media.pdf", Target::Markdown);
+    assert!(!output.assets.is_empty());
+    for (name, _) in &output.assets {
+        assert!(String::from_utf8_lossy(&output.bytes).contains(&format!("assets/{name}")));
+    }
+}
+
+#[test]
 fn every_fixture_converts_to_every_target() {
     let mut failures: Vec<String> = Vec::new();
     for name in FIXTURES {
@@ -1005,6 +1041,23 @@ fn typography_metadata_is_recovered_from_the_font_dictionary() {
     assert!(bold.font_weight >= 700, "weight {}", bold.font_weight);
     assert!(!bold.italic);
 
+    // These faces are drawn with real standard PDF fonts, even when optional
+    // DejaVu italic files are unavailable on the fixture-generation machine.
+    for (name, expected_bold, expected_italic) in [
+        ("Helvetica", false, false),
+        ("Helvetica-Bold", true, false),
+        ("Helvetica-Oblique", false, true),
+        ("Helvetica-BoldOblique", true, true),
+    ] {
+        let face = runs
+            .iter()
+            .find(|run| run.font_name == name)
+            .unwrap_or_else(|| panic!("missing standard PDF font {name}"));
+        assert_eq!(face.font_family, "Helvetica");
+        assert_eq!(face.bold, expected_bold, "{name}");
+        assert_eq!(face.italic, expected_italic, "{name}");
+    }
+
     let mono = runs
         .iter()
         .find(|run| run.mono && run.font_name.contains("Mono"))
@@ -1065,6 +1118,7 @@ fn docx_runs_carry_font_family_weight_and_size() {
         "the embedded family was not mapped onto w:rFonts"
     );
     assert!(xml.contains("<w:b/>"), "bold weight produced no w:b");
+    assert!(xml.contains("<w:i/>"), "italic face produced no w:i");
     // 14pt -> 28 half-points, 8pt -> 16.
     assert!(
         xml.contains("w:sz w:val=\"28\""),

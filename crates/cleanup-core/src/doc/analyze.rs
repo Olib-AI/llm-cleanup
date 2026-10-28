@@ -61,6 +61,8 @@ struct Word {
     baseline: f32,
     /// Advance of a space in this word's font, in points. Drives the word-gap threshold.
     space_width: f32,
+    /// Blanks explicitly encoded before the source run, even if their advance is zero.
+    explicit_spaces_before: u16,
     /// Spaces to emit *before* this word when the line is rebuilt: `0` glues the word to its
     /// predecessor (a kerning or style split), `1` is an ordinary word gap, and a monospaced
     /// line can carry the indentation width. This is the field that keeps "Kerning" from
@@ -85,7 +87,8 @@ impl Word {
             font_family: run.font_family.clone(),
             font_weight: run.font_weight,
             baseline: run.baseline,
-            space_width: run.space_width.max(0.5),
+            space_width: run.space_width.max(0.1),
+            explicit_spaces_before: run.explicit_spaces_before,
             spaces_before,
         }
     }
@@ -204,12 +207,18 @@ fn assign_spaces(words: &mut [Word], mono: bool) {
         let (previous, current) = words.split_at_mut(index);
         let previous_rect = previous[index - 1].rect;
         let current_word = &mut current[0];
-        current_word.spaces_before = crate::doc::cluster::gap_spaces(
+        let geometric = crate::doc::cluster::gap_spaces(
             previous_rect,
             current_word.rect,
             current_word.space_width,
             mono || current_word.mono,
         );
+        let explicit = if mono || current_word.mono {
+            current_word.explicit_spaces_before.min(MAX_GAP_SPACES)
+        } else {
+            u16::from(current_word.explicit_spaces_before > 0)
+        };
+        current_word.spaces_before = geometric.max(explicit);
     }
     words[0].spaces_before = 0;
 }

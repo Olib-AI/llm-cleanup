@@ -1,9 +1,8 @@
 //! Spatial reconstruction: PDF page content → glyphs, words, rules, fills and images.
 //!
-//! The lossless cleaner in the parent module reads text showing operators only, because it
-//! splices prose back into the same operands and never needs to know where anything is drawn.
-//! Conversion is the opposite problem: to rebuild a table, a column layout or a figure, we need
-//! the *geometry*. This module therefore interprets each page's content streams with the full
+//! Native cleaning uses the font metrics here to compensate for changed text advances without
+//! re-typesetting. Conversion additionally needs to reconstruct where everything is drawn to
+//! rebuild tables, columns and figures. This module interprets page content streams with the full
 //! graphics state:
 //!
 //! * `q`/`Q`/`cm` maintain the CTM; `BT`/`ET`/`Tm`/`Td`/`TD`/`T*`/`TL` maintain the text
@@ -77,7 +76,8 @@ pub fn extract_layout(bytes: &[u8]) -> Result<PdfLayoutReport> {
         } else {
             let mut interpreter = Interpreter {
                 pdf: &pdf,
-                page_height: entry.height,
+                page_left: entry.left,
+                page_top: entry.top,
                 assets: &mut layout.assets,
                 asset_keys: &mut asset_keys,
                 warnings: &mut warnings,
@@ -135,6 +135,17 @@ fn translation(tx: f32, ty: f32) -> Matrix {
     [1.0, 0.0, 0.0, 1.0, tx, ty]
 }
 
+/// PDF dictionary numbers may be real, not just integers. Truncating a 0.5 Form
+/// matrix to zero, or a fractional glyph width, destroys the page geometry.
+fn as_f32(value: &Value) -> Option<f32> {
+    let number = match value {
+        Value::Int(number) => *number as f32,
+        Value::Real(number) => number.parse::<f32>().ok()?,
+        _ => return None,
+    };
+    number.is_finite().then_some(number)
+}
+
 fn matrix_from(value: &Value) -> Option<Matrix> {
     let Value::Array(items) = value else {
         return None;
@@ -144,7 +155,7 @@ fn matrix_from(value: &Value) -> Option<Matrix> {
     }
     let mut matrix = IDENTITY;
     for (index, item) in items.iter().enumerate() {
-        matrix[index] = as_int(item)? as f32;
+        matrix[index] = as_f32(item)?;
     }
     Some(matrix)
 }
@@ -152,6 +163,9 @@ fn matrix_from(value: &Value) -> Option<Matrix> {
 struct PageEntry {
     width: f32,
     height: f32,
+    /// MediaBox lower-left x and upper-right y in PDF user space.
+    left: f32,
+    top: f32,
     rotate: i32,
     resources: Option<Value>,
     contents: Vec<Ref>,
@@ -178,7 +192,7 @@ fn walk_page_tree(
     pdf: &ParsedPdf,
     node: &Value,
     inherited_resources: Option<Value>,
-    inherited_box: Option<(f32, f32)>,
+    inherited_box: Option<(f32, f32, f32, f32)>,
     inherited_rotate: i32,
     visited: &mut BTreeSet<Ref>,
     out: &mut Vec<PageEntry>,
@@ -236,33 +250,33 @@ fn walk_page_tree(
         }
         _ => {}
     }
-    let (width, height) = media_box.unwrap_or((612.0, 792.0));
+    let (left, bottom, right, top) = media_box.unwrap_or((0.0, 0.0, 612.0, 792.0));
     out.push(PageEntry {
-        width,
-        height,
+        width: right - left,
+        height: top - bottom,
+        left,
+        top,
         rotate,
         resources,
         contents,
     });
 }
 
-fn media_box_of(value: &Value) -> Option<(f32, f32)> {
+fn media_box_of(value: &Value) -> Option<(f32, f32, f32, f32)> {
     let Value::Array(items) = value else {
         return None;
     };
     if items.len() != 4 {
         return None;
     }
-    let x0 = as_int(&items[0])? as f32;
-    let y0 = as_int(&items[1])? as f32;
-    let x1 = as_int(&items[2])? as f32;
-    let y1 = as_int(&items[3])? as f32;
-    let width = (x1 - x0).abs();
-    let height = (y1 - y0).abs();
-    if width < 1.0 || height < 1.0 {
+    let x0 = as_f32(&items[0])?;
+    let y0 = as_f32(&items[1])?;
+    let x1 = as_f32(&items[2])?;
+    let y1 = as_f32(&items[3])?;
+    if (x1 - x0).abs() < 1.0 || (y1 - y0).abs() < 1.0 {
         return None;
     }
-    Some((width, height))
+    Some((x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)))
 }
 
 // ---------------------------------------------------------------------------
@@ -375,8 +389,12 @@ impl PageGeometry {
 /// Read once from the font dictionary, `/FontDescriptor` and the name, so that every glyph the
 /// font shows carries the same family, weight, italic flag and metrics. Nothing downstream
 /// re-guesses a style from a name.
-struct FontInfo {
-    profile: FontProfile,
+#[derive(Debug, Clone)]
+pub(super) struct FontInfo {
+    pub(super) profile: FontProfile,
+    pub(super) vertical: bool,
+    pub(super) safe_cid_mapping: bool,
+    native_base14: bool,
     metrics: FontMetrics,
     /// PostScript name with the subset tag stripped, e.g. `DejaVuSans-Bold`.
     canonical: String,
@@ -396,16 +414,58 @@ struct FontInfo {
 }
 
 impl FontInfo {
-    /// Advance width of `code` in em: declared `/Widths` first, then the base-14 AFM table,
-    /// then the font's own `/MissingWidth`.
+    /// Use declared widths, then the font's missing/default width. Base-14 AFM
+    /// widths apply only when the PDF did not supply its own metrics. Translate
+    /// the font's encoding to WinAnsi before indexing those tables.
+    pub(super) fn known_width_em(&self, code: u32) -> Option<f32> {
+        let base_width = || {
+            let text = self.profile.decode.get(&code)?;
+            let mut chars = text.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            let winansi = if ch.is_ascii() {
+                u32::from(ch)
+            } else {
+                u32::from((128u16..=255).find(|byte| winansi_char(*byte as u8) == Some(ch))?)
+            };
+            fontmap::base14_width_for_name(&self.canonical, winansi)
+        };
+        self.metrics
+            .declared(code)
+            .or(self.metrics.default_width)
+            .or_else(base_width)
+            .map(|width| width / 1000.0)
+    }
+
+    /// Native editing may not use a merely metric-compatible substitute: a
+    /// small width error would move all subsequent text. Only explicit PDF
+    /// widths/defaults or the exact, unembedded standard 14 face are safe.
+    pub(super) fn positioning_width_em(&self, code: u32) -> Option<f32> {
+        let index = i64::from(code) - i64::from(self.metrics.first_char);
+        if index >= 0 && (index as usize) < self.metrics.widths.len() {
+            // An explicitly listed but unreadable width is not the same as an
+            // omitted glyph: don't silently substitute MissingWidth for it.
+            return self.metrics.widths[index as usize].map(|width| width / 1000.0);
+        }
+        self.metrics
+            .cid_widths
+            .get(&code)
+            .copied()
+            .or(self.metrics.default_width)
+            .map(|width| width / 1000.0)
+            .or_else(|| {
+                if self.native_base14 {
+                    self.known_width_em(code)
+                } else {
+                    None
+                }
+            })
+    }
+
     fn width_em(&self, code: u32) -> f32 {
-        if let Some(width) = self.metrics.declared(code) {
-            return width / 1000.0;
-        }
-        if let Some(width) = fontmap::base14_width(&self.family, code) {
-            return width / 1000.0;
-        }
-        self.metrics.width(code) / 1000.0
+        self.known_width_em(code).unwrap_or(0.5)
     }
 
     /// Advance of a space at `size` points, in text-space units.
@@ -414,59 +474,28 @@ impl FontInfo {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 struct FontMetrics {
     first_char: i32,
-    widths: Vec<f32>,
+    widths: Vec<Option<f32>>,
     cid_widths: BTreeMap<u32, f32>,
-    default_width: f32,
+    default_width: Option<f32>,
 }
 
 impl FontMetrics {
-    /// Glyph advance in 1/1000 em, but only when the font *declares* one.
-    ///
-    /// Distinguishing "declared" from "defaulted" matters twice: an unembedded base-14 face
-    /// has no `/Widths` at all (so the AFM table should answer), while an embedded subset that
-    /// omits a code really does mean `/MissingWidth`.
+    /// A zero advance is meaningful (e.g. combining marks), not a missing width.
     fn declared(&self, code: u32) -> Option<f32> {
-        if !self.widths.is_empty() {
-            let index = code as i64 - i64::from(self.first_char);
-            if index >= 0
-                && let Some(width) = self.widths.get(index as usize)
-                && *width > 0.0
-            {
-                return Some(*width);
-            }
+        let index = i64::from(code) - i64::from(self.first_char);
+        if index >= 0
+            && let Some(width) = self.widths.get(index as usize).copied().flatten()
+        {
+            return Some(width);
         }
-        self.cid_widths
-            .get(&code)
-            .copied()
-            .filter(|width| *width > 0.0)
-    }
-
-    /// Glyph advance in 1/1000 em.
-    fn width(&self, code: u32) -> f32 {
-        if !self.widths.is_empty() {
-            let index = code as i64 - i64::from(self.first_char);
-            if index >= 0
-                && let Some(width) = self.widths.get(index as usize)
-                && *width > 0.0
-            {
-                return *width;
-            }
-        }
-        if let Some(width) = self.cid_widths.get(&code) {
-            return *width;
-        }
-        if self.default_width > 0.0 {
-            self.default_width
-        } else {
-            500.0
-        }
+        self.cid_widths.get(&code).copied()
     }
 }
 
-fn fonts_for(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, FontInfo> {
+pub(super) fn fonts_for(pdf: &ParsedPdf, resources: Option<&Value>) -> BTreeMap<String, FontInfo> {
     let mut fonts: BTreeMap<String, FontInfo> = BTreeMap::new();
     let Some(resources) = resources else {
         return fonts;
@@ -493,23 +522,48 @@ const FLAG_FIXED_PITCH: i64 = 1 << 0;
 const FLAG_ITALIC: i64 = 1 << 6;
 const FLAG_FORCE_BOLD: i64 = 1 << 18;
 
+fn descendant_font<'a>(
+    pdf: &'a ParsedPdf,
+    dict: &'a [(String, Value)],
+) -> Option<&'a [(String, Value)]> {
+    let Value::Array(fonts) = pdf.resolve(dict_get(dict, "DescendantFonts")?) else {
+        return None;
+    };
+    pdf.resolve_dict(fonts.first()?).map(Vec::as_slice)
+}
+
+fn font_descriptor<'a>(
+    pdf: &'a ParsedPdf,
+    dict: &'a [(String, Value)],
+) -> Option<&'a [(String, Value)]> {
+    let owner = descendant_font(pdf, dict).unwrap_or(dict);
+    dict_get(owner, "FontDescriptor")
+        .map(|value| pdf.resolve(value))
+        .and_then(as_dict_ref)
+}
+
 fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let profile = font_profile(pdf, dict);
     let metrics = font_metrics(pdf, dict);
-    let base_raw = dict_get(dict, "BaseFont").and_then(as_name).unwrap_or("");
+    let descriptor = font_descriptor(pdf, dict);
+    let base_raw = dict_get(dict, "BaseFont")
+        .and_then(as_name)
+        .or_else(|| {
+            descriptor
+                .and_then(|entries| dict_get(entries, "FontName"))
+                .and_then(as_name)
+        })
+        .unwrap_or("");
     let canonical = fontmap::canonical_name(base_raw);
     let family = fontmap::family(&canonical);
-    let descriptor = dict_get(dict, "FontDescriptor")
-        .map(|value| pdf.resolve(value))
-        .and_then(as_dict_ref);
     let flags = descriptor
         .and_then(|entries| dict_get(entries, "Flags"))
         .and_then(as_int)
         .unwrap_or(0);
     let italic_angle = descriptor
         .and_then(|entries| dict_get(entries, "ItalicAngle"))
-        .and_then(as_int)
-        .unwrap_or(0);
+        .and_then(as_f32)
+        .unwrap_or(0.0);
     let stem_v = descriptor
         .and_then(|entries| dict_get(entries, "StemV"))
         .and_then(as_int);
@@ -518,17 +572,14 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
         .and_then(as_int)
         .and_then(fontmap::weight_from_font_weight);
 
-    // Name first (it is what a typesetter wrote), then the descriptor, then the flags.
-    let weight = fontmap::weight_from_name(&canonical)
-        .or(descriptor_weight)
+    // An explicit descriptor weight is authoritative; the name and StemV are fallbacks.
+    let weight = descriptor_weight
+        .or_else(|| fontmap::weight_from_name(&canonical))
+        .or_else(|| (flags & FLAG_FORCE_BOLD != 0).then_some(700))
         .or_else(|| stem_v.and_then(fontmap::weight_from_stem_v))
-        .unwrap_or(if flags & FLAG_FORCE_BOLD != 0 {
-            700
-        } else {
-            400
-        });
+        .unwrap_or(400);
     let italic =
-        fontmap::name_is_italic(&canonical) || flags & FLAG_ITALIC != 0 || italic_angle != 0;
+        fontmap::name_is_italic(&canonical) || flags & FLAG_ITALIC != 0 || italic_angle != 0.0;
     let mono =
         fontmap::name_is_mono(&canonical) || flags & FLAG_FIXED_PITCH != 0 || family == "Courier";
 
@@ -538,27 +589,60 @@ fn font_info(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontInfo {
     let (base_ascent, base_descent, base_space) = fontmap::base_metrics(&family, mono);
     let ascent = descriptor
         .and_then(|entries| dict_get(entries, "Ascent"))
-        .and_then(as_int)
-        .map(|value| value as f32 / 1000.0)
+        .and_then(as_f32)
+        .map(|value| value / 1000.0)
         .filter(|value| *value > 0.2 && *value < 1.6)
         .unwrap_or(base_ascent);
     let descent = descriptor
         .and_then(|entries| dict_get(entries, "Descent"))
-        .and_then(as_int)
-        .map(|value| (value as f32 / 1000.0).abs())
+        .and_then(as_f32)
+        .map(|value| (value / 1000.0).abs())
         .filter(|value| *value > 0.02 && *value < 0.8)
         .unwrap_or(base_descent);
-    // A font that declares a space glyph but no `/Widths` entry for it falls back to the
-    // family's AFM value, never to "half an em".
+    // A CID font can map Unicode space to a code other than 32.
+    let space_code = profile.encode.get(&' ').copied().unwrap_or(32);
     let space_em = metrics
-        .declared(32)
+        .declared(space_code)
         .map(|width| width / 1000.0)
         .or_else(|| fontmap::base14_width(&family, 32).map(|width| width / 1000.0))
         .filter(|value| (0.1..=0.9).contains(value))
         .unwrap_or(base_space);
 
+    let encoding = dict_get(dict, "Encoding")
+        .map(|value| pdf.resolve(value))
+        .and_then(as_name);
+    let is_cid = dict_get(dict, "Subtype").and_then(as_name) == Some("Type0");
+    let embedded = descriptor.is_some_and(|entries| {
+        ["FontFile", "FontFile2", "FontFile3"]
+            .iter()
+            .any(|name| dict_get(entries, name).is_some())
+    });
+    let native_base14 = !embedded
+        && matches!(
+            base_raw,
+            "Helvetica"
+                | "Helvetica-Bold"
+                | "Helvetica-Oblique"
+                | "Helvetica-BoldOblique"
+                | "Times-Roman"
+                | "Times-Bold"
+                | "Times-Italic"
+                | "Times-BoldItalic"
+                | "Courier"
+                | "Courier-Bold"
+                | "Courier-Oblique"
+                | "Courier-BoldOblique"
+        );
+    let safe_cid_mapping = if is_cid {
+        encoding == Some("Identity-H") && profile.code_len == 2
+    } else {
+        profile.code_len == 1
+    };
     FontInfo {
         profile,
+        vertical: encoding.is_some_and(|name| name.ends_with("-V")),
+        safe_cid_mapping,
+        native_base14,
         metrics,
         canonical,
         family,
@@ -582,18 +666,15 @@ fn as_dict_ref(value: &Value) -> Option<&[(String, Value)]> {
 
 fn font_metrics(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontMetrics {
     let mut metrics = FontMetrics::default();
-    let descendant = dict_get(dict, "DescendantFonts")
-        .map(|value| pdf.resolve(value))
-        .and_then(|value| match value {
-            Value::Array(items) => items.first().cloned(),
-            _ => None,
-        })
-        .and_then(|value| pdf.resolve_dict(&value).cloned());
+    let descendant = descendant_font(pdf, dict);
 
-    if let Some(descendant) = descendant.as_deref() {
-        if let Some(default_width) = dict_get(descendant, "DW").and_then(as_int) {
-            metrics.default_width = default_width as f32;
-        }
+    if let Some(descendant) = descendant {
+        // PDF's default CID width is 1000, even when /DW is absent.
+        metrics.default_width = Some(
+            dict_get(descendant, "DW")
+                .and_then(as_f32)
+                .unwrap_or(1000.0),
+        );
         if let Some(widths) = dict_get(descendant, "W")
             .map(|value| pdf.resolve(value))
             .and_then(|value| match value {
@@ -616,16 +697,13 @@ fn font_metrics(pdf: &ParsedPdf, dict: &[(String, Value)]) -> FontMetrics {
         })
     {
         for item in &widths {
-            metrics
-                .widths
-                .push(as_int(item).map(|value| value as f32).unwrap_or(0.0));
+            metrics.widths.push(as_f32(pdf.resolve(item)));
         }
     }
-    if metrics.default_width <= 0.0 {
-        metrics.default_width = dict_get(dict, "MissingWidth")
-            .and_then(as_int)
-            .map(|value| value as f32)
-            .unwrap_or(500.0);
+    if metrics.default_width.is_none() {
+        metrics.default_width = font_descriptor(pdf, dict)
+            .and_then(|descriptor| dict_get(descriptor, "MissingWidth"))
+            .and_then(as_f32);
     }
     metrics
 }
@@ -640,8 +718,11 @@ fn parse_cid_widths(items: &[Value], out: &mut BTreeMap<u32, f32>) {
         match items.get(index + 1) {
             Some(Value::Array(widths)) => {
                 for (offset, width) in widths.iter().enumerate() {
-                    if let Some(value) = as_int(width) {
-                        out.insert((first as u32).wrapping_add(offset as u32), value as f32);
+                    if let (Ok(code), Some(value)) = (u32::try_from(first), as_f32(width))
+                        && let Some(code) = code.checked_add(offset as u32)
+                        && code <= 65_535
+                    {
+                        out.insert(code, value);
                     }
                 }
                 index += 2;
@@ -651,17 +732,15 @@ fn parse_cid_widths(items: &[Value], out: &mut BTreeMap<u32, f32>) {
                     index += 1;
                     continue;
                 };
-                let width = items
-                    .get(index + 2)
-                    .and_then(as_int)
-                    .map(|value| value as f32)
-                    .unwrap_or(0.0);
-                let mut code = first as u32;
-                while code <= last as u32 {
-                    out.insert(code, width);
-                    code += 1;
-                    if code.wrapping_sub(first as u32) > 65_535 {
-                        break;
+                if let (Ok(first), Ok(last), Some(width)) = (
+                    u32::try_from(first),
+                    u32::try_from(last),
+                    items.get(index + 2).and_then(as_f32),
+                ) && first <= last
+                    && last <= 65_535
+                {
+                    for code in first..=last {
+                        out.insert(code, width);
                     }
                 }
                 index += 3;
@@ -677,7 +756,8 @@ fn parse_cid_widths(items: &[Value], out: &mut BTreeMap<u32, f32>) {
 
 struct Interpreter<'a> {
     pdf: &'a ParsedPdf,
-    page_height: f32,
+    page_left: f32,
+    page_top: f32,
     assets: &'a mut Vec<ImageAsset>,
     asset_keys: &'a mut BTreeMap<String, usize>,
     warnings: &'a mut Vec<String>,
@@ -942,7 +1022,12 @@ impl<'a> Interpreter<'a> {
                         self.do_xobject(name, resources, &gs, geom, depth);
                     }
                 }
-                "BI" => lexer.skip_inline_image(),
+                "BI" => {
+                    lexer.skip_inline_image();
+                    self.warnings.push(
+                        "inline PDF images are not yet extracted during conversion".to_string(),
+                    );
+                }
                 "gs" => {
                     // Extended graphics state (alpha, blend mode) carries no geometry we use.
                 }
@@ -971,8 +1056,9 @@ impl<'a> Interpreter<'a> {
     ) {
         let font_name_raw = gs.font.clone().unwrap_or_default();
         let trm = mul(*tm, gs.ctm);
-        let scale = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt().max(0.01);
-        let size = (gs.font_size * scale).max(0.5);
+        let x_scale = (trm[0] * trm[0] + trm[1] * trm[1]).sqrt().max(0.01);
+        let y_scale = (trm[2] * trm[2] + trm[3] * trm[3]).sqrt().max(0.01);
+        let size = (gs.font_size * y_scale).max(0.5);
 
         let Some(font) = fonts.get(&font_name_raw) else {
             // A font resource we could not resolve (or a symbolic face with no Unicode map).
@@ -995,21 +1081,19 @@ impl<'a> Interpreter<'a> {
         }
 
         let code_len = font.profile.code_len.max(1);
-        let space_width = font.space_advance(gs.font_size) * scale;
+        let space_width = font.space_advance(gs.font_size) * x_scale * gs.hscale.abs();
         let mut cursor = 0.0f32;
         let mut index = 0usize;
         while index < bytes.len() {
             let end = (index + code_len).min(bytes.len());
             let code = hex_bytes_to_u32(&bytes[index..end]);
             let width = font.width_em(code);
-            let blank = font
-                .profile
-                .decode
-                .get(&code)
-                .is_some_and(|text| text.chars().all(|ch| ch.is_whitespace()));
+            // PDF word spacing applies to the single-byte character code 32, not to
+            // every Unicode whitespace character (nor to a two-byte CID 0x0020).
+            let word_space = code_len == 1 && code == 32;
             let advance = (width * gs.font_size
                 + gs.char_spacing
-                + if blank { gs.word_spacing } else { 0.0 })
+                + if word_space { gs.word_spacing } else { 0.0 })
                 * gs.hscale;
             if let Some(text) = font.profile.decode.get(&code) {
                 // Origin and end of the advance box, in page space. `rise` (`Ts`) is applied
@@ -1017,11 +1101,11 @@ impl<'a> Interpreter<'a> {
                 // draws it rather than by a re-derived offset.
                 let (x0, y0) = apply(trm, cursor, gs.rise);
                 let (x1, _) = apply(trm, cursor + advance, gs.rise);
-                let baseline = self.page_height - y0;
+                let baseline = self.page_top - y0;
                 geom.glyphs.push(Glyph {
                     text: text.clone(),
                     rect: Rect::new(
-                        x0.min(x1),
+                        x0.min(x1) - self.page_left,
                         baseline - font.ascent * size,
                         (x1 - x0).abs().max(0.01),
                         (font.ascent + font.descent) * size,
@@ -1088,10 +1172,10 @@ impl<'a> Interpreter<'a> {
             // A stroked rectangle (`re … S`) has no path segments; emit its four edges as
             // rules so the table detector can still see the grid.
             let thickness = gs.line_width.max(0.3);
-            let left = x0;
-            let right = x1;
-            let top = self.page_height - y1;
-            let bottom = self.page_height - y0;
+            let left = x0 - self.page_left;
+            let right = x1 - self.page_left;
+            let top = self.page_top - y1;
+            let bottom = self.page_top - y0;
             geom.rules.push(RuleSegment {
                 rect: Rect::new(left, top, (right - left).max(0.0), thickness),
                 axis: Axis::Horizontal,
@@ -1149,7 +1233,7 @@ impl<'a> Interpreter<'a> {
     fn page_rect(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
         let width = (x1 - x0).max(0.0);
         let height = (y1 - y0).max(0.0);
-        Rect::new(x0, self.page_height - y1, width, height)
+        Rect::new(x0 - self.page_left, self.page_top - y1, width, height)
     }
 
     fn do_xobject(
@@ -1241,9 +1325,9 @@ impl<'a> Interpreter<'a> {
             return;
         }
         let filters = dict_filters(dict);
-        let is_jpeg = filters
+        let jpeg_filter = filters
             .iter()
-            .any(|filter| filter == "DCTDecode" || filter == "DCT");
+            .position(|filter| filter == "DCTDecode" || filter == "DCT");
         if filters.iter().any(|filter| filter == "JPXDecode") {
             self.warnings.push(
                 "skipped a JPEG 2000 image (JPXDecode is not supported); its position is lost"
@@ -1251,8 +1335,43 @@ impl<'a> Interpreter<'a> {
             );
             return;
         }
-        let (kind, data) = if is_jpeg {
-            (ImageKind::Jpeg, raw.to_vec())
+        if dict_get(dict, "SMask").is_some() || dict_get(dict, "Mask").is_some() {
+            self.warnings
+                .push("image transparency masks are not preserved during conversion".to_string());
+        }
+        if dict_get(dict, "Decode").is_some() {
+            self.warnings
+                .push("image Decode arrays are not applied during conversion".to_string());
+        }
+        if matches!(dict_get(dict, "ColorSpace").map(|v| self.pdf.resolve(v)), Some(Value::Array(items)) if items.first().and_then(as_name) == Some("ICCBased"))
+        {
+            self.warnings.push("ICC image profiles are approximated by their component count; colour management is not applied".to_string());
+        }
+        let (kind, data) = if let Some(index) = jpeg_filter {
+            if index + 1 != filters.len() {
+                self.warnings
+                    .push("skipped an image with filters after DCTDecode".to_string());
+                return;
+            }
+            // DCT data may itself be wrapped in ASCII85, ASCIIHex, or Flate.
+            // Only the bytes *after* these wrappers are a usable JPEG asset.
+            let mut prefix = dict.to_vec();
+            set_dict_entry(
+                &mut prefix,
+                "Filter",
+                Value::Array(filters[..index].iter().cloned().map(Value::Name).collect()),
+            );
+            let Ok(jpeg) = decode_stream_data(&prefix, raw) else {
+                self.warnings
+                    .push("skipped a JPEG with an unsupported outer filter".to_string());
+                return;
+            };
+            if !jpeg.starts_with(&[0xFF, 0xD8]) {
+                self.warnings
+                    .push("skipped an image with an invalid JPEG payload".to_string());
+                return;
+            }
+            (ImageKind::Jpeg, jpeg)
         } else {
             let Ok(decoded) = decode_stream_data(dict, raw) else {
                 self.warnings
@@ -1442,7 +1561,7 @@ fn to_rgb(kind: ColorKind, samples: &[u8], width: usize, height: usize) -> Optio
                 let [cyan, magenta, yellow, black] = *pixel;
                 let k = u32::from(black);
                 for value in [cyan, magenta, yellow] {
-                    let channel = (u32::from(value) * (255 - k)) / 255;
+                    let channel = ((255 - u32::from(value)) * (255 - k)) / 255;
                     rgb.push(channel as u8);
                 }
             }

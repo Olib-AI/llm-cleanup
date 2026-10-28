@@ -234,7 +234,7 @@ fn markdown_maps_every_inline_and_container() {
         "<colgroup>",
         "colspan=\"2\"",
         "merged across columns",
-        "](assets/figure-1.png)",
+        "](assets/figure-1-",
         "96 dpi",
         "<svg ",
         "role=\"img\"",
@@ -247,11 +247,95 @@ fn markdown_maps_every_inline_and_container() {
         rendered
             .assets
             .iter()
-            .any(|(name, _)| name == "figure-1.png"),
+            .any(|(name, _)| name.starts_with("figure-1-") && name.ends_with(".png")),
         "Markdown did not emit the image side-car"
     );
     // The fenced code is verbatim, including tokens the sanitizer would strip from prose.
     assert!(md.contains("# [/INST] ** the the the"));
+}
+
+#[test]
+fn markdown_tables_keep_inline_styles_multiline_cells_and_images() {
+    let mut doc = styled_doc();
+    let mut styled = Cell::paragraph("placeholder");
+    styled.blocks = vec![Block::Paragraph {
+        inlines: vec![Inline::bold("Whole words"), Inline::plain(" | value")],
+        anchor: None,
+        style: ParagraphStyle::default(),
+    }];
+    let mut table = Table::default();
+    table.rows.push(Row {
+        cells: vec![styled],
+        header: false,
+        fill: None,
+    });
+    doc.blocks.push(Block::Table(table));
+
+    let mut mixed = Cell::paragraph("first line");
+    mixed.blocks.push(paragraph("second line"));
+    mixed.blocks.push(Block::Figure(Figure {
+        asset: 0,
+        anchor: None,
+        caption: None,
+        alt: "diagram & label".to_string(),
+        display_size: None,
+        inline: true,
+    }));
+    let mut html_table = Table::default();
+    html_table.rows.push(Row {
+        cells: vec![mixed],
+        header: false,
+        fill: None,
+    });
+    doc.blocks.push(Block::Table(html_table));
+
+    let rendered = markdown::render(&doc);
+    let text = string(rendered.bytes);
+    assert!(text.contains("**Whole words** \\| value"), "{text}");
+    assert!(
+        text.contains("first line<br />second line<br /><img src=\"assets/"),
+        "{text}"
+    );
+    assert!(text.contains("alt=\"diagram &amp; label\""), "{text}");
+}
+
+#[test]
+fn html_table_keeps_header_rowspans_within_one_row_group() {
+    let mut doc = Doc::new(PageSpec::default());
+    let mut spanning = Cell::paragraph("Period");
+    spanning.rowspan = 2;
+    let table = Table {
+        columns: vec![
+            ColumnSpec {
+                width: 1.0,
+                align: Align::Left,
+            },
+            ColumnSpec {
+                width: 1.0,
+                align: Align::Left,
+            },
+        ],
+        headers: vec![Row {
+            cells: vec![spanning, Cell::paragraph("Header")],
+            header: true,
+            fill: None,
+        }],
+        rows: vec![Row {
+            cells: vec![Cell::paragraph("Body")],
+            header: false,
+            fill: None,
+        }],
+        ..Table::default()
+    };
+    doc.blocks.push(Block::Table(table));
+    let rendered = string(markdown::render(&doc).bytes);
+    assert!(!rendered.contains("<thead>"), "{rendered}");
+    assert!(rendered.contains("<tbody>"), "{rendered}");
+    assert!(
+        rendered.contains("<th rowspan=\"2\">Period</th>"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("<td>Body</td>"), "{rendered}");
 }
 
 #[test]
@@ -335,6 +419,55 @@ fn docx_uses_native_openxml_for_every_feature() {
     assert!(
         rels.contains("TargetMode=\"External\"") && rels.contains("https://example.com/report"),
         "external hyperlink relationship missing: {rels}"
+    );
+}
+
+#[test]
+fn docx_continues_combined_row_and_column_spans_through_empty_rows() {
+    let mut doc = Doc::new(PageSpec::default());
+    let mut merged = Cell::paragraph("combined span");
+    merged.colspan = 3;
+    merged.rowspan = 2;
+    let table = Table {
+        columns: vec![
+            ColumnSpec {
+                width: 1.0,
+                align: Align::Left
+            };
+            3
+        ],
+        rows: vec![
+            Row {
+                cells: vec![merged],
+                header: false,
+                fill: None,
+            },
+            Row {
+                cells: Vec::new(),
+                header: false,
+                fill: None,
+            },
+        ],
+        ..Table::default()
+    };
+    doc.blocks.push(Block::Table(table));
+    let rendered = docx::render(&doc);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(rendered.bytes)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("word/document.xml").unwrap(), &mut xml)
+        .unwrap();
+    let rows: Vec<&str> = xml.split("<w:tr>").skip(1).collect();
+    assert_eq!(rows.len(), 2, "{xml}");
+    assert!(rows[0].contains("<w:gridSpan w:val=\"3\"/><w:vMerge w:val=\"restart\"/>"));
+    assert!(rows[1].contains("<w:gridSpan w:val=\"3\"/><w:vMerge/>"));
+    assert_eq!(
+        rows[1]
+            .split("</w:tr>")
+            .next()
+            .unwrap()
+            .matches("<w:tc>")
+            .count(),
+        1
     );
 }
 

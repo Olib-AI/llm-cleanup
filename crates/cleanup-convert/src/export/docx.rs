@@ -398,6 +398,19 @@ impl<'a> Writer<'a> {
         out
     }
 
+    fn merge_continuation(widths: &[f32], column: usize, span: usize) -> String {
+        let width: f32 = widths[column..column + span].iter().sum();
+        let grid_span = if span > 1 {
+            format!("<w:gridSpan w:val=\"{span}\"/>")
+        } else {
+            String::new()
+        };
+        format!(
+            "<w:tc><w:tcPr><w:tcW w:w=\"{}\" w:type=\"dxa\"/>{grid_span}<w:vMerge/></w:tcPr><w:p/></w:tc>",
+            Self::twips(width)
+        )
+    }
+
     fn table(&mut self, table: &Table) {
         let columns = table.column_count().max(1);
         let content = self.content_width();
@@ -456,7 +469,10 @@ impl<'a> Writer<'a> {
         out.push_str("</w:tblGrid>");
         self.body.push_str(&out);
 
-        let mut covered: Vec<Vec<bool>> = vec![vec![false; columns]; table.row_count()];
+        // A vertical continuation occupies the *same grid span* as its origin.
+        // Recording only booleans emits one w:vMerge per column and corrupts cells
+        // which span both rows and columns.
+        let mut continuations = vec![vec![0usize; columns]; table.row_count()];
         let rows: Vec<&cleanup_core::doc::Row> = table.all_rows().collect();
         for (row_index, row) in rows.iter().enumerate() {
             self.body.push_str("<w:tr>");
@@ -465,26 +481,25 @@ impl<'a> Writer<'a> {
             }
             let mut column = 0usize;
             for cell in &row.cells {
-                while column < columns && covered[row_index][column] {
-                    // A cell continued from a vertical merge above.
-                    self.body.push_str(&format!(
-                        "<w:tc><w:tcPr><w:tcW w:w=\"{}\" w:type=\"dxa\"/><w:vMerge/></w:tcPr><w:p/></w:tc>",
-                        Self::twips(widths[column])
-                    ));
-                    column += 1;
+                while column < columns && continuations[row_index][column] > 0 {
+                    let span = continuations[row_index][column];
+                    self.body
+                        .push_str(&Self::merge_continuation(&widths, column, span));
+                    column += span;
                 }
                 if column >= columns {
                     break;
                 }
-                let span = cell.colspan.max(1).min(columns - column);
-                let mut width = 0.0f32;
-                for index in 0..span {
-                    width += widths[column + index];
+                let mut span = cell.colspan.max(1).min(columns - column);
+                if let Some(next) = continuations[row_index][column + 1..column + span]
+                    .iter()
+                    .position(|occupied| *occupied > 0)
+                {
+                    span = next + 1;
                 }
-                for extra in 0..cell.rowspan.max(1).min(rows.len() - row_index) {
-                    for index in 0..span {
-                        covered[row_index + extra][column + index] = true;
-                    }
+                let width: f32 = widths[column..column + span].iter().sum();
+                for extra in 1..cell.rowspan.max(1).min(rows.len() - row_index) {
+                    continuations[row_index + extra][column] = span;
                 }
                 let mut properties =
                     format!("<w:tcW w:w=\"{}\" w:type=\"dxa\"/>", Self::twips(width));
@@ -508,11 +523,18 @@ impl<'a> Writer<'a> {
                 column += span;
             }
             while column < columns {
-                self.body.push_str(&format!(
-                    "<w:tc><w:tcPr><w:tcW w:w=\"{}\" w:type=\"dxa\"/></w:tcPr><w:p/></w:tc>",
-                    Self::twips(widths[column])
-                ));
-                column += 1;
+                let span = continuations[row_index][column];
+                if span > 0 {
+                    self.body
+                        .push_str(&Self::merge_continuation(&widths, column, span));
+                    column += span;
+                } else {
+                    self.body.push_str(&format!(
+                        "<w:tc><w:tcPr><w:tcW w:w=\"{}\" w:type=\"dxa\"/></w:tcPr><w:p/></w:tc>",
+                        Self::twips(widths[column])
+                    ));
+                    column += 1;
+                }
             }
             self.body.push_str("</w:tr>");
         }

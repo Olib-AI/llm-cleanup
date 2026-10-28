@@ -322,13 +322,26 @@ fn run_clean(job: Job) -> Result<()> {
         }
 
         // Clean-then-convert: apply the conversion to the cleaned native bytes.
-        let (final_bytes, conv) = if let Some(t) = target.filter(|t| !t.is_same_as(fmt.id())) {
-            let (b, rep) = cleanup_convert::convert(fmt.id(), &output_bytes, t)
+        let (final_bytes, assets, conv) =
+            if let Some(t) = target.filter(|t| !t.is_same_as(fmt.id())) {
+                let converted = cleanup_convert::convert_document(
+                    fmt.id(),
+                    &output_bytes,
+                    t,
+                    &cleanup_convert::ConvertOptions {
+                        level,
+                        ..cleanup_convert::ConvertOptions::default()
+                    },
+                )
                 .with_context(|| format!("converting {} to {}", input.display(), t.label()))?;
-            (b, Some((t, rep)))
-        } else {
-            (output_bytes, None)
-        };
+                (
+                    converted.bytes,
+                    converted.assets,
+                    Some((t, converted.report)),
+                )
+            } else {
+                (output_bytes, Vec::new(), None)
+            };
 
         if in_place && converting {
             bail!("--in-place cannot change the file format; use -o <path> instead");
@@ -355,6 +368,8 @@ fn run_clean(job: Job) -> Result<()> {
             let bak = with_extra_extension(input, "bak");
             fs::write(&bak, &bytes).with_context(|| format!("writing backup {}", bak.display()))?;
         }
+        cleanup_convert::write_assets(&dest, &assets)
+            .with_context(|| format!("writing image assets for {}", dest.display()))?;
         atomic_write(&dest, &final_bytes).with_context(|| format!("writing {}", dest.display()))?;
 
         if let Some((t, rep)) = &conv {
@@ -399,7 +414,10 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
             from,
             &bytes,
             target,
-            &cleanup_convert::ConvertOptions::default(),
+            &cleanup_convert::ConvertOptions {
+                sanitize: false,
+                ..cleanup_convert::ConvertOptions::default()
+            },
         )
         .with_context(|| format!("converting {} to {}", input.display(), target.label()))?;
         let rep = converted.report;
@@ -407,25 +425,16 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
             Some(o) => ensure_output_extension(o, target.ext()),
             None => converted_path(input, target.ext()),
         };
+        // Save sidecars first: a failed image write must not leave a seemingly successful
+        // Markdown file with broken links.
+        cleanup_convert::write_assets(&dest, &converted.assets)
+            .with_context(|| format!("writing image assets for {}", dest.display()))?;
         atomic_write(&dest, &converted.bytes)
             .with_context(|| format!("writing {}", dest.display()))?;
-        // Markdown/HTML targets reference extracted images relatively (`assets/<file>`), so the
-        // side-car files land next to the output document.
         if !converted.assets.is_empty() {
-            let assets = dest
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("assets");
-            fs::create_dir_all(&assets)
-                .with_context(|| format!("creating {}", assets.display()))?;
-            for (name, data) in &converted.assets {
-                let path = assets.join(name);
-                atomic_write(&path, data).with_context(|| format!("writing {}", path.display()))?;
-            }
             println!(
-                "  {} image asset(s) written to {}",
-                converted.assets.len(),
-                assets.display()
+                "  {} image asset(s) written to assets/",
+                converted.assets.len()
             );
         }
         println!(
@@ -618,6 +627,28 @@ mod tests {
             ensure_output_extension(Path::new("out.markdown"), "md"),
             PathBuf::from("out.markdown")
         );
+    }
+
+    #[test]
+    fn standalone_convert_does_not_clean_content() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("aiclean-convert-{}-{suffix}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.md");
+        let destination = dir.join("result.txt");
+        std::fs::write(
+            &source,
+            b"# Title\n\nCertainly! This is the original content.\n",
+        )
+        .unwrap();
+        run_convert(&[source], Some(destination.clone()), None).unwrap();
+        let result = std::fs::read_to_string(destination).unwrap();
+        assert!(result.contains("Certainly!"), "{result}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
