@@ -3154,7 +3154,7 @@ fn restore_position_templates(source: &[u8]) -> Vec<u8> {
         };
         let digits = &source[header..line_end];
         if digits.is_empty()
-            || digits.len() % 2 != 0
+            || !digits.len().is_multiple_of(2)
             || digits.len() > 65_536
             || !digits.iter().all(|byte| hex_value(*byte).is_some())
         {
@@ -3185,7 +3185,7 @@ fn restore_position_templates(source: &[u8]) -> Vec<u8> {
         }
         let Some(end) = matched else { break };
         result.extend_from_slice(&source[cursor..begin]);
-        for pair in digits.chunks_exact(2) {
+        for pair in digits.as_chunks::<2>().0 {
             if let (Some(high), Some(low)) = (hex_value(pair[0]), hex_value(pair[1])) {
                 result.push(high * 16 + low);
             }
