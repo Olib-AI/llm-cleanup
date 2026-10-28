@@ -552,7 +552,7 @@ fn font_subset_prefix_is_stripped() {
     assert_eq!("Helvetica", "Helvetica");
     assert_eq!(
         "ABCDEF+Helvetica",
-        "ABCDEF+Helvetica".split('+').last().unwrap()
+        "ABCDEF+Helvetica".split('+').next_back().unwrap()
     );
 }
 

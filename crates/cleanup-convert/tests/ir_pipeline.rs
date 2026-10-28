@@ -843,23 +843,17 @@ fn kerning_fixture_has_no_spaced_out_words() {
 
 fn contains_spaced_out(text: &str) -> bool {
     // Detect \b(\w\s){3,}\w\b  - 3+ single-char tokens separated by single spaces
-    let mut run = 0usize;
     let mut in_word = false;
     for ch in text.chars() {
         if ch.is_alphanumeric() && !in_word {
             in_word = true;
         } else if ch == ' ' && in_word {
-            // Check if previous word was single char
-            // Simplified: count consecutive "X " patterns where X is single alnum
             in_word = false;
-            // Look back: if we had "X " where X is single char, increment run
-            // This is approximated by scanning words
             continue;
         } else if ch.is_whitespace() {
             in_word = false;
         } else if !ch.is_alphanumeric() {
             in_word = false;
-            run = 0;
         }
     }
     // More precise: split into words and check for consecutive single-char words
