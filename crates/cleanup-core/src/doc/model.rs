@@ -238,6 +238,9 @@ pub struct TextRun {
     pub baseline: f32,
     /// Advance of a space in this font at this size, in points.
     pub space_width: f32,
+    /// Explicit blank glyphs immediately before this run. Geometry alone cannot
+    /// recover a space whose advance has been compressed or cancelled by tracking.
+    pub explicit_spaces_before: u16,
 }
 
 impl TextRun {
@@ -263,6 +266,7 @@ impl TextRun {
             color: Rgb::BLACK,
             baseline: rect.y + font_size * ascent,
             space_width: (font_size * space).max(0.5),
+            explicit_spaces_before: 0,
             font_name: name,
         }
     }
@@ -384,7 +388,14 @@ pub struct ImageAsset {
 
 impl ImageAsset {
     pub fn file_name(&self) -> String {
-        format!("{}.{}", self.name, self.kind.extension())
+        // Different documents often both contain `figure-1`. Content-addressed names
+        // keep saving a second Markdown document from overwriting the first one's images.
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in &self.data {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("{}-{hash:016x}.{}", self.name, self.kind.extension())
     }
 
     /// Effective dots per inch when the asset is drawn into `rect`.

@@ -3602,6 +3602,68 @@ mod tests {
     }
 
     #[test]
+    fn fractional_form_matrix_font_widths_and_media_box_are_preserved() {
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [10.25 20.5 622.75 813] /Resources << /XObject << /Fm1 6 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            stream_body("", b"q /Fm1 Do Q", false),
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /ABCDEF+ExampleSans /Encoding /WinAnsiEncoding /FirstChar 65 /Widths [500.5 250.25] /FontDescriptor 7 0 R >>".to_vec(),
+            stream_body(
+                " /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Matrix [0.5 0 0 0.5 25.25 40.5] /Resources << /Font << /F1 5 0 R >> >>",
+                b"BT /F1 10 Tf 1 0 0 1 10 20 Tm (ABZ) Tj ET",
+                false,
+            ),
+            b"<< /Type /FontDescriptor /FontName /ABCDEF+ExampleSans /Flags 1 /FontWeight 650 /ItalicAngle -0.5 /Ascent 800.5 /Descent -200.25 /MissingWidth 333.75 >>".to_vec(),
+        ];
+        let report = extract_layout(&assemble_pdf(&objects, 1, None)).unwrap();
+        let page = &report.layout.pages[0];
+        assert!((page.width - 612.5).abs() < 0.01);
+        assert!((page.height - 792.5).abs() < 0.01);
+        let run = page.runs.iter().find(|run| run.text == "ABZ").unwrap();
+        assert!((run.rect.x - 20.0).abs() < 0.01, "{run:?}");
+        assert!((run.baseline - 762.5).abs() < 0.01, "{run:?}");
+        assert!((run.rect.width - 5.4225).abs() < 0.02, "{run:?}");
+        assert!((run.font_size - 5.0).abs() < 0.01);
+        assert_eq!(run.font_name, "ExampleSans");
+        assert_eq!(run.font_weight, 650);
+        assert!(run.italic && run.mono);
+    }
+
+    #[test]
+    fn compressed_text_and_zero_width_explicit_spaces_remain_separate_words() {
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            stream_body("", b"BT /F1 10 Tf 20 Tz 1 0 0 1 100 700 Tm [(Word) -250 (gap)] TJ ET\nBT /F2 10 Tf 20 Tz 1 0 0 1 100 670 Tm (A B) Tj ET", false),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /Example /Encoding /WinAnsiEncoding /FirstChar 32 /Widths [0] /FontDescriptor << /MissingWidth 500 >> >>".to_vec(),
+        ];
+        let report = extract_layout(&assemble_pdf(&objects, 1, None)).unwrap();
+        let (doc, _) = cleanup_core::doc::analyze(&report.layout, &cleanup_core::doc::AnalyzeOptions::flat());
+        let text = doc.plain_text();
+        assert!(text.contains("Word gap"), "{text:?}");
+        assert!(text.contains("A B"), "{text:?}");
+    }
+
+    #[test]
+    fn cmyk_raster_is_converted_to_the_correct_rgb_channels() {
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            stream_body("", b"q 20 0 0 10 50 700 cm /Im1 Do Q", false),
+            stream_body(" /Type /XObject /Subtype /Image /Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceCMYK", &[0, 255, 255, 0, 0, 0, 0, 255], false),
+        ];
+        let report = extract_layout(&assemble_pdf(&objects, 1, None)).unwrap();
+        let image = cleanup_core::doc::decode_png(&report.layout.assets[0].data).unwrap();
+        assert_eq!(image.rgb, [255, 0, 0, 0, 0, 0]);
+        let rect = report.layout.pages[0].images[0].rect;
+        assert_eq!(rect, cleanup_core::doc::Rect::new(50.0, 82.0, 20.0, 10.0));
+    }
+
+    #[test]
     fn malformed_inputs_never_panic() {
         let bytes = sample_pdf(true);
         let exercise = |input: &[u8]| {

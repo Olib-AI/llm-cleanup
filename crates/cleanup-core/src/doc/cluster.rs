@@ -32,8 +32,8 @@ use super::model::{Glyph, Rect, TextRun};
 pub struct ClusterOptions {
     /// A gap is a word break when it exceeds this fraction of the font's space advance.
     pub space_fraction: f32,
-    /// …but never below this fraction of the em (protects fonts with a tiny space advance).
-    pub min_space_em: f32,
+    /// Minimum positive gap in points, preventing round-off from splitting a word.
+    pub min_space_points: f32,
     /// Baseline drift tolerated inside one line, as a fraction of the font size.
     pub baseline_em: f32,
     /// Size difference (points) that makes two glyphs a different run.
@@ -44,7 +44,7 @@ impl Default for ClusterOptions {
     fn default() -> Self {
         ClusterOptions {
             space_fraction: 0.5,
-            min_space_em: 0.12,
+            min_space_points: 0.05,
             baseline_em: 0.35,
             size_tolerance: 0.6,
         }
@@ -57,10 +57,10 @@ fn compare_f32(a: f32, b: f32) -> std::cmp::Ordering {
 
 /// The gap that counts as a word break for `glyph`.
 fn space_threshold(glyph: &Glyph, options: &ClusterOptions) -> f32 {
-    let natural = glyph
-        .space_width
-        .max(glyph.font_size * options.min_space_em);
-    (natural * options.space_fraction).max(glyph.font_size * options.min_space_em)
+    // `space_width` is already in page space, including Tz and the text matrix.
+    // A threshold derived from the vertical font size incorrectly joins words
+    // in horizontally compressed text.
+    (glyph.space_width * options.space_fraction).max(options.min_space_points)
 }
 
 /// Cluster glyphs into word runs.
@@ -115,18 +115,17 @@ fn cluster_line(line: &[&Glyph], options: &ClusterOptions) -> Vec<TextRun> {
     let mut current: Option<TextRun> = None;
     // Right edge of the previous glyph's advance box. `None` means "start a new word".
     let mut edge: Option<f32> = None;
-    let mut after_blank = true;
+    let mut blanks = 0u16;
 
     for glyph in line {
         if glyph.is_blank() {
-            // An explicit space character is a word separator by definition; its advance is
-            // consumed here and re-synthesised (once, or as indentation for monospace) when
-            // the analyser rebuilds the line.
+            // Preserve explicit blanks as well as their geometry: negative tracking or TJ
+            // adjustments can cancel their width, but they still separate words.
             if let Some(run) = current.take() {
                 runs.push(run);
             }
             edge = Some(glyph.rect.right());
-            after_blank = true;
+            blanks = blanks.saturating_add(glyph.text.chars().count().min(12) as u16);
             continue;
         }
 
@@ -139,7 +138,7 @@ fn cluster_line(line: &[&Glyph], options: &ClusterOptions) -> Vec<TextRun> {
                 // advance is.
                 let gap = glyph.rect.x - edge;
                 let threshold = space_threshold(glyph, options);
-                after_blank || gap > threshold || breaks_style(run, glyph, options)
+                gap > threshold || breaks_style(run, glyph, options)
             }
         };
 
@@ -147,13 +146,15 @@ fn cluster_line(line: &[&Glyph], options: &ClusterOptions) -> Vec<TextRun> {
             if let Some(run) = current.take() {
                 runs.push(run);
             }
-            current = Some(run_from_glyph(glyph));
+            let mut run = run_from_glyph(glyph);
+            run.explicit_spaces_before = blanks;
+            blanks = 0;
+            current = Some(run);
         } else if let Some(run) = current.as_mut() {
             run.text.push_str(&glyph.text);
             run.rect = run.rect.union(&glyph.rect);
         }
         edge = Some(glyph.rect.right());
-        after_blank = false;
     }
     if let Some(run) = current.take() {
         runs.push(run);
@@ -186,6 +187,7 @@ fn run_from_glyph(glyph: &Glyph) -> TextRun {
         color: glyph.color,
         baseline: glyph.baseline,
         space_width: glyph.space_width,
+        explicit_spaces_before: 0,
     }
 }
 
@@ -197,7 +199,7 @@ fn run_from_glyph(glyph: &Glyph) -> TextRun {
 /// indentation survives as indentation instead of collapsing to a single blank.
 pub fn gap_spaces(previous: Rect, next: Rect, space_width: f32, mono: bool) -> u16 {
     let gap = next.x - previous.right();
-    let space = space_width.max(1.0);
+    let space = space_width.max(0.1);
     // Half a space advance is the same threshold the clusterer uses, so a run the clusterer
     // split off (kerning, a style change) is re-joined with no space.
     if gap <= space * 0.5 {

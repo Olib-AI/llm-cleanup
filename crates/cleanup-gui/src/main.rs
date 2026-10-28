@@ -34,7 +34,17 @@ struct State {
     level: CleanupLevel,
     target_idx: i32,
     cleaned: Option<Vec<u8>>,
+    assets: Vec<(String, Vec<u8>)>,
     out_ext: String,
+}
+
+struct PreparedOutput {
+    bytes: Vec<u8>,
+    assets: Vec<(String, Vec<u8>)>,
+    out_ext: String,
+    cleaned: usize,
+    flagged: usize,
+    detail: String,
 }
 
 fn level_from_i32(n: i32) -> CleanupLevel {
@@ -210,7 +220,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let ui_weak = ui.as_weak();
         let state = state.clone();
         ui.on_clean_and_save(move || {
-            let (data, suggested, out_ext) = {
+            let (data, assets, suggested, out_ext) = {
                 let s = state.borrow();
                 let Some(data) = s.cleaned.clone() else {
                     return;
@@ -223,7 +233,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         .unwrap_or_else(|| format!("cleaned.{}", s.out_ext)),
                     None => format!("cleaned.{}", s.out_ext),
                 };
-                (data, suggested, s.out_ext.clone())
+                (data, s.assets.clone(), suggested, s.out_ext.clone())
             };
             // Offer the filter as a hint, but never trust the dialog (or the user's
             // edit of the name) to keep the extension: `resolve_save_path` appends a
@@ -237,7 +247,9 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             let path = resolve_save_path(&chosen, &out_ext);
             if let Some(ui) = ui_weak.upgrade() {
-                let msg = match std::fs::write(&path, &data) {
+                let msg = match cleanup_convert::write_assets(&path, &assets)
+                    .and_then(|()| std::fs::write(&path, &data))
+                {
                     Ok(()) => format!("Saved to {}", path.display()),
                     Err(e) => format!("Save failed: {e}"),
                 };
@@ -289,7 +301,7 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
     ui.set_level(level_to_i32(level));
     ui.set_target(target_idx);
 
-    let result = (|| -> anyhow::Result<(Vec<u8>, String, usize, usize, String)> {
+    let result = (|| -> anyhow::Result<PreparedOutput> {
         let fmt = formatter_for_path(&path)?;
         let bytes = std::fs::read(&path)?;
         let doc = fmt.parse(&bytes)?;
@@ -341,50 +353,61 @@ fn refresh(ui_weak: &slint::Weak<AppWindow>, state: &Rc<RefCell<State>>) {
             .unwrap_or("txt")
             .to_ascii_lowercase();
         let target = target_from_idx(target_idx).filter(|t| !t.is_same_as(fmt.id()));
-        let (final_bytes, out_ext) = if let Some(t) = target {
-            let (b, rep) = cleanup_convert::convert(fmt.id(), &out, t)?;
+        let (final_bytes, assets, out_ext) = if let Some(t) = target {
+            let converted = cleanup_convert::convert_document(
+                fmt.id(),
+                &out,
+                t,
+                &cleanup_convert::ConvertOptions {
+                    level,
+                    ..cleanup_convert::ConvertOptions::default()
+                },
+            )?;
             detail.push_str(&format!(
                 "\nOutput\n\nConverted to {} using {}.\n",
                 t.label(),
-                rep.engine
+                converted.report.engine
             ));
-            if rep.warnings.is_empty() {
-                detail.push_str("Formatting preserved.\n");
-            }
-            for w in &rep.warnings {
+            detail.push_str("Layout is reconstructed; cross-format conversion may be lossy.\n");
+            for w in &converted.report.warnings {
                 detail.push_str(&format!("Review: {w}\n"));
             }
-            (b, t.ext().to_string())
+            (converted.bytes, converted.assets, t.ext().to_string())
         } else {
-            (out, src_ext)
+            (out, Vec::new(), src_ext)
         };
 
-        Ok((
-            final_bytes,
+        Ok(PreparedOutput {
+            bytes: final_bytes,
+            assets,
             out_ext,
-            report.edits_applied + report.container.iter().filter(|c| c.applied).count(),
-            report.flags.len() + report.container.iter().filter(|c| !c.applied).count(),
+            cleaned: report.edits_applied + report.container.iter().filter(|c| c.applied).count(),
+            flagged: report.flags.len() + report.container.iter().filter(|c| !c.applied).count(),
             detail,
-        ))
+        })
     })();
 
     match result {
-        Ok((bytes, out_ext, cleaned, flagged, detail)) => {
+        Ok(prepared) => {
             {
                 let mut s = state.borrow_mut();
-                s.cleaned = Some(bytes);
-                s.out_ext = out_ext;
+                s.cleaned = Some(prepared.bytes);
+                s.assets = prepared.assets;
+                s.out_ext = prepared.out_ext;
             }
             ui.set_did_run(true);
             ui.set_has_error(false);
-            ui.set_cleaned_count(cleaned as i32);
-            ui.set_flagged_count(flagged as i32);
-            ui.set_preview_text(detail.into());
+            ui.set_cleaned_count(prepared.cleaned as i32);
+            ui.set_flagged_count(prepared.flagged as i32);
+            ui.set_preview_text(prepared.detail.into());
             ui.set_can_save(true);
             ui.set_status("Ready to save · your original file stays untouched.".into());
         }
         Err(e) => {
-            state.borrow_mut().cleaned = None;
+            let mut s = state.borrow_mut();
+            s.cleaned = None;
+            s.assets.clear();
+            drop(s);
             ui.set_did_run(true);
             ui.set_has_error(true);
             ui.set_cleaned_count(0);

@@ -865,7 +865,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cleanup-cli"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "cleanup-convert"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "cleanup-core",
  "cleanup-formats",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "cleanup-core"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "flate2",
  "serde",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "cleanup-formats"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "cleanup-core",
  "flate2",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "cleanup-gui"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "cleanup-convert",
@@ -929,11 +929,11 @@ dependencies = [
 
 [[package]]
 name = "cleanup-model"
-version = "0.3.1"
+version = "0.3.4"
 
 [[package]]
 name = "cleanup-rules"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "aho-corasick",
  "cleanup-core",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "cleanup-testkit"
-version = "0.3.1"
+version = "0.3.4"
 dependencies = [
  "cleanup-core",
  "cleanup-formats",

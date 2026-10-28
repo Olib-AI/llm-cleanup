@@ -234,7 +234,7 @@ fn markdown_maps_every_inline_and_container() {
         "<colgroup>",
         "colspan=\"2\"",
         "merged across columns",
-        "](assets/figure-1.png)",
+        "](assets/figure-1-",
         "96 dpi",
         "<svg ",
         "role=\"img\"",
@@ -247,11 +247,45 @@ fn markdown_maps_every_inline_and_container() {
         rendered
             .assets
             .iter()
-            .any(|(name, _)| name == "figure-1.png"),
+            .any(|(name, _)| name.starts_with("figure-1-") && name.ends_with(".png")),
         "Markdown did not emit the image side-car"
     );
     // The fenced code is verbatim, including tokens the sanitizer would strip from prose.
     assert!(md.contains("# [/INST] ** the the the"));
+}
+
+#[test]
+fn markdown_tables_keep_inline_styles_multiline_cells_and_images() {
+    let mut doc = styled_doc();
+    let mut styled = Cell::paragraph("placeholder");
+    styled.blocks = vec![Block::Paragraph {
+        inlines: vec![Inline::bold("Whole words"), Inline::plain(" | value")],
+        anchor: None,
+        style: ParagraphStyle::default(),
+    }];
+    let mut table = Table::default();
+    table.rows.push(Row { cells: vec![styled], header: false, fill: None });
+    doc.blocks.push(Block::Table(table));
+
+    let mut mixed = Cell::paragraph("first line");
+    mixed.blocks.push(paragraph("second line"));
+    mixed.blocks.push(Block::Figure(Figure {
+        asset: 0,
+        anchor: None,
+        caption: None,
+        alt: "diagram & label".to_string(),
+        display_size: None,
+        inline: true,
+    }));
+    let mut html_table = Table::default();
+    html_table.rows.push(Row { cells: vec![mixed], header: false, fill: None });
+    doc.blocks.push(Block::Table(html_table));
+
+    let rendered = markdown::render(&doc);
+    let text = string(rendered.bytes);
+    assert!(text.contains("**Whole words** \\| value"), "{text}");
+    assert!(text.contains("first line<br />second line<br /><img src=\"assets/"), "{text}");
+    assert!(text.contains("alt=\"diagram &amp; label\""), "{text}");
 }
 
 #[test]

@@ -322,12 +322,20 @@ fn run_clean(job: Job) -> Result<()> {
         }
 
         // Clean-then-convert: apply the conversion to the cleaned native bytes.
-        let (final_bytes, conv) = if let Some(t) = target.filter(|t| !t.is_same_as(fmt.id())) {
-            let (b, rep) = cleanup_convert::convert(fmt.id(), &output_bytes, t)
-                .with_context(|| format!("converting {} to {}", input.display(), t.label()))?;
-            (b, Some((t, rep)))
+        let (final_bytes, assets, conv) = if let Some(t) = target.filter(|t| !t.is_same_as(fmt.id())) {
+            let converted = cleanup_convert::convert_document(
+                fmt.id(),
+                &output_bytes,
+                t,
+                &cleanup_convert::ConvertOptions {
+                    level,
+                    ..cleanup_convert::ConvertOptions::default()
+                },
+            )
+            .with_context(|| format!("converting {} to {}", input.display(), t.label()))?;
+            (converted.bytes, converted.assets, Some((t, converted.report)))
         } else {
-            (output_bytes, None)
+            (output_bytes, Vec::new(), None)
         };
 
         if in_place && converting {
@@ -355,6 +363,8 @@ fn run_clean(job: Job) -> Result<()> {
             let bak = with_extra_extension(input, "bak");
             fs::write(&bak, &bytes).with_context(|| format!("writing backup {}", bak.display()))?;
         }
+        cleanup_convert::write_assets(&dest, &assets)
+            .with_context(|| format!("writing image assets for {}", dest.display()))?;
         atomic_write(&dest, &final_bytes).with_context(|| format!("writing {}", dest.display()))?;
 
         if let Some((t, rep)) = &conv {
@@ -407,26 +417,14 @@ fn run_convert(inputs: &[PathBuf], output: Option<PathBuf>, to: Option<String>) 
             Some(o) => ensure_output_extension(o, target.ext()),
             None => converted_path(input, target.ext()),
         };
+        // Save sidecars first: a failed image write must not leave a seemingly successful
+        // Markdown file with broken links.
+        cleanup_convert::write_assets(&dest, &converted.assets)
+            .with_context(|| format!("writing image assets for {}", dest.display()))?;
         atomic_write(&dest, &converted.bytes)
             .with_context(|| format!("writing {}", dest.display()))?;
-        // Markdown/HTML targets reference extracted images relatively (`assets/<file>`), so the
-        // side-car files land next to the output document.
         if !converted.assets.is_empty() {
-            let assets = dest
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("assets");
-            fs::create_dir_all(&assets)
-                .with_context(|| format!("creating {}", assets.display()))?;
-            for (name, data) in &converted.assets {
-                let path = assets.join(name);
-                atomic_write(&path, data).with_context(|| format!("writing {}", path.display()))?;
-            }
-            println!(
-                "  {} image asset(s) written to {}",
-                converted.assets.len(),
-                assets.display()
-            );
+            println!("  {} image asset(s) written to assets/", converted.assets.len());
         }
         println!(
             "{} → {}  ({} via {})",
