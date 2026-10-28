@@ -25,8 +25,9 @@ pub struct Rendered {
 ///
 /// `color` and `link` are part of the run, not the block: a coloured or hyperlinked phrase must
 /// survive a split across source runs. `Clone` (rather than `Copy`) is the price of carrying the
-/// link target; the PDF layout engine clones a style per wrapped piece.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// link target; the PDF layout engine clones a style per wrapped piece. `size_pt` is an `f32`,
+/// so the style is `PartialEq` but not `Eq` — nothing hashes it.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct RunStyle {
     pub bold: bool,
     pub italic: bool,
